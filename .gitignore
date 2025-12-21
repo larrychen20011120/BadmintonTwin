@@ -1,0 +1,14 @@
+__pycache__/
+
+**/Result/
+Shot_Evaluation/
+Tactic_Evaluation/
+Test_preprocess/
+Visualization_And_Win_Lose_Reason_Statistics/
+player/
+*.ipynb
+*.csv
+*.pth
+*.trc
+*.pkl
+*.png
