@@ -286,14 +286,6 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     # Calculate edit distance for this rally
                     rally_edit_dist = edit_distance(rally_shot_pred_seq, rally_shot_gt_seq)
                     rally_edit_dist_list.append(rally_edit_dist)
-
-                    print(land_pred_array)
-                    print(land_gt_array)
-                    print(move_pred_array)
-                    print(move_gt_array)
-                    print(rally_shot_pred_seq)
-                    print(rally_shot_gt_seq)
-                    exit()
                     
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
