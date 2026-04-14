@@ -82,6 +82,10 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
     Evaluate BC model on test set using state_col/action_col approach.
     Both players use BC models to simulate rallies.
     Only evaluate the target player specified in train_test_split.json.
+    
+    Evaluation is done on a per-rally basis:
+    - For each rally, calculate land_dtw, move_dtw, and shot_ctc
+    - Aggregate all rallies and compute average scores
     """
     
     with open(test_split_path, 'r') as f:
@@ -101,6 +105,9 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     
+    # Initialize CTC loss function
+    ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+    
     # Outer tqdm for players
     player_items = list(test_split['test'].items())
     for target_player_name, test_match_ids in tqdm(player_items, desc="Evaluating players", position=0):
@@ -109,16 +116,15 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
             
         target_player_id = player2index[target_player_name]
         
-        # Storage for sequences
-        target_land_pred_seq = []
-        target_land_gt_seq = []
-        target_move_pred_seq = []
-        target_move_gt_seq = []
-        target_shot_logits_seq = []
-        target_shot_gt_seq = []
+        # Storage for per-rally metrics
+        rally_land_dtw_list = []
+        rally_move_dtw_list = []
+        rally_shot_logits_list = []  # List of tensors, one per rally
+        rally_shot_targets_list = []  # List of tensors, one per rally
+        total_rallies = 0
         
         # Inner tqdm for matches
-        for match_id in test_match_ids:
+        for match_id in tqdm(test_match_ids, desc=f"Matches for {target_player_name}", position=1, leave=False):
             match_df = df[(df['match_id'] == match_id)].copy()
             if len(match_df) == 0:
                 continue
@@ -144,6 +150,14 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 
                 if len(rally_df) == 0:
                     continue
+                
+                # Per-rally storage for this rally
+                rally_land_pred_seq = []
+                rally_land_gt_seq = []
+                rally_move_pred_seq = []
+                rally_move_gt_seq = []
+                rally_shot_logits_seq = []
+                rally_shot_gt_seq = []
                 
                 # Get first row to determine starting player
                 first_row = rally_df.iloc[0]
@@ -186,14 +200,14 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     
                     # Record if this is target player
                     if is_target_turn:
-                        target_land_pred_seq.append(bc_land.squeeze(0).cpu().numpy())
+                        rally_land_pred_seq.append(bc_land.squeeze(0).cpu().numpy())
                         # Ground truth action using action_col
                         gt_action = build_action_tensor_from_row(row)
-                        target_land_gt_seq.append(gt_action[0:2].numpy())  # landing_x, landing_y
-                        target_move_pred_seq.append(bc_move.squeeze(0).cpu().numpy())
-                        target_move_gt_seq.append(gt_action[3:5].numpy())  # moving_x, moving_y
-                        target_shot_logits_seq.append(bc_shot_logit.squeeze(0).cpu().numpy())
-                        target_shot_gt_seq.append(int(gt_action[2].item()))  # player_type
+                        rally_land_gt_seq.append(gt_action[0:2].numpy())  # landing_x, landing_y
+                        rally_move_pred_seq.append(bc_move.squeeze(0).cpu().numpy())
+                        rally_move_gt_seq.append(gt_action[3:5].numpy())  # moving_x, moving_y
+                        rally_shot_logits_seq.append(bc_shot_logit.squeeze(0).cpu())
+                        rally_shot_gt_seq.append(int(gt_action[2].item()))  # player_type
                     
                     # Build action for transition [landing_x, landing_y, shot_type, move_x, move_y]
                     action_tensor = torch.tensor([
@@ -202,7 +216,6 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                         bc_move[0, 0].item(), bc_move[0, 1].item()
                     ], dtype=torch.float32)
                     
-
                     # Transition to next state
                     other_player_id = opponent_player_id if is_target_turn else target_player_id
                     next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
@@ -214,57 +227,94 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     # Move to next shot
                     current_state = next_state.to(device)
                     shot_idx += 1
+                
+                # Calculate per-rally metrics
+                if len(rally_land_gt_seq) > 0:
+                    # DTW for land positions (2D continuous) - using dtw_ndim
+                    land_pred_array = np.array(rally_land_pred_seq)  # [T, 2]
+                    land_gt_array = np.array(rally_land_gt_seq)  # [T, 2]
+                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+                    rally_land_dtw_list.append(land_dtw)
+                    
+                    # DTW for move positions (2D continuous) - using dtw_ndim
+                    move_pred_array = np.array(rally_move_pred_seq)
+                    move_gt_array = np.array(rally_move_gt_seq)
+                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
+                    rally_move_dtw_list.append(move_dtw)
+                    
+                    # Store shot logits and targets for CTC (per rally)
+                    rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)  # [T, 12]
+                    rally_shot_targets_tensor = torch.tensor(rally_shot_gt_seq, dtype=torch.long)  # [T]
+                    rally_shot_logits_list.append(rally_shot_logits_tensor)
+                    rally_shot_targets_list.append(rally_shot_targets_tensor)
+                    
+                    total_rallies += 1
         
-        # Calculate scores for this player
-        if len(target_land_gt_seq) > 0:
-            # DTW for land positions (2D continuous) - using dtw_ndim
-            land_pred_array = np.array(target_land_pred_seq)  # [T, 2]
-            land_gt_array = np.array(target_land_gt_seq)  # [T, 2]
-            land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+        # Calculate average scores for this player
+        if total_rallies > 0:
+            # Average DTW scores across all rallies
+            avg_land_dtw = np.mean(rally_land_dtw_list)
+            avg_move_dtw = np.mean(rally_move_dtw_list)
             
-            # DTW for move positions (2D continuous) - using dtw_ndim
-            move_pred_array = np.array(target_move_pred_seq)
-            move_gt_array = np.array(target_move_gt_seq)
-            move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
-            
-            # CTC Loss for shot types
-            # Stack all sequences - CTC expects log_probs of shape (T, N, C) 
-            # where N is batch size (number of rallies/sequences)
-            # For simplicity, we treat all shots as one long sequence
-            shot_logits = torch.tensor(np.array(target_shot_logits_seq))  # [T, 12]
-            shot_targets = torch.tensor(target_shot_gt_seq, dtype=torch.long)  # [T]
-            
-            # Log softmax for CTC (needs to be log probabilities)
-            log_probs = F.log_softmax(shot_logits, dim=-1)  # [T, 12]
-            
+            # Calculate CTC loss across all rallies
             # For CTC, we need:
-            # - log_probs: (T, N, C) where T is max sequence length, N is batch size
+            # - log_probs: (T, N, C) where T is max sequence length, N is batch size (number of rallies)
             # - targets: (sum of target lengths) - concatenated targets
             # - input_lengths: (N,) - lengths of input sequences
             # - target_lengths: (N,) - lengths of target sequences
             
-            # Here we treat the entire sequence as one batch item
-            log_probs = log_probs.unsqueeze(1)  # [T, 1, 12] - (T, N, C) format
+            # Find max sequence length
+            max_seq_len = max(logits.shape[0] for logits in rally_shot_logits_list)
+            num_rallies = len(rally_shot_logits_list)
             
-            input_lengths = torch.tensor([log_probs.size(0)])  # [T]
-            target_lengths = torch.tensor([len(shot_targets)])  # [T]
+            # Pad all sequences to max length
+            padded_logits = []
+            input_lengths = []
+            target_lengths = []
+            all_targets = []
             
-            # CTC Loss with blank=0
-            ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-            shot_ctc = ctc_loss_fn(log_probs, shot_targets, input_lengths, target_lengths)
+            for logits, targets in zip(rally_shot_logits_list, rally_shot_targets_list):
+                seq_len = logits.shape[0]
+                input_lengths.append(seq_len)
+                target_lengths.append(len(targets))
+                all_targets.extend(targets.tolist())
+                
+                # Pad logits to max_seq_len
+                if seq_len < max_seq_len:
+                    padding = torch.zeros(max_seq_len - seq_len, logits.shape[1])
+                    padded_logit = torch.cat([logits, padding], dim=0)
+                else:
+                    padded_logit = logits
+                padded_logits.append(padded_logit)
+            
+            # Stack to (T, N, C) format
+            all_logits = torch.stack(padded_logits, dim=1)  # [max_seq_len, num_rallies, 12]
+            
+            # Convert to log probabilities
+            log_probs = F.log_softmax(all_logits, dim=-1)  # [max_seq_len, num_rallies, 12]
+            
+            # Prepare tensors for CTC
+            input_lengths_tensor = torch.tensor(input_lengths, dtype=torch.long)
+            target_lengths_tensor = torch.tensor(target_lengths, dtype=torch.long)
+            targets_tensor = torch.tensor(all_targets, dtype=torch.long)
+            
+            # Calculate CTC loss
+            shot_ctc = ctc_loss_fn(log_probs, targets_tensor, input_lengths_tensor, target_lengths_tensor)
             
             results[target_player_name] = {
-                'land_dtw': float(land_dtw),
-                'move_dtw': float(move_dtw),
+                'land_dtw': float(avg_land_dtw),
+                'move_dtw': float(avg_move_dtw),
                 'shot_ctc': float(shot_ctc.item()),
-                'num_samples': len(target_land_gt_seq)
+                'num_rallies': total_rallies,
+                'num_shots': sum(target_lengths)
             }
         else:
             results[target_player_name] = {
                 'land_dtw': float('inf'),
                 'move_dtw': float('inf'),
                 'shot_ctc': float('inf'),
-                'num_samples': 0
+                'num_rallies': 0,
+                'num_shots': 0
             }
     
     return results
@@ -272,42 +322,47 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
 
 def print_results(results):
     """Print evaluation results"""
-    print("\n" + "="*80)
-    print("BC Evaluation Results on Test Set")
-    print("="*80)
-    print(f"{'Player Name':<30} {'Land DTW':<12} {'Move DTW':<12} {'Shot CTC':<12} {'Samples':<10}")
-    print("-"*80)
+    print("\n" + "="*90)
+    print("BC Evaluation Results on Test Set (Per-Rally Basis)")
+    print("="*90)
+    print(f"{'Player Name':<30} {'Land DTW':<12} {'Move DTW':<12} {'Shot CTC':<12} {'Rallies':<10} {'Shots':<10}")
+    print("-"*90)
     
     total_land_dtw = []
     total_move_dtw = []
     total_shot_ctc = []
-    total_samples = []
+    total_rallies = []
+    total_shots = []
     
     for player_name, scores in sorted(results.items()):
-        if scores['num_samples'] > 0:
+        if scores['num_rallies'] > 0:
             print(f"{player_name:<30} {scores['land_dtw']:<12.4f} {scores['move_dtw']:<12.4f} "
-                  f"{scores['shot_ctc']:<12.4f} {scores['num_samples']:<10}")
+                  f"{scores['shot_ctc']:<12.4f} {scores['num_rallies']:<10} {scores['num_shots']:<10}")
             total_land_dtw.append(scores['land_dtw'])
             total_move_dtw.append(scores['move_dtw'])
             total_shot_ctc.append(scores['shot_ctc'])
-            total_samples.append(scores['num_samples'])
+            total_rallies.append(scores['num_rallies'])
+            total_shots.append(scores['num_shots'])
     
-    print("-"*80)
+    print("-"*90)
     if total_land_dtw:
-        total_samples_sum = sum(total_samples)
-        w_land = sum([s * n for s, n in zip(total_land_dtw, total_samples)]) / total_samples_sum
-        w_move = sum([s * n for s, n in zip(total_move_dtw, total_samples)]) / total_samples_sum
-        w_ctc = sum([s * n for s, n in zip(total_shot_ctc, total_samples)]) / total_samples_sum
-        print(f"{'Weighted Average':<30} {w_land:<12.4f} {w_move:<12.4f} {w_ctc:<12.4f}")
+        # Weighted average by number of rallies
+        total_rallies_sum = sum(total_rallies)
+        total_shots_sum = sum(total_shots)
+        w_land = sum([s * n for s, n in zip(total_land_dtw, total_rallies)]) / total_rallies_sum
+        w_move = sum([s * n for s, n in zip(total_move_dtw, total_rallies)]) / total_rallies_sum
+        w_ctc = sum([s * n for s, n in zip(total_shot_ctc, total_rallies)]) / total_rallies_sum
+        print(f"{'Weighted Average (by rallies)':<30} {w_land:<12.4f} {w_move:<12.4f} {w_ctc:<12.4f} "
+              f"{total_rallies_sum:<10} {total_shots_sum:<10}")
         print(f"{'Simple Average':<30} {np.mean(total_land_dtw):<12.4f} {np.mean(total_move_dtw):<12.4f} "
               f"{np.mean(total_shot_ctc):<12.4f}")
-    print("="*80)
+    print("="*90)
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Evaluate BC model on test set')
+    parser = argparse.ArgumentParser(description='Evaluate BC model on test set (per-rally basis)')
     parser.add_argument('--model_path', type=str, default='BC_weight.pth',
                         help='Path to BC model weights')
     parser.add_argument('--test_split', type=str, 
