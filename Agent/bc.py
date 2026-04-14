@@ -178,13 +178,6 @@ class BCDataset(Dataset):
 
 if __name__ == "__main__":
 
-    match_state = ['rally', 'ball_round', 'player_score', 'opponent_score', 'score_status']
-    player_state = ['player_location_x', 'player_location_y']
-    ball_state = ['ball_distance','ball_distance_x','ball_distance_y',  'hit_x', 'hit_y']
-    opponent_state = ['opponent_type', 'opponent_location_x', 'opponent_location_y', 'opponent_move_x', 'opponent_move_y', "player"]
-    state_col = match_state + player_state + ball_state + opponent_state
-    action_col =  ['landing_x', 'landing_y', 'player_type','moving_x','moving_y']
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     with open(os.path.join("Data", "offline_data", "train_test_split.json"), "r") as f:
