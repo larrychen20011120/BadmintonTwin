@@ -119,9 +119,9 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
         # Storage for per-rally metrics
         rally_land_dtw_list = []
         rally_move_dtw_list = []
-        rally_shot_logits_list = []  # List of tensors, one per rally
-        rally_shot_targets_list = []  # List of tensors, one per rally
+        rally_shot_ctc_list = []  # CTC loss per rally
         total_rallies = 0
+        total_shots = 0
         
         # Inner tqdm for matches
         for match_id in tqdm(test_match_ids, desc=f"Matches for {target_player_name}", position=1, leave=False):
@@ -242,13 +242,22 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
-                    # Store shot logits and targets for CTC (per rally)
+                    # Calculate CTC loss for this rally
                     rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)  # [T, 12]
                     rally_shot_targets_tensor = torch.tensor(rally_shot_gt_seq, dtype=torch.long)  # [T]
-                    rally_shot_logits_list.append(rally_shot_logits_tensor)
-                    rally_shot_targets_list.append(rally_shot_targets_tensor)
+                    
+                    # CTC expects: log_probs (T, N, C), targets, input_lengths, target_lengths
+                    # For single rally: N=1
+                    log_probs = F.log_softmax(rally_shot_logits_tensor.unsqueeze(1), dim=-1)  # [T, 1, 12]
+                    input_length = torch.tensor([log_probs.shape[0]], dtype=torch.long)
+                    target_length = torch.tensor([len(rally_shot_targets_tensor)], dtype=torch.long)
+                    
+                    # Calculate CTC loss for this rally
+                    rally_ctc = ctc_loss_fn(log_probs, rally_shot_targets_tensor, input_length, target_length)
+                    rally_shot_ctc_list.append(rally_ctc.item())
                     
                     total_rallies += 1
+                    total_shots += len(rally_shot_gt_seq)
         
         # Calculate average scores for this player
         if total_rallies > 0:
@@ -256,57 +265,15 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
             avg_land_dtw = np.mean(rally_land_dtw_list)
             avg_move_dtw = np.mean(rally_move_dtw_list)
             
-            # Calculate CTC loss across all rallies
-            # For CTC, we need:
-            # - log_probs: (T, N, C) where T is max sequence length, N is batch size (number of rallies)
-            # - targets: (sum of target lengths) - concatenated targets
-            # - input_lengths: (N,) - lengths of input sequences
-            # - target_lengths: (N,) - lengths of target sequences
-            
-            # Find max sequence length
-            max_seq_len = max(logits.shape[0] for logits in rally_shot_logits_list)
-            num_rallies = len(rally_shot_logits_list)
-            
-            # Pad all sequences to max length
-            padded_logits = []
-            input_lengths = []
-            target_lengths = []
-            all_targets = []
-            
-            for logits, targets in zip(rally_shot_logits_list, rally_shot_targets_list):
-                seq_len = logits.shape[0]
-                input_lengths.append(seq_len)
-                target_lengths.append(len(targets))
-                all_targets.extend(targets.tolist())
-                
-                # Pad logits to max_seq_len
-                if seq_len < max_seq_len:
-                    padding = torch.zeros(max_seq_len - seq_len, logits.shape[1])
-                    padded_logit = torch.cat([logits, padding], dim=0)
-                else:
-                    padded_logit = logits
-                padded_logits.append(padded_logit)
-            
-            # Stack to (T, N, C) format
-            all_logits = torch.stack(padded_logits, dim=1)  # [max_seq_len, num_rallies, 12]
-            
-            # Convert to log probabilities
-            log_probs = F.log_softmax(all_logits, dim=-1)  # [max_seq_len, num_rallies, 12]
-            
-            # Prepare tensors for CTC
-            input_lengths_tensor = torch.tensor(input_lengths, dtype=torch.long)
-            target_lengths_tensor = torch.tensor(target_lengths, dtype=torch.long)
-            targets_tensor = torch.tensor(all_targets, dtype=torch.long)
-            
-            # Calculate CTC loss
-            shot_ctc = ctc_loss_fn(log_probs, targets_tensor, input_lengths_tensor, target_lengths_tensor)
+            # Average CTC loss across all rallies
+            avg_shot_ctc = np.mean(rally_shot_ctc_list)
             
             results[target_player_name] = {
                 'land_dtw': float(avg_land_dtw),
                 'move_dtw': float(avg_move_dtw),
-                'shot_ctc': float(shot_ctc.item()),
+                'shot_ctc': float(avg_shot_ctc),
                 'num_rallies': total_rallies,
-                'num_shots': sum(target_lengths)
+                'num_shots': total_shots
             }
         else:
             results[target_player_name] = {
