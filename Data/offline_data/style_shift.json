@@ -1,0 +1,1384 @@
+{
+    "normal": [
+        {
+            "name": "Aakarshi KASHYAP",
+            "match_ids": [
+                85
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3881019830028329,
+                "avg_landing_x": -0.0368128183928315,
+                "avg_landing_y": 0.3123942861804453,
+                "avg_location_x": 0.008135626384680612,
+                "avg_location_y": 0.12167802599394471,
+                "avg_lose_round": 9.241379310344827,
+                "avg_moving_distance": 0.3075260677622504,
+                "avg_opponent_moving_distance": 0.6429682621121461,
+                "avg_round": 10.75,
+                "avg_win_round": 12.25,
+                "balance_shot_ratio": 0.21246458923512748,
+                "defence_shot_ratio": 0.39943342776203966
+            }
+        },
+        {
+            "name": "Busanan ONGBAMRUNGPHAN",
+            "match_ids": [
+                22,
+                81,
+                85
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.28720155397868735,
+                "avg_landing_x": 0.061211604938623106,
+                "avg_landing_y": 0.19994438879732981,
+                "avg_location_x": -0.04697333003214524,
+                "avg_location_y": 0.16166093348994506,
+                "avg_lose_round": 8.635935143288085,
+                "avg_moving_distance": 0.328312700104801,
+                "avg_opponent_moving_distance": 0.6316297929991965,
+                "avg_round": 9.54441201000834,
+                "avg_win_round": 8.890522875816993,
+                "balance_shot_ratio": 0.2307700484999574,
+                "defence_shot_ratio": 0.48202839752135523
+            }
+        },
+        {
+            "name": "CHEN Long",
+            "match_ids": [
+                2,
+                4,
+                19
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.36104763788222,
+                "avg_landing_x": -0.026169571477424314,
+                "avg_landing_y": 0.38438653440587706,
+                "avg_location_x": -0.02848099034680889,
+                "avg_location_y": 0.24489180741031527,
+                "avg_lose_round": 11.391101055806937,
+                "avg_moving_distance": 0.30467049543253205,
+                "avg_opponent_moving_distance": 0.6467433983615293,
+                "avg_round": 11.345443227796167,
+                "avg_win_round": 10.155681818181817,
+                "balance_shot_ratio": 0.432581538074676,
+                "defence_shot_ratio": 0.20637082404310406
+            }
+        },
+        {
+            "name": "Chico Aura DWI WARDOYO",
+            "match_ids": [
+                69,
+                70
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.2955146547057459,
+                "avg_landing_x": -0.004073152624459814,
+                "avg_landing_y": 0.44850640449503837,
+                "avg_location_x": -0.04712142568741271,
+                "avg_location_y": 0.29572104775135094,
+                "avg_lose_round": 11.291666666666666,
+                "avg_moving_distance": 0.2853308396982627,
+                "avg_opponent_moving_distance": 0.5618796216898746,
+                "avg_round": 11.003796005941574,
+                "avg_win_round": 10.154761904761905,
+                "balance_shot_ratio": 0.5137847034258758,
+                "defence_shot_ratio": 0.19070064186837832
+            }
+        },
+        {
+            "name": "Evgeniya KOSETSKAYA",
+            "match_ids": [
+                40
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.31446540880503143,
+                "avg_landing_x": 0.07567320518364908,
+                "avg_landing_y": 0.24563452042616254,
+                "avg_location_x": -0.03642142161513947,
+                "avg_location_y": 0.20998250515971295,
+                "avg_lose_round": 6.6,
+                "avg_moving_distance": 0.3002092259310086,
+                "avg_opponent_moving_distance": 0.5438661995019908,
+                "avg_round": 7.132075471698113,
+                "avg_win_round": 7.222222222222222,
+                "balance_shot_ratio": 0.2641509433962264,
+                "defence_shot_ratio": 0.42138364779874216
+            }
+        },
+        {
+            "name": "Gregoria Mariska TUNJUNG",
+            "match_ids": [
+                72
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3839541547277937,
+                "avg_landing_x": -0.03753261297177918,
+                "avg_landing_y": 0.3626548046825609,
+                "avg_location_x": -0.007201199212682465,
+                "avg_location_y": 0.23315893318893294,
+                "avg_lose_round": 9.5,
+                "avg_moving_distance": 0.30738512144051977,
+                "avg_opponent_moving_distance": 0.6529711784349886,
+                "avg_round": 9.775,
+                "avg_win_round": 9.833333333333334,
+                "balance_shot_ratio": 0.3524355300859599,
+                "defence_shot_ratio": 0.2636103151862464
+            }
+        },
+        {
+            "name": "HE Bingjiao",
+            "match_ids": [
+                57,
+                61,
+                62,
+                91,
+                93
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3586972443991533,
+                "avg_landing_x": -0.03670224565758746,
+                "avg_landing_y": 0.37305743039685957,
+                "avg_location_x": 0.03340618960326299,
+                "avg_location_y": 0.16911377416186446,
+                "avg_lose_round": 12.741306001377191,
+                "avg_moving_distance": 0.3115510890961334,
+                "avg_opponent_moving_distance": 0.6034999073286492,
+                "avg_round": 11.859482452784075,
+                "avg_win_round": 12.85925321324702,
+                "balance_shot_ratio": 0.3396711860507173,
+                "defence_shot_ratio": 0.3016315695501294
+            }
+        },
+        {
+            "name": "Hans-Kristian Solberg VITTINGHUS",
+            "match_ids": [
+                32,
+                36,
+                37
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3638821451509313,
+                "avg_landing_x": 0.0248569444576705,
+                "avg_landing_y": 0.3454120388971349,
+                "avg_location_x": -0.022340278231537624,
+                "avg_location_y": 0.1785241561881407,
+                "avg_lose_round": 13.600701754385966,
+                "avg_moving_distance": 0.30596735576257034,
+                "avg_opponent_moving_distance": 0.6418881254914386,
+                "avg_round": 12.569581481760437,
+                "avg_win_round": 9.263157894736842,
+                "balance_shot_ratio": 0.3626184971098266,
+                "defence_shot_ratio": 0.2734993577392421
+            }
+        },
+        {
+            "name": "KIDAMBI Srikanth",
+            "match_ids": [
+                41,
+                48,
+                83
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3440972222222222,
+                "avg_landing_x": 0.051993031349369216,
+                "avg_landing_y": 0.3115959095843013,
+                "avg_location_x": -0.029011505495176185,
+                "avg_location_y": 0.23597989958105878,
+                "avg_lose_round": 10.795833333333334,
+                "avg_moving_distance": 0.2982704869820959,
+                "avg_opponent_moving_distance": 0.6515116904785136,
+                "avg_round": 10.611470625555134,
+                "avg_win_round": 10.525054466230936,
+                "balance_shot_ratio": 0.3568948412698412,
+                "defence_shot_ratio": 0.2990079365079365
+            }
+        },
+        {
+            "name": "Kenta NISHIMOTO",
+            "match_ids": [
+                78
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3044496487119438,
+                "avg_landing_x": 0.04556265199874965,
+                "avg_landing_y": 0.31531053436063294,
+                "avg_location_x": -0.05165542819641801,
+                "avg_location_y": 0.20646723340919826,
+                "avg_lose_round": 11.5,
+                "avg_moving_distance": 0.320200046922605,
+                "avg_opponent_moving_distance": 0.6406953449185885,
+                "avg_round": 13.675,
+                "avg_win_round": 18.0,
+                "balance_shot_ratio": 0.2857142857142857,
+                "defence_shot_ratio": 0.4098360655737705
+            }
+        },
+        {
+            "name": "Kodai NARAOKA",
+            "match_ids": [
+                87,
+                95,
+                96
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3231526429341964,
+                "avg_landing_x": 0.039490913524079574,
+                "avg_landing_y": 0.3819761053047696,
+                "avg_location_x": -0.04541437673749372,
+                "avg_location_y": 0.22919738583459978,
+                "avg_lose_round": 13.162652162652163,
+                "avg_moving_distance": 0.33146525375023383,
+                "avg_opponent_moving_distance": 0.6402646281107445,
+                "avg_round": 12.747125225616566,
+                "avg_win_round": 11.37908496732026,
+                "balance_shot_ratio": 0.349691988871856,
+                "defence_shot_ratio": 0.32715536819394764
+            }
+        },
+        {
+            "name": "Kunlavut VITIDSARN",
+            "match_ids": [
+                53,
+                64,
+                74,
+                76
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3320963286420294,
+                "avg_landing_x": -0.009875936787589185,
+                "avg_landing_y": 0.35294881651009014,
+                "avg_location_x": -0.01748096271837177,
+                "avg_location_y": 0.21915157591060286,
+                "avg_lose_round": 14.854149262043999,
+                "avg_moving_distance": 0.33274965327513106,
+                "avg_opponent_moving_distance": 0.6495897438676725,
+                "avg_round": 13.626491311591966,
+                "avg_win_round": 10.23844696969697,
+                "balance_shot_ratio": 0.35255735695049323,
+                "defence_shot_ratio": 0.3153463144074774
+            }
+        },
+        {
+            "name": "LEE Cheuk Yiu",
+            "match_ids": [
+                23,
+                32,
+                45,
+                100
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.32108584725976114,
+                "avg_landing_x": 0.013439341802457098,
+                "avg_landing_y": 0.38145230111569883,
+                "avg_location_x": -0.04359668301050907,
+                "avg_location_y": 0.2132142715130909,
+                "avg_lose_round": 12.145021645021643,
+                "avg_moving_distance": 0.32007284491583643,
+                "avg_opponent_moving_distance": 0.6379462199533057,
+                "avg_round": 11.625108540480081,
+                "avg_win_round": 10.752525252525253,
+                "balance_shot_ratio": 0.4232483893015269,
+                "defence_shot_ratio": 0.2556657634387119
+            }
+        },
+        {
+            "name": "LI Shi Feng",
+            "match_ids": [
+                86,
+                87
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3013766465286719,
+                "avg_landing_x": -0.014576015260169193,
+                "avg_landing_y": 0.3991343319205833,
+                "avg_location_x": -0.02185326486760877,
+                "avg_location_y": 0.24434755211841033,
+                "avg_lose_round": 10.728174603174605,
+                "avg_moving_distance": 0.3264962329831076,
+                "avg_opponent_moving_distance": 0.6296206244661753,
+                "avg_round": 12.028385197645079,
+                "avg_win_round": 10.993506493506494,
+                "balance_shot_ratio": 0.4061437390644086,
+                "defence_shot_ratio": 0.29247961440691955
+            }
+        },
+        {
+            "name": "LIEW Daren",
+            "match_ids": [
+                33,
+                89
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3240482359976081,
+                "avg_landing_x": 0.014427135317841462,
+                "avg_landing_y": 0.38372525286738424,
+                "avg_location_x": -0.022810641595387163,
+                "avg_location_y": 0.24528606933326086,
+                "avg_lose_round": 7.886904761904761,
+                "avg_moving_distance": 0.2897286001659138,
+                "avg_opponent_moving_distance": 0.6269899233934368,
+                "avg_round": 8.440705128205128,
+                "avg_win_round": 9.38888888888889,
+                "balance_shot_ratio": 0.40920869045246167,
+                "defence_shot_ratio": 0.2667430735499302
+            }
+        },
+        {
+            "name": "LOH Kean Yew",
+            "match_ids": [
+                52,
+                90
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.2938792293233083,
+                "avg_landing_x": 0.019930340462750627,
+                "avg_landing_y": 0.3875960798249976,
+                "avg_location_x": -0.019941937181355278,
+                "avg_location_y": 0.21364162258844963,
+                "avg_lose_round": 13.841711956521738,
+                "avg_moving_distance": 0.3238156810670143,
+                "avg_opponent_moving_distance": 0.6437712253158718,
+                "avg_round": 11.844166666666666,
+                "avg_win_round": 8.875,
+                "balance_shot_ratio": 0.4497767857142857,
+                "defence_shot_ratio": 0.256343984962406
+            }
+        },
+        {
+            "name": "LU Guang Zu",
+            "match_ids": [
+                69
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.22546419098143236,
+                "avg_landing_x": -0.008758370528588773,
+                "avg_landing_y": 0.4567583983552735,
+                "avg_location_x": -0.03457318634511745,
+                "avg_location_y": 0.2149993178797347,
+                "avg_lose_round": 9.714285714285714,
+                "avg_moving_distance": 0.306461733537628,
+                "avg_opponent_moving_distance": 0.614832516678278,
+                "avg_round": 11.144578313253012,
+                "avg_win_round": 10.176470588235293,
+                "balance_shot_ratio": 0.5251989389920424,
+                "defence_shot_ratio": 0.2493368700265252
+            }
+        },
+        {
+            "name": "Lakshya SEN",
+            "match_ids": [
+                52,
+                55,
+                82
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3213523697938206,
+                "avg_landing_x": 0.011282059226624362,
+                "avg_landing_y": 0.38899874418740127,
+                "avg_location_x": -0.020362300533920137,
+                "avg_location_y": 0.2698355459641088,
+                "avg_lose_round": 14.393013784461152,
+                "avg_moving_distance": 0.3214816736881106,
+                "avg_opponent_moving_distance": 0.6318815396342677,
+                "avg_round": 16.07674544652423,
+                "avg_win_round": 16.51111111111111,
+                "balance_shot_ratio": 0.42369060588638946,
+                "defence_shot_ratio": 0.25495702431978995
+            }
+        },
+        {
+            "name": "Mia BLICHFELDT",
+            "match_ids": [
+                22
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.4166666666666667,
+                "avg_landing_x": -0.039792483022388435,
+                "avg_landing_y": 0.2565812607320194,
+                "avg_location_x": -0.005996697649774676,
+                "avg_location_y": 0.1682760633509772,
+                "avg_lose_round": 10.125,
+                "avg_moving_distance": 0.3479839823494599,
+                "avg_opponent_moving_distance": 0.6178372680799908,
+                "avg_round": 8.727272727272727,
+                "avg_win_round": 8.0,
+                "balance_shot_ratio": 0.2857142857142857,
+                "defence_shot_ratio": 0.2976190476190476
+            }
+        },
+        {
+            "name": "Michelle LI",
+            "match_ids": [
+                40
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3630573248407643,
+                "avg_landing_x": 0.054659823353057954,
+                "avg_landing_y": 0.25812474297296034,
+                "avg_location_x": -0.0032443418042663293,
+                "avg_location_y": 0.15209420122867476,
+                "avg_lose_round": 7.0,
+                "avg_moving_distance": 0.2400990707694706,
+                "avg_opponent_moving_distance": 0.607503234881157,
+                "avg_round": 7.132075471698113,
+                "avg_win_round": 6.0,
+                "balance_shot_ratio": 0.17834394904458598,
+                "defence_shot_ratio": 0.4585987261146497
+            }
+        },
+        {
+            "name": "Neslihan YIGIT",
+            "match_ids": [
+                31
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3812154696132597,
+                "avg_landing_x": 0.08127749571435434,
+                "avg_landing_y": 0.3497340812246253,
+                "avg_location_x": -0.05737238381858725,
+                "avg_location_y": 0.22797045225255946,
+                "avg_lose_round": 8.041666666666666,
+                "avg_moving_distance": 0.2979056647821229,
+                "avg_opponent_moving_distance": 0.6506478265908971,
+                "avg_round": 8.296296296296296,
+                "avg_win_round": 6.25,
+                "balance_shot_ratio": 0.30939226519337015,
+                "defence_shot_ratio": 0.30939226519337015
+            }
+        },
+        {
+            "name": "PRANNOY H. S.",
+            "match_ids": [
+                73
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.30985915492957744,
+                "avg_landing_x": -0.009178292156260221,
+                "avg_landing_y": 0.37488012093484696,
+                "avg_location_x": -0.0338613333906543,
+                "avg_location_y": 0.28131914081327036,
+                "avg_lose_round": 9.75,
+                "avg_moving_distance": 0.29578482500032555,
+                "avg_opponent_moving_distance": 0.6249923231738201,
+                "avg_round": 10.712121212121213,
+                "avg_win_round": 12.23076923076923,
+                "balance_shot_ratio": 0.4154929577464789,
+                "defence_shot_ratio": 0.2746478873239437
+            }
+        },
+        {
+            "name": "PUSARLA V. Sindhu",
+            "match_ids": [
+                34,
+                42,
+                49,
+                56,
+                84,
+                101
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.34404057794111714,
+                "avg_landing_x": 0.04402865774859613,
+                "avg_landing_y": 0.30726382773512123,
+                "avg_location_x": -0.03079442630871887,
+                "avg_location_y": 0.16970897721509723,
+                "avg_lose_round": 9.551663982823404,
+                "avg_moving_distance": 0.31912498584455345,
+                "avg_opponent_moving_distance": 0.6388467459997543,
+                "avg_round": 9.960285309422593,
+                "avg_win_round": 9.299175824175824,
+                "balance_shot_ratio": 0.2647042441333732,
+                "defence_shot_ratio": 0.3912551779255096
+            }
+        },
+        {
+            "name": "Pornpawee CHOCHUWONG",
+            "match_ids": [
+                29,
+                42,
+                43,
+                49,
+                50,
+                97
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.4159870885221377,
+                "avg_landing_x": 0.03424873611154742,
+                "avg_landing_y": 0.2402153744638422,
+                "avg_location_x": -0.05156701941254265,
+                "avg_location_y": 0.19610547710288162,
+                "avg_lose_round": 9.366880341880341,
+                "avg_moving_distance": 0.3122261479577605,
+                "avg_opponent_moving_distance": 0.59707677677746,
+                "avg_round": 9.693225180067286,
+                "avg_win_round": 10.3125,
+                "balance_shot_ratio": 0.24552372118120566,
+                "defence_shot_ratio": 0.33848919029665653
+            }
+        },
+        {
+            "name": "Rasmus GEMKE",
+            "match_ids": [
+                24,
+                94,
+                100,
+                102
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.36364838864838867,
+                "avg_landing_x": -0.01851525465201555,
+                "avg_landing_y": 0.3084310170589342,
+                "avg_location_x": 0.01416984242228913,
+                "avg_location_y": 0.25487966888332214,
+                "avg_lose_round": 10.445899209486168,
+                "avg_moving_distance": 0.3119623482099427,
+                "avg_opponent_moving_distance": 0.630283525085892,
+                "avg_round": 10.157391934046347,
+                "avg_win_round": 14.905555555555555,
+                "balance_shot_ratio": 0.41480278980278984,
+                "defence_shot_ratio": 0.22154882154882155
+            }
+        },
+        {
+            "name": "Ratchanok INTANON",
+            "match_ids": [
+                21,
+                34,
+                67,
+                68,
+                92
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.33951424946960024,
+                "avg_landing_x": -0.004409175222127129,
+                "avg_landing_y": 0.31263303859690295,
+                "avg_location_x": -0.02496007158599041,
+                "avg_location_y": 0.2197210059819378,
+                "avg_lose_round": 9.711514898357004,
+                "avg_moving_distance": 0.2960078590070525,
+                "avg_opponent_moving_distance": 0.6357940990714898,
+                "avg_round": 9.972254086116822,
+                "avg_win_round": 10.128888888888888,
+                "balance_shot_ratio": 0.3513386762778182,
+                "defence_shot_ratio": 0.30914707425258153
+            }
+        },
+        {
+            "name": "SHI Yuqi",
+            "match_ids": [
+                12,
+                18,
+                88,
+                96
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.33365156044446564,
+                "avg_landing_x": 0.0035721331580467167,
+                "avg_landing_y": 0.36870787014997386,
+                "avg_location_x": -0.02474012681694872,
+                "avg_location_y": 0.25313062442028855,
+                "avg_lose_round": 10.235247055811573,
+                "avg_moving_distance": 0.299025198357007,
+                "avg_opponent_moving_distance": 0.6180998679834527,
+                "avg_round": 9.9072488317757,
+                "avg_win_round": 9.93974358974359,
+                "balance_shot_ratio": 0.39990325943650373,
+                "defence_shot_ratio": 0.26644518011903057
+            }
+        },
+        {
+            "name": "Sameer VERMA",
+            "match_ids": [
+                30
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3872549019607843,
+                "avg_landing_x": 0.03241958726464771,
+                "avg_landing_y": 0.3653729764441159,
+                "avg_location_x": -0.03966514836407105,
+                "avg_location_y": 0.19684237426632645,
+                "avg_lose_round": 9.666666666666666,
+                "avg_moving_distance": 0.2960338141206539,
+                "avg_opponent_moving_distance": 0.6411428184841329,
+                "avg_round": 9.89795918367347,
+                "avg_win_round": 10.5,
+                "balance_shot_ratio": 0.3284313725490196,
+                "defence_shot_ratio": 0.28431372549019607
+            }
+        },
+        {
+            "name": "Supanida KATETHONG",
+            "match_ids": [
+                25,
+                81,
+                84
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3721763217831568,
+                "avg_landing_x": -0.028806492589394116,
+                "avg_landing_y": 0.3117042031277765,
+                "avg_location_x": 0.03755831092673331,
+                "avg_location_y": 0.18522492449784567,
+                "avg_lose_round": 9.296756383712905,
+                "avg_moving_distance": 0.29466630782128145,
+                "avg_opponent_moving_distance": 0.6332691544126057,
+                "avg_round": 9.386507622037508,
+                "avg_win_round": 9.68,
+                "balance_shot_ratio": 0.3166244012670586,
+                "defence_shot_ratio": 0.3111992769497846
+            }
+        },
+        {
+            "name": "WANG Zhi Yi",
+            "match_ids": [
+                62,
+                68
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.29597831511137324,
+                "avg_landing_x": 0.03498878179468016,
+                "avg_landing_y": 0.3209541561690874,
+                "avg_location_x": -0.06271413713834638,
+                "avg_location_y": 0.23480411907006643,
+                "avg_lose_round": 10.357142857142858,
+                "avg_moving_distance": 0.3414684572717919,
+                "avg_opponent_moving_distance": 0.6508975115474969,
+                "avg_round": 12.125,
+                "avg_win_round": 9.733333333333334,
+                "balance_shot_ratio": 0.29653404708977904,
+                "defence_shot_ratio": 0.40748763779884767
+            }
+        },
+        {
+            "name": "ZHAO Jun Peng",
+            "match_ids": [
+                73,
+                74,
+                99
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.36732528502505596,
+                "avg_landing_x": -0.030363963952702532,
+                "avg_landing_y": 0.4183964409798699,
+                "avg_location_x": 0.006649886851339476,
+                "avg_location_y": 0.24565628222260147,
+                "avg_lose_round": 12.786324786324785,
+                "avg_moving_distance": 0.2865742307683782,
+                "avg_opponent_moving_distance": 0.5859005493908204,
+                "avg_round": 11.946791726791725,
+                "avg_win_round": 9.801587301587302,
+                "balance_shot_ratio": 0.4194681125519288,
+                "defence_shot_ratio": 0.21320660242301528
+            }
+        },
+        {
+            "name": "Akane YAMAGUCHI",
+            "match_ids": [
+                54,
+                59,
+                75,
+                77,
+                79,
+                80
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.37183146900760033,
+                "avg_landing_x": 0.0143871949821442,
+                "avg_landing_y": 0.24057591111143892,
+                "avg_location_x": -0.027341590625271427,
+                "avg_location_y": 0.20043109893118338,
+                "avg_lose_round": 11.618934729064039,
+                "avg_moving_distance": 0.32759690199085145,
+                "avg_opponent_moving_distance": 0.6032994526850012,
+                "avg_round": 11.908725768147741,
+                "avg_win_round": 12.197537878787879,
+                "balance_shot_ratio": 0.16880528724223798,
+                "defence_shot_ratio": 0.45936324375016163
+            }
+        },
+        {
+            "name": "An Se Young",
+            "match_ids": [
+                21,
+                29,
+                35,
+                54,
+                56,
+                59,
+                71,
+                72,
+                75,
+                79,
+                97
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3578982628043665,
+                "avg_landing_x": -0.0017826555565185849,
+                "avg_landing_y": 0.3192460691076164,
+                "avg_location_x": -0.03848974103256326,
+                "avg_location_y": 0.21384680206108705,
+                "avg_lose_round": 9.869479594479593,
+                "avg_moving_distance": 0.32577307294853586,
+                "avg_opponent_moving_distance": 0.6140403123342433,
+                "avg_round": 11.564887202170278,
+                "avg_win_round": 11.46818181818182,
+                "balance_shot_ratio": 0.264386771243657,
+                "defence_shot_ratio": 0.37771496595197646
+            }
+        },
+        {
+            "name": "Anders ANTONSEN",
+            "match_ids": [
+                8,
+                14,
+                15,
+                30,
+                36,
+                44,
+                51,
+                78
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3324011590468615,
+                "avg_landing_x": -0.03433875710975737,
+                "avg_landing_y": 0.31670713364873737,
+                "avg_location_x": -0.011802422645286442,
+                "avg_location_y": 0.23700192819437593,
+                "avg_lose_round": 9.673776335206211,
+                "avg_moving_distance": 0.31538202897191503,
+                "avg_opponent_moving_distance": 0.6210559202639183,
+                "avg_round": 11.009069109293925,
+                "avg_win_round": 11.573593073593074,
+                "balance_shot_ratio": 0.3568561480402509,
+                "defence_shot_ratio": 0.3107426929128876
+            }
+        },
+        {
+            "name": "Anthony Sinisuka GINTING",
+            "match_ids": [
+                15,
+                24,
+                27,
+                39,
+                47,
+                102
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.40857223414360916,
+                "avg_landing_x": 0.03551564933911392,
+                "avg_landing_y": 0.321591951111111,
+                "avg_location_x": 0.022301090834809273,
+                "avg_location_y": 0.21545479417238766,
+                "avg_lose_round": 8.822494553376906,
+                "avg_moving_distance": 0.28616266475991564,
+                "avg_opponent_moving_distance": 0.5915250571802795,
+                "avg_round": 9.20970717234262,
+                "avg_win_round": 8.896464646464645,
+                "balance_shot_ratio": 0.42052131152917965,
+                "defence_shot_ratio": 0.17090645432721116
+            }
+        },
+        {
+            "name": "CHEN Yufei",
+            "match_ids": [
+                57,
+                67,
+                71,
+                77,
+                80,
+                91,
+                92,
+                101
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.2939306146636895,
+                "avg_landing_x": -0.018405950198442406,
+                "avg_landing_y": 0.2944385600701732,
+                "avg_location_x": -0.04037742147883916,
+                "avg_location_y": 0.20492519840401185,
+                "avg_lose_round": 9.90941547350016,
+                "avg_moving_distance": 0.32451073479969395,
+                "avg_opponent_moving_distance": 0.645307757009385,
+                "avg_round": 10.959823600526507,
+                "avg_win_round": 9.28144216894217,
+                "balance_shot_ratio": 0.25408688448409544,
+                "defence_shot_ratio": 0.45198250085221503
+            }
+        },
+        {
+            "name": "CHOU Tien Chen",
+            "match_ids": [
+                2,
+                3,
+                4,
+                5,
+                6,
+                8,
+                9,
+                10,
+                11
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3278023548453676,
+                "avg_landing_x": 0.05106709883962474,
+                "avg_landing_y": 0.3499072585678175,
+                "avg_location_x": -0.05805054266695272,
+                "avg_location_y": 0.24058923705843466,
+                "avg_lose_round": 11.065083665083666,
+                "avg_moving_distance": 0.3215883840579597,
+                "avg_opponent_moving_distance": 0.6246053148717509,
+                "avg_round": 11.255658627727286,
+                "avg_win_round": 11.652417644084311,
+                "balance_shot_ratio": 0.4147702434790736,
+                "defence_shot_ratio": 0.2574274016755587
+            }
+        },
+        {
+            "name": "Carolina MARIN",
+            "match_ids": [
+                25,
+                31,
+                38,
+                43,
+                46,
+                50,
+                93
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.38468573440598003,
+                "avg_landing_x": 0.011411488954704969,
+                "avg_landing_y": 0.33723842675006754,
+                "avg_location_x": 0.021847233619823297,
+                "avg_location_y": 0.2363953195336248,
+                "avg_lose_round": 8.066513770782064,
+                "avg_moving_distance": 0.26273258712024194,
+                "avg_opponent_moving_distance": 0.5837388601180941,
+                "avg_round": 8.414796004145614,
+                "avg_win_round": 8.22574618364092,
+                "balance_shot_ratio": 0.3922820848017913,
+                "defence_shot_ratio": 0.22303218079222864
+            }
+        },
+        {
+            "name": "Jonatan CHRISTIE",
+            "match_ids": [
+                14,
+                17,
+                26,
+                65
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.36276655199543206,
+                "avg_landing_x": 0.045968574706727654,
+                "avg_landing_y": 0.36439914442567045,
+                "avg_location_x": -0.05544768656318188,
+                "avg_location_y": 0.20758903366085296,
+                "avg_lose_round": 10.21038961038961,
+                "avg_moving_distance": 0.30708526108527423,
+                "avg_opponent_moving_distance": 0.6243558047505561,
+                "avg_round": 10.976820851357846,
+                "avg_win_round": 10.555882352941175,
+                "balance_shot_ratio": 0.3669542917888165,
+                "defence_shot_ratio": 0.2702791562157515
+            }
+        },
+        {
+            "name": "Kento MOMOTA",
+            "match_ids": [
+                1,
+                3,
+                5,
+                6,
+                7,
+                13,
+                58,
+                66
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.38089115467032386,
+                "avg_landing_x": -0.055466111473953174,
+                "avg_landing_y": 0.34328268208625684,
+                "avg_location_x": 0.04241480962872016,
+                "avg_location_y": 0.21271318681754184,
+                "avg_lose_round": 12.122126195563695,
+                "avg_moving_distance": 0.33181565767806925,
+                "avg_opponent_moving_distance": 0.6263645666046493,
+                "avg_round": 12.873069565447619,
+                "avg_win_round": 13.020331996434937,
+                "balance_shot_ratio": 0.33942444928686943,
+                "defence_shot_ratio": 0.2796843960428067
+            }
+        },
+        {
+            "name": "LEE Zii Jia",
+            "match_ids": [
+                39,
+                47,
+                63,
+                82,
+                86,
+                88,
+                89,
+                90
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3125231314993222,
+                "avg_landing_x": 0.04296588622029267,
+                "avg_landing_y": 0.34883345461263404,
+                "avg_location_x": -0.027860730371983913,
+                "avg_location_y": 0.27574673191268767,
+                "avg_lose_round": 10.275596759723722,
+                "avg_moving_distance": 0.2866415647342327,
+                "avg_opponent_moving_distance": 0.6291682943291219,
+                "avg_round": 10.072738585920984,
+                "avg_win_round": 9.410296664120194,
+                "balance_shot_ratio": 0.4402005282748247,
+                "defence_shot_ratio": 0.2472763402258531
+            }
+        },
+        {
+            "name": "NG Ka Long Angus",
+            "match_ids": [
+                10,
+                12,
+                17,
+                20,
+                23,
+                41,
+                45,
+                48,
+                70
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.3394658827177001,
+                "avg_landing_x": -0.0023365211219295826,
+                "avg_landing_y": 0.3714038396298587,
+                "avg_location_x": -0.01286823972197392,
+                "avg_location_y": 0.23302852789130205,
+                "avg_lose_round": 9.795212932191154,
+                "avg_moving_distance": 0.3166895439448922,
+                "avg_opponent_moving_distance": 0.6300471597715878,
+                "avg_round": 10.845538030759078,
+                "avg_win_round": 11.067746913580246,
+                "balance_shot_ratio": 0.41820009184309864,
+                "defence_shot_ratio": 0.24233402543920135
+            }
+        },
+        {
+            "name": "Viktor AXELSEN",
+            "match_ids": [
+                13,
+                16,
+                18,
+                19,
+                20,
+                26,
+                27,
+                28,
+                33,
+                37,
+                44,
+                51,
+                55,
+                60,
+                63,
+                65,
+                66,
+                76,
+                94,
+                95,
+                99
+            ],
+            "match_profile": {
+                "attack_shot_ratio": 0.28646780903761243,
+                "avg_landing_x": 0.00829256562438234,
+                "avg_landing_y": 0.2764964148738199,
+                "avg_location_x": -0.05580327366328565,
+                "avg_location_y": 0.20503395590504137,
+                "avg_lose_round": 11.480678363282047,
+                "avg_moving_distance": 0.3458021867226498,
+                "avg_opponent_moving_distance": 0.6517825095103282,
+                "avg_round": 11.837723225641994,
+                "avg_win_round": 10.715239172592113,
+                "balance_shot_ratio": 0.36854895023461415,
+                "defence_shot_ratio": 0.3449832407277735
+            }
+        }
+    ],
+    "shifted": [
+        {
+            "name": "Akane YAMAGUCHI",
+            "match_ids": [
+                98
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.32781456953642385,
+                    "avg_landing_x": 0.03134302170908447,
+                    "avg_landing_y": 0.31029676721530774,
+                    "avg_location_x": -0.03705179855604913,
+                    "avg_location_y": 0.19940429601802268,
+                    "avg_lose_round": 10.44,
+                    "avg_moving_distance": 0.2948076287015835,
+                    "avg_opponent_moving_distance": 0.6304708105246867,
+                    "avg_round": 10.253731343283581,
+                    "avg_win_round": 9.071428571428571,
+                    "balance_shot_ratio": 0.25165562913907286,
+                    "defence_shot_ratio": 0.4205298013245033
+                }
+            ],
+            "instructions": [
+                "The overall style shift indicates a reduction in physical exertion and a move towards more defensive tactics, likely due to either injury management or strategic adaptation. The change in shot placement also reflects a shift in tactical approach to better suit the current match situation."
+            ]
+        },
+        {
+            "name": "An Se Young",
+            "match_ids": [
+                38,
+                46
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.4105960264900662,
+                    "avg_landing_x": -0.015073569203436065,
+                    "avg_landing_y": 0.2665637137476705,
+                    "avg_location_x": 0.015477553523438138,
+                    "avg_location_y": 0.24143517110187535,
+                    "avg_lose_round": 4.666666666666667,
+                    "avg_moving_distance": 0.28061153113506404,
+                    "avg_opponent_moving_distance": 0.5322942006453343,
+                    "avg_round": 7.48,
+                    "avg_win_round": 19.5,
+                    "balance_shot_ratio": 0.23178807947019867,
+                    "defence_shot_ratio": 0.3576158940397351
+                },
+                {
+                    "attack_shot_ratio": 0.4105960264900662,
+                    "avg_landing_x": -0.015073569203436065,
+                    "avg_landing_y": 0.2665637137476705,
+                    "avg_location_x": 0.015477553523438138,
+                    "avg_location_y": 0.24143517110187535,
+                    "avg_lose_round": 4.666666666666667,
+                    "avg_moving_distance": 0.28061153113506404,
+                    "avg_opponent_moving_distance": 0.5322942006453343,
+                    "avg_round": 7.48,
+                    "avg_win_round": 19.5,
+                    "balance_shot_ratio": 0.23178807947019867,
+                    "defence_shot_ratio": 0.3576158940397351
+                }
+            ],
+            "instructions": [
+                "The player's style shift is characterized by a reduction in physical exertion and an increase in aggression, likely due to injury or strategic adaptation. This results in a more compact playstyle with a focus on quick, decisive shots and a shift in shot placement towards the back of the court.",
+                "The player's style shift is characterized by a reduction in physical exertion and an increase in aggression, likely due to injury or strategic adaptation. This results in a more compact playstyle with a focus on quick, decisive shots and a shift in shot placement towards the back of the court."
+            ]
+        },
+        {
+            "name": "Anders ANTONSEN",
+            "match_ids": [],
+            "match_profiles": [],
+            "instructions": []
+        },
+        {
+            "name": "Anthony Sinisuka GINTING",
+            "match_ids": [
+                16,
+                60
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.3257918552036199,
+                    "avg_landing_x": -0.05236627790586002,
+                    "avg_landing_y": 0.43221762297867233,
+                    "avg_location_x": -0.014115724113206092,
+                    "avg_location_y": 0.2304361028999571,
+                    "avg_lose_round": 9.1875,
+                    "avg_moving_distance": 0.26973721496362274,
+                    "avg_opponent_moving_distance": 0.6111587480915036,
+                    "avg_round": 8.7,
+                    "avg_win_round": 10.0,
+                    "balance_shot_ratio": 0.502262443438914,
+                    "defence_shot_ratio": 0.17194570135746606
+                },
+                {
+                    "attack_shot_ratio": 0.4305555555555556,
+                    "avg_landing_x": 0.020187059490558292,
+                    "avg_landing_y": 0.3509855923402176,
+                    "avg_location_x": -0.01915529903906877,
+                    "avg_location_y": 0.23972745478218258,
+                    "avg_lose_round": 12.823529411764707,
+                    "avg_moving_distance": 0.2963596362540941,
+                    "avg_opponent_moving_distance": 0.6136336407621029,
+                    "avg_round": 12.217391304347826,
+                    "avg_win_round": 11.833333333333334,
+                    "balance_shot_ratio": 0.39166666666666666,
+                    "defence_shot_ratio": 0.17777777777777778
+                }
+            ],
+            "instructions": [
+                "The player's style shift indicates a move towards a more defensive and less physically demanding approach, possibly due to an injury or strategic adjustment. This results in a slight decrease in attacking shots but an increase in the number of shots won in rallies, though there is also an increase in shots lost, suggesting a higher risk of errors.",
+                "The player's style shift is characterized by a more aggressive and physically demanding approach, evident in the increased distance traveled per shot and the number of shots lost in rallies. This shift likely aims to capitalize on offensive opportunities and push the opponent into making more mistakes, potentially due to an increased focus on stamina conservation or a strategic decision to take more risks for high-scoring points."
+            ]
+        },
+        {
+            "name": "CHEN Yufei",
+            "match_ids": [
+                61
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.2622107969151671,
+                    "avg_landing_x": 0.01934485625265878,
+                    "avg_landing_y": 0.102555395412553,
+                    "avg_location_x": 0.007438815106855369,
+                    "avg_location_y": 0.35976544135678284,
+                    "avg_lose_round": 11.75,
+                    "avg_moving_distance": 0.28856710922511913,
+                    "avg_opponent_moving_distance": 0.5289810113242818,
+                    "avg_round": 13.67123287671233,
+                    "avg_win_round": 13.727272727272727,
+                    "balance_shot_ratio": 0.2416452442159383,
+                    "defence_shot_ratio": 0.4961439588688946
+                }
+            ],
+            "instructions": [
+                "The player's style shift involves a reduction in physical exertion, a move towards more offensive play, and a strategic shift in court positioning. These changes likely stem from either an injury that necessitates conserving energy or a tactical decision to exploit the opponent's weaknesses by increasing net play and reducing defensive efforts."
+            ]
+        },
+        {
+            "name": "CHOU Tien Chen",
+            "match_ids": [
+                1,
+                7
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.38125,
+                    "avg_landing_x": 0.09520857954132608,
+                    "avg_landing_y": 0.2588733059446992,
+                    "avg_location_x": -0.02990079995645638,
+                    "avg_location_y": 0.18544631320778995,
+                    "avg_lose_round": 13.428571428571429,
+                    "avg_moving_distance": 0.29501825993262554,
+                    "avg_opponent_moving_distance": 0.5429500831006893,
+                    "avg_round": 14.813084112149532,
+                    "avg_win_round": 16.625,
+                    "balance_shot_ratio": 0.303125,
+                    "defence_shot_ratio": 0.315625
+                },
+                {
+                    "attack_shot_ratio": 0.46105919003115264,
+                    "avg_landing_x": -0.003328303790405344,
+                    "avg_landing_y": 0.3294617363951469,
+                    "avg_location_x": -0.06422773521210771,
+                    "avg_location_y": 0.19046535514553112,
+                    "avg_lose_round": 13.444444444444445,
+                    "avg_moving_distance": 0.304647847690203,
+                    "avg_opponent_moving_distance": 0.6015750283165258,
+                    "avg_round": 14.50943396226415,
+                    "avg_win_round": 10.615384615384615,
+                    "balance_shot_ratio": 0.32087227414330216,
+                    "defence_shot_ratio": 0.21806853582554517
+                }
+            ],
+            "instructions": [
+                "The overall style shift shows a combination of physical conservation through reduced movement and tactical aggression through increased attacking shots. This change in strategy likely aims to maximize scoring efficiency and exploit the opponent's defensive vulnerabilities.",
+                "The player's style shift is characterized by increased aggression and reduced physical exertion, likely due to either a strategic decision to focus on offense or an injury that necessitates conserving energy. This shift is evident in the higher ratio of attacking shots, lower distance traveled per shot, and slight movement towards the center of the court."
+            ]
+        },
+        {
+            "name": "Carolina MARIN",
+            "match_ids": [
+                35,
+                98
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.23333333333333334,
+                    "avg_landing_x": -0.008859741823511414,
+                    "avg_landing_y": 0.24663646553285748,
+                    "avg_location_x": 0.03019248323716756,
+                    "avg_location_y": 0.26200061236714794,
+                    "avg_lose_round": 16.2,
+                    "avg_moving_distance": 0.3434761587505706,
+                    "avg_opponent_moving_distance": 0.6152450599469662,
+                    "avg_round": 11.45945945945946,
+                    "avg_win_round": 8.0,
+                    "balance_shot_ratio": 0.3111111111111111,
+                    "defence_shot_ratio": 0.45555555555555555
+                },
+                {
+                    "attack_shot_ratio": 0.2532467532467532,
+                    "avg_landing_x": -0.050875806735071104,
+                    "avg_landing_y": 0.2398359856016128,
+                    "avg_location_x": 0.05476461178303733,
+                    "avg_location_y": 0.24025750190426823,
+                    "avg_lose_round": 7.9375,
+                    "avg_moving_distance": 0.30096342120038494,
+                    "avg_opponent_moving_distance": 0.6042357579594545,
+                    "avg_round": 10.253731343283581,
+                    "avg_win_round": 12.166666666666666,
+                    "balance_shot_ratio": 0.2792207792207792,
+                    "defence_shot_ratio": 0.4675324675324675
+                }
+            ],
+            "instructions": [
+                "The player's style shift is characterized by a more active and risk-taking physical play, a strategic shift towards defense, and a positional adjustment to control the game from a deeper court position. These changes likely aim to either adapt to an opponent's strengths or to manage energy levels effectively.",
+                "The player's style shift involves a transition from an aggressive attacking game to a more balanced and defensive approach, coupled with a slight movement back on the court. This change likely aims to improve stamina conservation or adapt to specific match conditions, such as facing a strong attacking opponent."
+            ]
+        },
+        {
+            "name": "Jonatan CHRISTIE",
+            "match_ids": [
+                9,
+                11,
+                83
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.34285714285714286,
+                    "avg_landing_x": 0.028288023933773436,
+                    "avg_landing_y": 0.37959872692479973,
+                    "avg_location_x": -0.04215057916680873,
+                    "avg_location_y": 0.18602802464421297,
+                    "avg_lose_round": 6.153846153846154,
+                    "avg_moving_distance": 0.29352345885667513,
+                    "avg_opponent_moving_distance": 0.6497879095100987,
+                    "avg_round": 8.0,
+                    "avg_win_round": 6.571428571428571,
+                    "balance_shot_ratio": 0.35714285714285715,
+                    "defence_shot_ratio": 0.3
+                },
+                {
+                    "attack_shot_ratio": 0.3004484304932735,
+                    "avg_landing_x": -0.14335678704009408,
+                    "avg_landing_y": 0.4106356982798828,
+                    "avg_location_x": 0.017713708054829826,
+                    "avg_location_y": 0.2781587588152043,
+                    "avg_lose_round": 11.0,
+                    "avg_moving_distance": 0.29044942168471516,
+                    "avg_opponent_moving_distance": 0.5684118893248066,
+                    "avg_round": 12.0,
+                    "avg_win_round": 13.375,
+                    "balance_shot_ratio": 0.4618834080717489,
+                    "defence_shot_ratio": 0.23766816143497757
+                },
+                {
+                    "attack_shot_ratio": 0.3122923588039867,
+                    "avg_landing_x": 0.040743260407556665,
+                    "avg_landing_y": 0.24387537207863716,
+                    "avg_location_x": -0.044418776899646864,
+                    "avg_location_y": 0.20620237185188905,
+                    "avg_lose_round": 10.458333333333334,
+                    "avg_moving_distance": 0.36535811786940636,
+                    "avg_opponent_moving_distance": 0.6344824546125197,
+                    "avg_round": 9.91891891891892,
+                    "avg_win_round": 8.222222222222221,
+                    "balance_shot_ratio": 0.2823920265780731,
+                    "defence_shot_ratio": 0.4053156146179402
+                }
+            ],
+            "instructions": [
+                "The overall style shift indicates a more cautious and balanced approach, likely due to physical limitations or strategic adjustments. The player is conserving energy and reducing risk by limiting aggressive shots and moving closer to the center of the court.",
+                "The player's style shift is characterized by a reduction in physical exertion, a move towards more defensive tactics, and a slight adjustment in court positioning. These changes likely stem from either injury management or strategic adaptation to improve overall game control and reduce risk.",
+                "The player's style shift is characterized by a more balanced and defensive approach, coupled with increased physical exertion per shot. This suggests a tactical adaptation possibly aimed at conserving energy or countering specific opponent strategies, while maintaining a higher level of physical engagement in the game."
+            ]
+        },
+        {
+            "name": "Kento MOMOTA",
+            "match_ids": [
+                64
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.32882882882882886,
+                    "avg_landing_x": 0.011552155733425728,
+                    "avg_landing_y": 0.40257325714777104,
+                    "avg_location_x": 0.029280985224747542,
+                    "avg_location_y": 0.25684439218235683,
+                    "avg_lose_round": 7.125,
+                    "avg_moving_distance": 0.3300831626453719,
+                    "avg_opponent_moving_distance": 0.6251308732183491,
+                    "avg_round": 12.365853658536585,
+                    "avg_win_round": 12.8,
+                    "balance_shot_ratio": 0.3738738738738739,
+                    "defence_shot_ratio": 0.2972972972972973
+                }
+            ],
+            "instructions": [
+                "The player's style shift is characterized by a more conservative and controlled approach, evidenced by reduced physical exertion, a shift in tactical strategy towards balance shots, and a change in spatial positioning towards the center of the court. These changes likely stem from an effort to conserve energy or adapt to specific match conditions."
+            ]
+        },
+        {
+            "name": "LEE Zii Jia",
+            "match_ids": [
+                53,
+                58
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.3206997084548105,
+                    "avg_landing_x": 0.06630057905612478,
+                    "avg_landing_y": 0.26594436133588034,
+                    "avg_location_x": -0.035230141055482375,
+                    "avg_location_y": 0.21712233201177253,
+                    "avg_lose_round": 13.571428571428571,
+                    "avg_moving_distance": 0.35359161636415665,
+                    "avg_opponent_moving_distance": 0.6608530810563054,
+                    "avg_round": 12.758064516129032,
+                    "avg_win_round": 10.666666666666666,
+                    "balance_shot_ratio": 0.36151603498542273,
+                    "defence_shot_ratio": 0.3177842565597668
+                },
+                {
+                    "attack_shot_ratio": 0.25339366515837103,
+                    "avg_landing_x": -0.00908712885326809,
+                    "avg_landing_y": 0.3229942092334781,
+                    "avg_location_x": -0.09549008032150832,
+                    "avg_location_y": 0.2847218282240734,
+                    "avg_lose_round": 11.454545454545455,
+                    "avg_moving_distance": 0.3325678409237892,
+                    "avg_opponent_moving_distance": 0.636227748651297,
+                    "avg_round": 12.878048780487806,
+                    "avg_win_round": 13.2,
+                    "balance_shot_ratio": 0.3393665158371041,
+                    "defence_shot_ratio": 0.4072398190045249
+                }
+            ],
+            "instructions": [
+                "The player's style shift is characterized by increased aggression and activity, likely driven by a desire to maintain pressure on the opponent or adapt to specific match conditions. This shift involves a more proactive approach to rallies, with a reduced emphasis on balance and defense, suggesting a strategic decision to exploit the opponent's weaknesses or manage energy levels more effectively.",
+                "The overall style shift indicates a transition towards a more defensive and physically demanding playing style, likely aimed at conserving energy or adapting to specific match conditions. This involves increasing the number of shots per rally, moving back on the court, and placing shots deeper into the opponent's court."
+            ]
+        },
+        {
+            "name": "NG Ka Long Angus",
+            "match_ids": [
+                28
+            ],
+            "match_profiles": [
+                {
+                    "attack_shot_ratio": 0.3915343915343915,
+                    "avg_landing_x": -0.021091357609120332,
+                    "avg_landing_y": 0.4129584827146566,
+                    "avg_location_x": 0.004999923547902353,
+                    "avg_location_y": 0.18642379783854604,
+                    "avg_lose_round": 12.5,
+                    "avg_moving_distance": 0.29459649888274775,
+                    "avg_opponent_moving_distance": 0.5969941558748691,
+                    "avg_round": 13.451612903225806,
+                    "avg_win_round": 16.0,
+                    "balance_shot_ratio": 0.47619047619047616,
+                    "defence_shot_ratio": 0.13227513227513227
+                }
+            ],
+            "instructions": [
+                "The player's style shift is characterized by a more aggressive approach with increased attacking shots and a focus on controlling the center of the court. These changes suggest a tactical adjustment possibly driven by a desire to exploit the opponent's weaknesses or to adapt to a specific match scenario, while also conserving physical energy through reduced movement."
+            ]
+        },
+        {
+            "name": "Viktor AXELSEN",
+            "match_ids": [],
+            "match_profiles": [],
+            "instructions": []
+        }
+    ]
+}

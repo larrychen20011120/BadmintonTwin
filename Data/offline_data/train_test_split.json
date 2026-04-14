@@ -1,0 +1,319 @@
+{
+  "train": {
+    "Aakarshi KASHYAP": [
+      85
+    ],
+    "Busanan ONGBAMRUNGPHAN": [
+      22,
+      81,
+      85
+    ],
+    "CHEN Long": [
+      2,
+      4,
+      19
+    ],
+    "Chico Aura DWI WARDOYO": [
+      69,
+      70
+    ],
+    "Evgeniya KOSETSKAYA": [
+      40
+    ],
+    "Gregoria Mariska TUNJUNG": [
+      72
+    ],
+    "HE Bingjiao": [
+      61,
+      62,
+      91,
+      93
+    ],
+    "Hans-Kristian Solberg VITTINGHUS": [
+      32,
+      36,
+      37
+    ],
+    "KIDAMBI Srikanth": [
+      41,
+      48,
+      83
+    ],
+    "Kenta NISHIMOTO": [
+      78
+    ],
+    "Kodai NARAOKA": [
+      87,
+      95,
+      96
+    ],
+    "Kunlavut VITIDSARN": [
+      64,
+      74,
+      76
+    ],
+    "LEE Cheuk Yiu": [
+      23,
+      32,
+      100
+    ],
+    "LI Shi Feng": [
+      86,
+      87
+    ],
+    "LIEW Daren": [
+      33,
+      89
+    ],
+    "LOH Kean Yew": [
+      52,
+      90
+    ],
+    "LU Guang Zu": [
+      69
+    ],
+    "Lakshya SEN": [
+      52,
+      55,
+      82
+    ],
+    "Mia BLICHFELDT": [
+      22
+    ],
+    "Michelle LI": [
+      40
+    ],
+    "Neslihan YIGIT": [
+      31
+    ],
+    "PRANNOY H. S.": [
+      73
+    ],
+    "PUSARLA V. Sindhu": [
+      34,
+      49,
+      56,
+      84,
+      101
+    ],
+    "Pornpawee CHOCHUWONG": [
+      29,
+      43,
+      49,
+      50,
+      97
+    ],
+    "Rasmus GEMKE": [
+      24,
+      100,
+      102
+    ],
+    "Ratchanok INTANON": [
+      34,
+      67,
+      68,
+      92
+    ],
+    "SHI Yuqi": [
+      18,
+      88,
+      96
+    ],
+    "Sameer VERMA": [
+      30
+    ],
+    "Supanida KATETHONG": [
+      25,
+      81,
+      84
+    ],
+    "WANG Zhi Yi": [
+      62,
+      68
+    ],
+    "ZHAO Jun Peng": [
+      73,
+      74,
+      99
+    ],
+    "Akane YAMAGUCHI": [
+      54,
+      59,
+      75,
+      77,
+      80
+    ],
+    "An Se Young": [
+      21,
+      29,
+      35,
+      54,
+      56,
+      59,
+      72,
+      75,
+      79,
+      97
+    ],
+    "Anders ANTONSEN": [
+      14,
+      15,
+      30,
+      36,
+      44,
+      51,
+      78
+    ],
+    "Anthony Sinisuka GINTING": [
+      24,
+      27,
+      39,
+      47,
+      102
+    ],
+    "CHEN Yufei": [
+      57,
+      71,
+      77,
+      80,
+      91,
+      92,
+      101
+    ],
+    "CHOU Tien Chen": [
+      2,
+      3,
+      4,
+      6,
+      8,
+      9,
+      10,
+      11
+    ],
+    "Carolina MARIN": [
+      25,
+      38,
+      43,
+      46,
+      50,
+      93
+    ],
+    "Jonatan CHRISTIE": [
+      17,
+      26,
+      65
+    ],
+    "Kento MOMOTA": [
+      1,
+      3,
+      5,
+      7,
+      13,
+      58,
+      66
+    ],
+    "LEE Zii Jia": [
+      39,
+      47,
+      63,
+      82,
+      86,
+      88,
+      90
+    ],
+    "NG Ka Long Angus": [
+      10,
+      12,
+      17,
+      23,
+      41,
+      45,
+      48,
+      70
+    ],
+    "Viktor AXELSEN": [
+      13,
+      16,
+      18,
+      19,
+      20,
+      26,
+      27,
+      28,
+      33,
+      37,
+      44,
+      51,
+      55,
+      60,
+      65,
+      66,
+      76,
+      94,
+      95,
+      99
+    ]
+  },
+  "test": {
+    "HE Bingjiao": [
+      57
+    ],
+    "Kunlavut VITIDSARN": [
+      53
+    ],
+    "LEE Cheuk Yiu": [
+      45
+    ],
+    "PUSARLA V. Sindhu": [
+      42
+    ],
+    "Pornpawee CHOCHUWONG": [
+      42
+    ],
+    "Rasmus GEMKE": [
+      94
+    ],
+    "Ratchanok INTANON": [
+      21
+    ],
+    "SHI Yuqi": [
+      12
+    ],
+    "Akane YAMAGUCHI": [
+      79
+    ],
+    "An Se Young": [
+      71
+    ],
+    "Anders ANTONSEN": [
+      8
+    ],
+    "Anthony Sinisuka GINTING": [
+      15
+    ],
+    "CHEN Yufei": [
+      67
+    ],
+    "CHOU Tien Chen": [
+      5
+    ],
+    "Carolina MARIN": [
+      31
+    ],
+    "Jonatan CHRISTIE": [
+      14
+    ],
+    "Kento MOMOTA": [
+      6
+    ],
+    "LEE Zii Jia": [
+      89
+    ],
+    "NG Ka Long Angus": [
+      20
+    ],
+    "Viktor AXELSEN": [
+      63
+    ]
+  }
+}

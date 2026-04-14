@@ -12,3 +12,7 @@ player/
 *.trc
 *.pkl
 *.png
+Preprocessing/rally_intent.py
+Prompts/Preprocessing/rally_intent_system.md
+Prompts/Preprocessing/rally_intent_user.jinja
+Schemas/Preprocessing/rally_intent_schema.json
