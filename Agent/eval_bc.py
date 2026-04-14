@@ -10,6 +10,30 @@ import pandas as pd
 from dtaidistance import dtw_ndim
 from tqdm import tqdm
 
+
+def edit_distance(seq1, seq2):
+    """
+    Calculate edit distance (Levenshtein distance) between two sequences.
+    """
+    m, n = len(seq1), len(seq2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+    
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if seq1[i-1] == seq2[j-1]:
+                dp[i][j] = dp[i-1][j-1]
+            else:
+                dp[i][j] = 1 + min(dp[i-1][j],    # deletion
+                                  dp[i][j-1],    # insertion
+                                  dp[i-1][j-1])  # substitution
+    
+    return dp[m][n] / max(m, n)
+
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
 
@@ -120,6 +144,7 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
         rally_land_dtw_list = []
         rally_move_dtw_list = []
         rally_shot_ctc_list = []  # CTC loss per rally
+        rally_edit_dist_list = []  # Edit distance per rally
         total_rallies = 0
         total_shots = 0
         
@@ -158,6 +183,7 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 rally_move_gt_seq = []
                 rally_shot_logits_seq = []
                 rally_shot_gt_seq = []
+                rally_shot_pred_seq = []  # Predicted shot types
                 
                 # Get first row to determine starting player
                 first_row = rally_df.iloc[0]
@@ -208,6 +234,7 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                         rally_move_gt_seq.append(gt_action[3:5].numpy())  # moving_x, moving_y
                         rally_shot_logits_seq.append(bc_shot_logit.squeeze(0).cpu())
                         rally_shot_gt_seq.append(int(gt_action[2].item()))  # player_type
+                        rally_shot_pred_seq.append(int(bc_shot_type.item()))  # predicted shot type
                     
                     # Build action for transition [landing_x, landing_y, shot_type, move_x, move_y]
                     action_tensor = torch.tensor([
@@ -256,6 +283,18 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     rally_ctc = ctc_loss_fn(log_probs, rally_shot_targets_tensor, input_length, target_length)
                     rally_shot_ctc_list.append(rally_ctc.item())
                     
+                    # Calculate edit distance for this rally
+                    rally_edit_dist = edit_distance(rally_shot_pred_seq, rally_shot_gt_seq)
+                    rally_edit_dist_list.append(rally_edit_dist)
+
+                    print(land_pred_array)
+                    print(land_gt_array)
+                    print(move_pred_array)
+                    print(move_gt_array)
+                    print(rally_shot_pred_seq)
+                    print(rally_shot_gt_seq)
+                    exit()
+                    
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
         
@@ -268,10 +307,14 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
             # Average CTC loss across all rallies
             avg_shot_ctc = np.mean(rally_shot_ctc_list)
             
+            # Average edit distance across all rallies
+            avg_edit_dist = np.mean(rally_edit_dist_list)
+            
             results[target_player_name] = {
                 'land_dtw': float(avg_land_dtw),
                 'move_dtw': float(avg_move_dtw),
                 'shot_ctc': float(avg_shot_ctc),
+                'edit_dist': float(avg_edit_dist),
                 'num_rallies': total_rallies,
                 'num_shots': total_shots
             }
@@ -280,6 +323,7 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 'land_dtw': float('inf'),
                 'move_dtw': float('inf'),
                 'shot_ctc': float('inf'),
+                'edit_dist': float('inf'),
                 'num_rallies': 0,
                 'num_shots': 0
             }
@@ -289,29 +333,31 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
 
 def print_results(results):
     """Print evaluation results"""
-    print("\n" + "="*90)
+    print("\n" + "="*105)
     print("BC Evaluation Results on Test Set (Per-Rally Basis)")
-    print("="*90)
-    print(f"{'Player Name':<30} {'Land DTW':<12} {'Move DTW':<12} {'Shot CTC':<12} {'Rallies':<10} {'Shots':<10}")
-    print("-"*90)
+    print("="*105)
+    print(f"{'Player Name':<30} {'Land DTW':<12} {'Move DTW':<12} {'Shot CTC':<12} {'Edit Dist':<12} {'Rallies':<8} {'Shots':<8}")
+    print("-"*105)
     
     total_land_dtw = []
     total_move_dtw = []
     total_shot_ctc = []
+    total_edit_dist = []
     total_rallies = []
     total_shots = []
     
     for player_name, scores in sorted(results.items()):
         if scores['num_rallies'] > 0:
             print(f"{player_name:<30} {scores['land_dtw']:<12.4f} {scores['move_dtw']:<12.4f} "
-                  f"{scores['shot_ctc']:<12.4f} {scores['num_rallies']:<10} {scores['num_shots']:<10}")
+                  f"{scores['shot_ctc']:<12.4f} {scores['edit_dist']:<12.4f} {scores['num_rallies']:<8} {scores['num_shots']:<8}")
             total_land_dtw.append(scores['land_dtw'])
             total_move_dtw.append(scores['move_dtw'])
             total_shot_ctc.append(scores['shot_ctc'])
+            total_edit_dist.append(scores['edit_dist'])
             total_rallies.append(scores['num_rallies'])
             total_shots.append(scores['num_shots'])
     
-    print("-"*90)
+    print("-"*105)
     if total_land_dtw:
         # Weighted average by number of rallies
         total_rallies_sum = sum(total_rallies)
@@ -319,11 +365,12 @@ def print_results(results):
         w_land = sum([s * n for s, n in zip(total_land_dtw, total_rallies)]) / total_rallies_sum
         w_move = sum([s * n for s, n in zip(total_move_dtw, total_rallies)]) / total_rallies_sum
         w_ctc = sum([s * n for s, n in zip(total_shot_ctc, total_rallies)]) / total_rallies_sum
-        print(f"{'Weighted Average (by rallies)':<30} {w_land:<12.4f} {w_move:<12.4f} {w_ctc:<12.4f} "
-              f"{total_rallies_sum:<10} {total_shots_sum:<10}")
+        w_edit = sum([s * n for s, n in zip(total_edit_dist, total_rallies)]) / total_rallies_sum
+        print(f"{'Weighted Average (by rallies)':<30} {w_land:<12.4f} {w_move:<12.4f} {w_ctc:<12.4f} {w_edit:<12.4f} "
+              f"{total_rallies_sum:<8} {total_shots_sum:<8}")
         print(f"{'Simple Average':<30} {np.mean(total_land_dtw):<12.4f} {np.mean(total_move_dtw):<12.4f} "
-              f"{np.mean(total_shot_ctc):<12.4f}")
-    print("="*90)
+              f"{np.mean(total_shot_ctc):<12.4f} {np.mean(total_edit_dist):<12.4f}")
+    print("="*105)
 
 
 if __name__ == "__main__":
