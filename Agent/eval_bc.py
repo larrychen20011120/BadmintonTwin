@@ -101,7 +101,7 @@ def build_action_tensor_from_row(row):
 
 
 def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path, 
-                        model_path, device='cuda'):
+                        model_path, device='cuda', skip_first_n=0):
     """
     Evaluate BC model on test set using state_col/action_col approach.
     Both players use BC models to simulate rallies.
@@ -110,6 +110,9 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
     Evaluation is done on a per-rally basis:
     - For each rally, calculate land_dtw, move_dtw, and shot_ctc
     - Aggregate all rallies and compute average scores
+    
+    Args:
+        skip_first_n: Number of initial shots to skip in evaluation (e.g., 2 for serve and return)
     """
     
     with open(test_split_path, 'r') as f:
@@ -185,6 +188,9 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 rally_shot_gt_seq = []
                 rally_shot_pred_seq = []  # Predicted shot types
                 
+                # Track ball_round for the target player
+                target_player_shot_count = 0
+                
                 # Get first row to determine starting player
                 first_row = rally_df.iloc[0]
                 current_player_name = first_row['player']
@@ -224,17 +230,19 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     bc_shot_probs = torch.where(sum_probs > 0, masked_probs / sum_probs, mask.float() / mask.sum())
                     bc_shot_type = torch.argmax(bc_shot_probs, dim=-1)
                     
-                    # Record if this is target player
+                    # Record if this is target player and we are past the first N shots
                     if is_target_turn:
-                        rally_land_pred_seq.append(bc_land.squeeze(0).cpu().numpy())
-                        # Ground truth action using action_col
-                        gt_action = build_action_tensor_from_row(row)
-                        rally_land_gt_seq.append(gt_action[0:2].numpy())  # landing_x, landing_y
-                        rally_move_pred_seq.append(bc_move.squeeze(0).cpu().numpy())
-                        rally_move_gt_seq.append(gt_action[3:5].numpy())  # moving_x, moving_y
-                        rally_shot_logits_seq.append(bc_shot_logit.squeeze(0).cpu())
-                        rally_shot_gt_seq.append(int(gt_action[2].item()))  # player_type
-                        rally_shot_pred_seq.append(int(bc_shot_type.item()))  # predicted shot type
+                        target_player_shot_count += 1
+                        if target_player_shot_count >= skip_first_n:
+                            rally_land_pred_seq.append(bc_land.squeeze(0).cpu().numpy())
+                            # Ground truth action using action_col
+                            gt_action = build_action_tensor_from_row(row)
+                            rally_land_gt_seq.append(gt_action[0:2].numpy())  # landing_x, landing_y
+                            rally_move_pred_seq.append(bc_move.squeeze(0).cpu().numpy())
+                            rally_move_gt_seq.append(gt_action[3:5].numpy())  # moving_x, moving_y
+                            rally_shot_logits_seq.append(bc_shot_logit.squeeze(0).cpu())
+                            rally_shot_gt_seq.append(int(gt_action[2].item()))  # player_type
+                            rally_shot_pred_seq.append(int(bc_shot_type.item()))  # predicted shot type
                     
                     # Build action for transition [landing_x, landing_y, shot_type, move_x, move_y]
                     action_tensor = torch.tensor([
@@ -384,6 +392,8 @@ if __name__ == "__main__":
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--output', type=str, default='bc_eval_results.json',
                         help='Output JSON file for results')
+    parser.add_argument('--skip_first_n', type=int, default=0,
+                        help='Number of initial shots to skip in evaluation (e.g., 2 for serve and return)')
     
     args = parser.parse_args()
     
@@ -391,12 +401,16 @@ if __name__ == "__main__":
         args.device = 'cpu'
         print("CUDA not available, using CPU")
     
+    if args.skip_first_n > 0:
+        print(f"Skipping first {args.skip_first_n} shots in evaluation")
+    
     results = evaluate_bc_on_test(
         args.test_split,
         args.merged_csv,
         args.player_map,
         args.model_path,
-        args.device
+        args.device,
+        args.skip_first_n
     )
     
     print_results(results)
