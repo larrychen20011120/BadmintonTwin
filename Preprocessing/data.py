@@ -96,7 +96,6 @@ if __name__ == "__main__":
     shuttleset_path = os.path.join("Data", "input_data", "shuttleset.csv")
     shuttleset22_path = os.path.join("Data", "input_data", "shuttleset22.csv")
 
-    merged_target_path = os.path.join("Data", "input_data", "merged.csv")
-    match_target_path = os.path.join("Data", "input_data", "match_player.csv")
+    merged_target_path = os.path.join("Data", "intermediate_data", "merged.csv")
 
     shuttlesets_df = merge_shuttleset(shuttleset_path, shuttleset22_path, merged_target_path)

@@ -196,7 +196,7 @@ if __name__ == "__main__":
         data["shifted"].append(abnormal_item)
         
     # save the normal and style_shifted data
-    save_path = os.path.join("Data", "offline_data", "style_shift.json")
+    save_path = os.path.join("Data", "intermediate_data", "style_shift.json")
     with open(save_path, "w", encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
     print("JSON File Dumped!!")

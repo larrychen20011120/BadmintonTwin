@@ -29,12 +29,12 @@ def split_dataset(data, seed=42):
     }
 
 
-with open(os.path.join("Data", "offline_data", "style_shift.json"), "r", encoding="utf-8") as f:
+with open(os.path.join("Data", "intermediate_data", "style_shift.json"), "r", encoding="utf-8") as f:
     data = json.load(f)
 
 result = split_dataset(data, seed=42)
 
-with open(os.path.join("Data", "offline_data", "train_test_split.json"), "w", encoding="utf-8") as f:
+with open(os.path.join("Data", "intermediate_data", "train_test_split.json"), "w", encoding="utf-8") as f:
     json.dump(result, f, indent=2, ensure_ascii=False)
 
 print("Done")
