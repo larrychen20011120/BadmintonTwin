@@ -20,12 +20,6 @@ sys.path.append(project_path)
 from Agent.base_agent import BaseAgent
 from Utils.helper import *  
 
-def list_subtraction(p1,p2):
-    point1 = p1.copy()
-    point2 = p2.copy()
-    v = list(map(lambda x: x[0]-x[1], zip(point1, point2)))
-    return v[0], v[1]
-
 
 class BC(nn.Module):
     
