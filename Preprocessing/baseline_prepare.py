@@ -156,41 +156,171 @@ def prepare_naive_rag_data(df, split_content, player2index, output_dir):
     print(f"All databases saved to: {output_dir}")
 
 
-def prepared_rallynet_data(all_data, split_content):
+def prepared_rallynet_data(df, split_content, player2index, output_dir):
     """
-    Prepare data for RallyNet (保留原有功能).
+    Prepare data for RallyNet.
     
     Note: This function is kept for compatibility but may need updates
     based on specific RallyNet requirements.
     """
-    all_player_trajectories_data = {}
     player_trajectories_data = []
+    match_ids_trajectories = []
     player_trajectory_data = []
     player_state_action_pair = []
     player_state_list = []
     player_action_list = []
+    train_match_ids = split_content.get('train', {})
+    index2player = { v: k for k, v in player2index.items() }
+    player_match_ids_temp = []
 
-    for index, row in all_data.iterrows():
+    for index, row in df.iterrows():
         current_state = [row[col] for col in state_col]
         current_action = [row[col] for col in action_col]
         
         player_state_action_pair = current_state + current_action
         player_trajectory_data.append(player_state_action_pair)
+        player_match_ids_temp.append(row["match_id"])
 
         nan_flag = np.isnan(row['server'])
         if row['server'] == 3 or nan_flag:
             player_trajectories_data.append(player_trajectory_data.copy())
-            player_trajectory_data = []  # 清空以供下一個軌跡使用
+            match_ids_trajectories.append(player_match_ids_temp.copy())
+            player_trajectory_data, player_match_ids_temp = [], []  # 清空以供下一個軌跡使用
 
-    # Note: target_players is not defined in the original code
-    # This may need to be fixed based on actual requirements
-    print("Warning: prepared_rallynet_data() may need updates for target_players")
+    player_masks_data = []
+
+    for rally_idx, rally in enumerate(player_trajectories_data):
+
+        rally_mask = []
+        current_rally_match_ids = match_ids_trajectories[rally_idx]
+
+        for ball_idx, ball in enumerate(rally):
+            
+            player_id = int(ball[17])
+            player_name = index2player[player_id]
+            match_id = int(current_rally_match_ids[ball_idx])
+
+            player_train_matches = train_match_ids.get(player_name, [])
+            if match_id in player_train_matches:
+                rally_mask.append([1] * len(ball))
+            else:
+                rally_mask.append([0] * len(ball))
+
+        player_masks_data.append(rally_mask)
+
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save as pickle
+    traj_path = os.path.join(output_dir, "train_total_traj.pkl")
+    mask_path = os.path.join(output_dir, "train_total_mask.pkl")
+    
+    with open(traj_path, 'wb') as f:
+        pickle.dump(player_trajectories_data, f)
+    with open(mask_path, 'wb') as f:
+        pickle.dump(player_masks_data, f)
+
+    print(f"RallyNetv2 data saved to {output_dir}")
+    print(f"  - train_total_traj.pkl: {len(player_trajectories_data)} samples")
+    print(f"  - train_total_mask.pkl: {len(player_masks_data)} samples")
+
+    ##########################################
+
+    player_rallies = []
+    opponent_rallies = []
+    player_masks = []
+    opponent_masks = []
+
+    terminate_ball = [0]*23
+    p_score = 0
+    o_score = 0 
+
+    for rally_idx, rally in enumerate(player_trajectories_data):
+        rally_mask = player_masks_data[rally_idx]
+
+        player_rally = []
+        opponent_rally = []
+        player_rally_mask = []
+        opponent_rally_mask = []
+
+        if len(rally) >= 2:
+            player_num = rally[0][17]
+            opponent_num = rally[1][17]
+        else:
+            player_num = rally[0][17]
+            opponent_num = -1
+            opponent_rally.append(terminate_ball.copy())
+            opponent_rally_mask.append([0]*23)
+
+        for ball_idx, ball in enumerate(rally):
+            mask_value = rally_mask[ball_idx]
+            if ball[17] == player_num:
+                if np.isnan(ball[2]):
+                    ball[2] = p_score
+                    ball[3] = o_score
+                    ball[4] = p_score - o_score
+                else:
+                    p_score = ball[2]
+                    o_score = ball[3]
+
+                player_rally.append(ball[:23].copy())
+                player_rally_mask.append(mask_value.copy())
+            elif ball[17] == opponent_num:
+                if np.isnan(ball[2]):
+                    ball[2] = o_score
+                    ball[3] = p_score
+                    ball[4] = o_score - p_score
+                else:
+                    p_score = ball[2]
+                    o_score = ball[3]
+                    ball[2] = o_score
+                    ball[3] = p_score
+                    ball[4] = o_score - p_score
+
+                opponent_rally.append(ball[:23].copy())
+                opponent_rally_mask.append(mask_value.copy())
+
+        if len(player_rally) != 0:
+            player_rallies.append(player_rally)
+            player_masks.append(player_rally_mask)
+        else:
+            print("fatal error player")
+
+        if len(opponent_rally) != 0:
+            opponent_rallies.append(opponent_rally)
+            opponent_masks.append(opponent_rally_mask)
+        else:
+            print("fatal error opponent")
+            print(rally)
+    
+    # Save as pickle
+    player_traj_path = os.path.join(output_dir, "train_player_traj.pkl")
+    player_mask_path = os.path.join(output_dir, "train_player_mask.pkl")
+    opponent_traj_path = os.path.join(output_dir, "train_opponent_traj.pkl")
+    opponent_mask_path = os.path.join(output_dir, "train_opponent_mask.pkl")
+    
+    with open(player_traj_path, 'wb') as f:
+        pickle.dump(player_rallies, f)
+    with open(player_mask_path, 'wb') as f:
+        pickle.dump(player_masks, f)
+    with open(opponent_traj_path, 'wb') as f:
+        pickle.dump(opponent_rallies, f)
+    with open(opponent_mask_path, 'wb') as f:
+        pickle.dump(opponent_masks, f)
+
+    print(f"  - train_player_traj.pkl: {len(player_rallies)} samples")
+    print(f"  - train_player_mask.pkl: {len(player_masks)} samples")
+    print(f"  - train_opponent_traj.pkl: {len(opponent_rallies)} samples")
+    print(f"  - train_opponent_mask.pkl: {len(opponent_masks)} samples")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Baseline data preparation')
     parser.add_argument('--bc', action='store_true', 
                         help='Prepare BC data')
+    parser.add_argument('--rallynetv2', action='store_true', 
+                        help='Prepare RallyNetv2 data')
     parser.add_argument('--naive-rag', action='store_true', 
                         help='Prepare NaiveRAG databases')
     parser.add_argument('--all', action='store_true', 
@@ -205,16 +335,19 @@ if __name__ == "__main__":
                         default='Data/intermediate_data/player_index_map.json',
                         help='Path to player index mapping')
     parser.add_argument('--bc_output', type=str,
-                        default='Experiments/bc/data',
+                        default='Experiments/bc/data/norm',
                         help='Output directory for BC data')
     parser.add_argument('--naive_rag_output', type=str,
-                        default='Experiments/naive_rag/data',
+                        default='Experiments/naive_rag/data/norm',
                         help='Output directory for NaiveRAG databases')
+    parser.add_argument('--rallynetv2_output', type=str,
+                        default='Experiments/rallynetv2/data/norm',
+                        help='Output directory for RallyNetv2 data')
     
     args = parser.parse_args()
     
     # If no specific flag is set, default to --all
-    if not (args.bc or args.naive_rag or args.all):
+    if not (args.bc or args.naive_rag or args.rallynetv2 or args.all):
         args.all = True
     
     print("="*60)
@@ -233,7 +366,7 @@ if __name__ == "__main__":
     # Filter valid columns and remove NaN
     # For BC, we need state_col + action_col + match_id + player
     # For NaiveRAG, we need the same columns but player must be names (not IDs)
-    base_cols = state_col + action_col + ['match_id']
+    base_cols = state_col + action_col + ['match_id', 'server']
     available_base_cols = [c for c in base_cols if c in df.columns]
     df = df[available_base_cols].dropna(subset=state_col + action_col).reset_index(drop=True)
     
@@ -258,6 +391,16 @@ if __name__ == "__main__":
         print("-"*60)
         # For NaiveRAG, we keep player names
         prepare_naive_rag_data(df, split_content, player2index, args.naive_rag_output)
+        print()
+
+    if args.all or args.rallynetv2:
+        print("-"*60)
+        print("Preparing RallyNetv2 data...")
+        print("-"*60)
+        df_rallynetv2 = df.copy()
+        df_rallynetv2['player'] = df_rallynetv2['player'].map(player2index)
+        # For NaiveRAG, we keep player names
+        prepared_rallynet_data(df_rallynetv2, split_content, player2index, args.rallynetv2_output)
         print()
     
     print("="*60)
