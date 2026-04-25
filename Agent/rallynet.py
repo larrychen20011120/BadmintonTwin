@@ -1,777 +1,611 @@
-
-import numpy as np
+import logging
 import torch
-import torch.nn as nn
+import tqdm
+from torch import nn
+from torch import optim
+from torch.distributions import Categorical, Normal
+import torchsde
 import torch.nn.functional as F
-import torch.distributions as D
-import pickle
-
-from pickle import TRUE
-from policy.preprocess.tool import *
-from policy.preprocess.helper import *
-from policy.transformer.encoder import Encoder
-from copy import copy, deepcopy
-from torch.nn.utils.rnn import pad_sequence
 from dtaidistance import dtw_ndim
-from torchsde.settings import LEVY_AREA_APPROXIMATIONS, METHODS, NOISE_TYPES, SDE_TYPES
-from torchsde._brownian import BaseBrownian, BrownianInterval
-from torchsde._core import misc
+from tqdm import tqdm, trange
+from tqdm import trange
+import gc
 
-np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
+import pickle
+import os
+import sys
+import json
 
-class Vae_Encoder(nn.Module):
-    def __init__(self, number_of_features, hidden_size, hidden_layer_depth, latent_length, dropout, block = 'LSTM'):
+project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.append(project_path)
 
-        super(Vae_Encoder, self).__init__()
+from Utils.helper import *
 
-        self.number_of_features = number_of_features
-        self.hidden_size = hidden_size
-        self.hidden_layer_depth = hidden_layer_depth
-        self.latent_length = latent_length
 
-        if block == 'LSTM':
-            self.model = nn.LSTM(self.number_of_features, self.hidden_size, self.hidden_layer_depth, dropout = dropout, batch_first=True)
-        elif block == 'GRU':
-            self.model = nn.GRU(self.number_of_features, self.hidden_size, self.hidden_layer_depth, dropout = dropout, batch_first=True)
-        else:
-            raise NotImplementedError
+os.environ['CUDA_LAUNCH_BLOCKING']='1'
+
+SEQ_LEN = 71
+
+with open("Data/intermediate_data/player_index_map.json", 'r') as f:
+    player2index = json.load(f)
+
+
+class LinearScheduler(object):
+    def __init__(self, iters, maxval=1.0):
+        self._iters = max(1, iters)
+        self._val = maxval / self._iters
+        self._maxval = maxval
+
+    def step(self):
+        self._val = min(self._maxval, self._val + self._maxval / self._iters)
+
+    @property
+    def val(self):
+        return self._val
+
+class MatchStateEncoder(nn.Module):
+    """MLP encoder for match state (rally, ball_round, player_score, opponent_score, score_status)."""
+    def __init__(self, input_size=5, hidden_size=32, output_size=16):
+        super(MatchStateEncoder, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size),
+            nn.ReLU()
+        )
+        self.max_values =  torch.tensor([42, 71, 21, 21, 21], dtype=torch.float32)
+    
+    def forward(self, match_state):
+        # match_state: [seq_len, batch_size, 5]
+        match_state = match_state / self.max_values.to(match_state.device)  # Normalize each feature by its max value
+        return self.mlp(match_state)
+
+class Encoder(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(Encoder, self).__init__()
+        self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size)
+        self.lin = nn.Linear(hidden_size, output_size)
+
+    def forward(self, inp):
+        out, _ = self.gru(inp)
+        out = self.lin(out)
+        return out
+
+class MLP(nn.Module):
+    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len):
+        super(MLP, self).__init__()
+        self.fc = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.predict_land_area = nn.Linear(hidden_size, 2, bias=False)
+        self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
+        self.predict_move_area = nn.Linear(hidden_size, 2, bias=False)
 
     def forward(self, x):
-        _, (h_end, c_end) = self.model(x)
-        h_end = h_end[-1, :, :]
-        return h_end
+        x = x.float()
+        out = self.fc(x)                 # Shape: [batch_size, hidden_size]
+        out = self.relu(out)
+        land_logit = self.predict_land_area(out)    # Shape: [batch_size, 2]
+        move_logit = self.predict_move_area(out)    # Shape: [batch_size, 2]
+        shot_logit = self.predict_shot_type(out)    # Shape: [batch_size, shot_type_len]
+        return land_logit, shot_logit, move_logit
 
+class LatentSDE(nn.Module):
+    sde_type = "ito"
+    noise_type = "diagonal"
 
-class Vae_Lambda(nn.Module):
-    def __init__(self, hidden_size, latent_length):
-        super(Vae_Lambda, self).__init__()
+    def __init__(self, data_size, latent_size, context_size, hidden_size, player_ids_len, shot_type_len, match_state_dim=5, condition_size=16):
+        super(LatentSDE, self).__init__()
+        self.action_dim = 5
+        self.match_state_dim = match_state_dim
+        self.condition_size = condition_size
+        self.state_dim = data_size - self.action_dim
+        self.remaining_state_dim = self.state_dim - self.match_state_dim  # State without match_state
+        self.log_softmax = nn.LogSoftmax(dim=-1)
 
-        self.hidden_size = hidden_size
-        self.latent_length = latent_length
+        self.shot_type_len = shot_type_len
+        self.player_ids_len = player_ids_len
 
-        self.hidden_to_mean = nn.Linear(self.hidden_size, self.latent_length)
-        self.hidden_to_logvar = nn.Linear(self.hidden_size, self.latent_length)
+        self.shot_embedding = nn.Embedding(shot_type_len, 8)
+        self.player_embedding = nn.Embedding(player_ids_len, 8)
 
-        nn.init.xavier_uniform_(self.hidden_to_mean.weight)
-        nn.init.xavier_uniform_(self.hidden_to_logvar.weight)
+        # ================= #
+        self.action_model = MLP(latent_size + condition_size, 128, player_ids_len, shot_type_len).cuda(0)
+        class_weights = compute_shot_type_weights(method='sqrt_inverse').cuda(0)
+        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=0)
+        self.mse = nn.MSELoss()
+        # ================= #
 
-    def forward(self, cell_output):
-        self.latent_mean = self.hidden_to_mean(cell_output)
-        self.latent_logvar = self.hidden_to_logvar(cell_output)
+        # Match State Encoder (condition encoder).
+        self.match_state_encoder = MatchStateEncoder(input_size=match_state_dim, hidden_size=32, output_size=condition_size).cuda(0)
 
-        if self.training:
-            std = torch.exp(0.5 * self.latent_logvar)
-            eps = torch.randn_like(std)
-            return eps.mul(std).add_(self.latent_mean)
-        else:
-            return self.latent_mean
-
-class RallyNet(nn.Module):
-    def __init__(self, config):
-        super(RallyNet, self).__init__()
-        self.states_dim = config['states_dim']
-        self.max_seq_len = config['max_ball_round']
-        self.actions_dim = config['actions_dim']
-        self.context_dim = config['context_dim']
-        self.shot_num = config['shot_num']
-        self.log_softmax = nn.LogSoftmax(dim = -1)
-        self.softmax = nn.Softmax(dim = -1)
-        self.step_size = 1
-        self._ctx = None
-
-        self.encoder = Encoder(config['states_dim']-2, self.max_seq_len, 1, 1, config['dropout'])
-        self.label_emb = nn.Embedding(config['player_num'], config['player_dim'])
-        self.shot_emb = nn.Embedding(config['shot_num'], config['shot_dim'])
-
-        self.state_embed_dim = config['states_dim']-2 + config['shot_dim'] + config['player_dim'] + config['context_dim']
-        self.hidden_dim = config['hidden_dim']        
-        self.alpha = config['reg_weight']
-        self.gmm_num = config["GMM_num"]
-        self.gmm_thres = config["GMM_thres"]
+        # Encoder (encodes remaining_state + condition).
+        self.encoder = Encoder(input_size=self.remaining_state_dim + condition_size, hidden_size=hidden_size, output_size=context_size)
+        self.qz0_net = nn.Linear(context_size, latent_size + latent_size)
         
-        self.state_ref_encoder = nn.Linear(self.state_embed_dim*self.max_seq_len, self.state_embed_dim, bias=False) # state + cxt
-
-        self.f_decoder = nn.Sequential(
-            nn.Linear(self.state_embed_dim, self.hidden_dim),
+        # Decoder (f_net: drift with condition).
+        self.f_net = nn.Sequential(
+            nn.Linear(latent_size + context_size + condition_size, hidden_size),
             nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.Linear(hidden_size, hidden_size),
             nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.state_embed_dim),
-        )
-
-        self.predict_shifting = nn.Sequential(
-            nn.Linear(self.state_embed_dim*self.max_seq_len, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.context_dim),
-        )
-
-        self.h_decoder = nn.Sequential(
-            nn.Linear(self.state_embed_dim, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.state_embed_dim),
+            nn.Linear(hidden_size, latent_size),
         )
         
+        # Prior drift (h_net: no condition, standard prior).
+        self.h_net = nn.Sequential(
+            nn.Linear(latent_size, hidden_size),
+            nn.Softplus(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Softplus(),
+            nn.Linear(hidden_size, latent_size),
+        )
+        
+        # This needs to be an element-wise function for the SDE to satisfy diagonal noise.
         self.g_nets = nn.ModuleList(
             [
                 nn.Sequential(
-                    nn.Linear(1, self.state_embed_dim), # hidden size
+                    nn.Linear(1, hidden_size),
                     nn.Softplus(),
-                    nn.Linear(self.state_embed_dim, 1), # hidden size
+                    nn.Linear(hidden_size, 1),
                     nn.Sigmoid()
                 )
-                for _ in range(self.state_embed_dim) # latent size
+                for _ in range(latent_size)
             ]
         )
-
-        self.predict_land_area = nn.Linear(self.state_embed_dim, self.gmm_num*5, bias=False) # "mux, muy, sx, sy, corr"
-        self.predict_shot_type = nn.Linear(self.state_embed_dim, self.shot_num, bias=False)
-        self.predict_move_area = nn.Linear(self.state_embed_dim, self.gmm_num*5,bias=False) # "mux, muy, sx, sy, corr"
-
-        self.context_decoder = nn.Sequential(
-            nn.Linear(self.context_dim, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Softplus(),
-            nn.Linear(self.hidden_dim, self.context_dim),
-        )
         
-        self.context_land_area = nn.Linear(self.context_dim, self.gmm_num*5, bias=False) # "mux, muy, sx, sy, corr"
-        self.context_shot_type = nn.Linear(self.context_dim, self.shot_num,bias=False)
-        self.context_move_area = nn.Linear(self.context_dim, self.gmm_num*5,bias=False) # "mux, muy, sx, sy, corr"
+        # Projector (latent -> remaining_state, conditioned on match_state).
+        self.projector = nn.Linear(latent_size + condition_size, self.remaining_state_dim)
+        self.pz0_mean = nn.Parameter(torch.zeros(1, latent_size))
+        self.pz0_logstd = nn.Parameter(torch.zeros(1, latent_size))
+        self._ctx = None
+        self._condition = None
+        self.log_var_pxs = nn.Parameter(torch.tensor(0.0))
+        self.log_var_kl = nn.Parameter(torch.tensor(0.0))
+        self.log_var_action = nn.Parameter(torch.tensor(0.0))
 
-        # parameters for vae
-        number_of_features = self.actions_dim
-        latent_length = self.context_dim
-        hidden_size = self.max_seq_len
-        hidden_layer_depth = 5
-        dropout_rate = 0.1
-        block = 'LSTM'
-        dtype = torch.FloatTensor
+    def SDE_embed_and_transform(self, tensor_data):
+        max_length, batch_size, _ = tensor_data.shape
+        # Split state and action
+        # State structure: [match_state(5), remaining_state(13), action(5)]
+        # remaining_state structure: [features(5-11, 7 dims), shot_type(12), features(13-16, 4 dims), player_id(17)]
+        match_state = tensor_data[:, :, :5]  # [rally, ball_round, player_score, opponent_score, score_status]
+        remaining_state = tensor_data[:, :, 5:18]  # remaining 13 dims
+        action = tensor_data[:, :, 18:]
+        
+        # Directly embed remaining_state without using dummy match_state
+        # remaining_state indices mapping:
+        # - indices 0-6: correspond to original indices 5-11 (7 dims of features)
+        # - index 7: correspond to original index 12 (shot_type, needs embedding)
+        # - indices 8-11: correspond to original indices 13-16 (4 dims of features)
+        # - index 12: correspond to original index 17 (player_id, needs embedding)
+        
+        shot_types = remaining_state[:, :, 7].long()  # shot_type at index 7
+        player_ids = remaining_state[:, :, 12].long()  # player_id at index 12
+        
+        shot_embeds = self.shot_embedding(shot_types)  # [seq_len, batch_size, 8]
+        player_embeds = self.player_embedding(player_ids)  # [seq_len, batch_size, 8]
+        
+        # Concatenate: [features(0-6, 7 dims), shot_embed(8), features(8-11, 4 dims), player_embed(8)]
+        remaining_state_embedded = torch.cat([
+            remaining_state[:, :, :7],    # original indices 5-11
+            shot_embeds,                   # shot embedding replaces index 12
+            remaining_state[:, :, 8:12],   # original indices 13-16
+            player_embeds                  # player embedding replaces index 17
+        ], dim=2)  # 7 + 8 + 4 + 8 = 27 dims
+        
+        # Concatenate the match_state, embedded remaining_state, and action
+        transformed_data = torch.cat((match_state, remaining_state_embedded, action), dim=2)
+        return transformed_data
 
-        self.subspace_encoder = Vae_Encoder(number_of_features = number_of_features,
-                               hidden_size=hidden_size,
-                               hidden_layer_depth=hidden_layer_depth,
-                               latent_length=latent_length,
-                               dropout=dropout_rate,
-                               block=block)
-
-        self.subspace_lmbd = Vae_Lambda(hidden_size=hidden_size,
-                           latent_length=latent_length)
-
-        self.init_params()
+    def contextualize(self, ctx, condition):
+        self._ctx = ctx  # A tuple of tensors of sizes (T,), (T, batch_size, d).
+        self._condition = condition  # [batch_size, condition_size]
     
-    
-    def init_params(self):
-        init_list = []
-        pi = 0
-        for name, param in self.named_parameters():
-            pi += 1
-            if ("g_nets" in name) or ("f_decoder" in name) or ("h_decoder" in name):
-                init_list.append(pi)
-            if ("predict_land_area" in name) or ("predict_shot_type" in name) or ("predict_move_area" in name):
-                init_list.append(pi)
+    def f(self, t, y):
+        ts, ctx = self._ctx
+        i = min(torch.searchsorted(ts, t, right=True), len(ts) - 1)
+        # Concatenate latent, context, and condition for the drift
+        return self.f_net(torch.cat((y, ctx[i], self._condition), dim=1))
 
-        init_index = 0
-        for param in self.parameters():
-            init_index += 1
-            if param.dim() > 0 and (init_index in init_list):
-                param.data.uniform_(-0.01, 0.01)
-            param = param.cuda()
+    def h(self, t, y):
+        return self.h_net(y)
 
-
-    def g(self, y):  # Diagonal diffusion.
+    def g(self, t, y):  # Diagonal diffusion.
         y = torch.split(y, split_size_or_sections=1, dim=1)
         out = [g_net_i(y_i) for (g_net_i, y_i) in zip(self.g_nets, y)]
         return torch.cat(out, dim=1)
 
-    def forward(self, x, expert_actions, now_x_tensor, f_or_h, mask=None):
-        player_condition = x[:,:,-1].detach().cpu().numpy().tolist()
-        for batch_pc in player_condition:
-            player_condition_batch = -1
-            for player_index in range(len(batch_pc)):
-                if player_index == 0:
-                    player_condition_batch = batch_pc[player_index]
-                else:
-                    batch_pc[player_index] = player_condition_batch
+    def forward(self, total_xs, xs, ts, masks, noise_std, adjoint=False, method="euler", online=False, train_env=None, seeds_env=None):
+        global SEQ_LEN
+        # data preprocess
+        xs = self.SDE_embed_and_transform(xs).float()
+        
+        # Split match_state and remaining_state
+        # xs structure after SDE_embed_and_transform: [match_state(5), remaining_state_embedded(27), action(5)]
+        match_state = xs[:, :, :self.match_state_dim]  # [seq_len, batch_size, 5]
+        remaining_state = xs[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]  # [seq_len, batch_size, 27]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)  # [seq_len, batch_size, condition_size]
+        
+        # Contextualization is only needed for posterior inference.
+        # Concatenate remaining_state with condition for the encoder
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
+        ctx = torch.flip(ctx, dims=(0,))
+        
+        # Use the first timestep's condition for SDE (or could use all timesteps)
+        self.contextualize((ts, ctx), condition[0])  # condition[0]: [batch_size, condition_size]
 
-        player_embedding = torch.reshape(self.label_emb(torch.from_numpy(np.asarray([player_condition])).type(torch.IntTensor).cuda()),(x.shape[0],x.shape[1],-1))
-       
+        qz0_mean, qz0_logstd = self.qz0_net(ctx[0]).chunk(chunks=2, dim=1)
+        z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
 
-        x = x.cuda()
-        player_embedding = player_embedding.cuda()
+        if adjoint:
+            # Must use the argument `adjoint_params`, since `ctx` is not part of the input to `f`, `g`, and `h`.
+            adjoint_params = (
+                    (ctx,) +
+                    tuple(self.f_net.parameters()) + tuple(self.g_nets.parameters()) + tuple(self.h_net.parameters())
+            )
+            zs, log_ratio = torchsde.sdeint_adjoint(
+                self, z0, ts, adjoint_params=adjoint_params, dt=2/SEQ_LEN, logqp=True, method=method)
+        else:
+            zs, log_ratio = torchsde.sdeint(self, z0, ts, dt=2/SEQ_LEN, logqp=True, method=method)
 
-        x_no_shot = del_tensor_ele(x,12)
-        e_outputs = self.encoder(x_no_shot[:,:,:-1], mask)
-        shot_input = get_tensor_ele(x, 12)
-        shot_input = shot_input.type(torch.IntTensor)
-        shot_embedding = self.shot_emb(shot_input.cuda())
-        e_outputs = torch.cat((e_outputs, shot_embedding), dim=2)
+        # Decode: concatenate latent with condition, project back to remaining_state
+        # Expand condition to match zs length
+        condition_expanded = condition[0].unsqueeze(0).expand(zs.size(0), -1, -1)  # [seq_len, batch_size, condition_size]
+        zs_conditioned = torch.cat((zs, condition_expanded), dim=-1)
+        _remaining_state = self.projector(zs_conditioned)  # Only reconstruct remaining_state, not match_state
 
-        state_embedding = torch.cat((e_outputs, player_embedding.cuda()), 2)
 
-        """find reference and find experience
-        According to the current state, collect rally with similar experience in the past,
-        and use the action in the rally as the player's follow-up plan
+        """ MLP training start """
+        true_actions = xs[:, :, -self.action_dim:]
+        true_land = true_actions[:, :, :2].view(-1, 2)
+        true_move = true_actions[:, :, 3:].view(-1, 2)
+        true_shot = true_actions[:, :, 2].long().view(-1)
+
+        # Action model with condition
+        land, shot, move = self.action_model(zs_conditioned)
+
+        land_loss = self.mse(land.view(-1, 2), true_land)
+        shot_loss = self.ce(shot.view(-1, self.shot_type_len), true_shot)
+        move_loss = self.mse(move.view(-1, 2), true_move)
+
+        # Apply mask to losses
+        if masks is not None:
+            mask_flat = masks.view(-1)
+            valid_count = mask_flat.sum().clamp(min=1)
+            land_loss = (land_loss * mask_flat).sum() / valid_count
+            shot_loss = (shot_loss * mask_flat).sum() / valid_count
+            move_loss = (move_loss * mask_flat).sum() / valid_count
+        """ MLP training end """
+
+        # Only compute reconstruction loss for remaining_state (not match_state)
+        xs_dist = Normal(loc=_remaining_state, scale=noise_std)
+        # log_pxs = xs_dist.log_prob(remaining_state).sum(dim=(0, 2)).mean(dim=0)
+        log_pxs = xs_dist.log_prob(remaining_state).mean()
+
+
+        qz0 = torch.distributions.Normal(loc=qz0_mean, scale=qz0_logstd.exp())
+        pz0 = torch.distributions.Normal(loc=self.pz0_mean, scale=self.pz0_logstd.exp())
+        logqp0 = torch.distributions.kl_divergence(qz0, pz0).sum(dim=1).mean(dim=0)
+        logqp_path = log_ratio.sum(dim=0).mean(dim=0)
+
+        total_action_loss = land_loss + shot_loss + move_loss
+        total_kl = logqp0 + logqp_path
+
+        return log_pxs, total_kl, total_action_loss
+
+    def predict_actions(self, model, state_sequence):
+        actions = []
+        type_porb = []
+
+        if len(state_sequence) == 1:
+            state_sequence = [state_sequence[0], state_sequence[0]]
+
+        with torch.no_grad():
+            for i in range(len(state_sequence) - 1):
+                state1 = state_sequence[i].squeeze()  # 第一个state数组
+                state2 = state_sequence[i + 1].squeeze()  # 第二个state数组
+                merged_state = torch.cat((state1, state2), dim=0).unsqueeze(0)  # 合并两个state数组
+                land_logit, shot_logit, move_logit = model(merged_state)  # 使用模型预测动作
+                
+                type_porb.append((shot_logit).clone())
+                # Predict shot type
+                shot_type_probs = F.softmax(shot_logit, dim=-1)
+                shot_type_dist = Categorical(shot_type_probs)
+                shot_type = shot_type_dist.sample()[0].unsqueeze(0) 
+
+                action = torch.cat((land_logit, shot_type.unsqueeze(0), move_logit),1)
+                actions.append(action)
+
+        
+        # actions.append(torch.tensor([[[0, 1, 0, 0, 0]]], dtype=torch.float32).cuda(0))
+        return torch.cat(actions, dim=0), type_porb
+
+    @torch.no_grad()
+    def sample(self, ht, ts, step, player_ids_len, shot_type_len, bm=None):
+        global SEQ_LEN
+        
+        ht = self.SDE_embed_and_transform(ht).float()
+        
+        # Split match_state and remaining_state
+        match_state = ht[:, :, :self.match_state_dim]
+        remaining_state = ht[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)
+        
+        # Encode remaining_state with condition
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
+        ctx = torch.flip(ctx, dims=(0,))
+        self.contextualize((ts, ctx), condition[0])
+        
+        qz0_mean, qz0_logstd = self.qz0_net(ctx[step]).chunk(chunks=2, dim=1)
+        z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
+        zs = torchsde.sdeint(self, z0, ts[step:], names={'drift': 'h'}, dt=2/SEQ_LEN, bm=bm)
+        
+        # Decode with condition
+        condition_expanded = condition[0].unsqueeze(0).expand(zs.size(0), -1, -1)
+        zs_conditioned = torch.cat((zs, condition_expanded), dim=-1)
+        # _remaining_state = self.projector(zs_conditioned)
+        
+        # Reconstruct full state for predict_actions (need to reconstruct match_state from input)
+        # _xs = torch.cat([match_state, _remaining_state], dim=-1)
+        
+        # action, shot_logit = self.predict_actions(self.inverse_model, _xs)
+
+        land, shot, move = self.action_model(zs_conditioned)
+        shot_probs = torch.softmax(shot, dim=-1)  # [61, 1, 12]
+        shot_sample = torch.multinomial(shot_probs.view(-1, 12), num_samples=1).view(-1, 1, 1)  # [61, 1, 1]
+        mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [61, 1, 5]
+        return None, None, None, mlp_action[0,:,:].squeeze(0), shot[0,:,:]
+    
+    @torch.no_grad()
+    def sample_batch(self, ht_batch, ts, steps, player_ids_len, shot_type_len, bm=None):
         """
-        now_x_list = now_x_tensor.view(-1, self.states_dim).tolist()
-        now_area_loc = list(map(mapping_coord2area, now_x_list)) # [[player,ball,opponent], [player,ball,opponent], ...]
-        intersection_lists = list(map(mapping_get_sim_traj_i, now_area_loc))        
+        Batch version of sample() for evaluating multiple rallies in parallel.
         
-        collection_sim_action_trajs_list = list(map(prepare_act_input,intersection_lists))
-        collection_sim_action_trajs_list = list(map(prepare_enc_input, collection_sim_action_trajs_list))
-
-        def contextualization(trajs_list):
-            zero_padding = torch.zeros(self.max_seq_len,1)
-            trajs_list = pad_sequence([trajs_list, zero_padding])[:,0,:]
-            trajs_list = trajs_list.unsqueeze(0)            
-            subspace_output = self.subspace_encoder(trajs_list.cuda())
-            subspace_codes = self.subspace_lmbd(subspace_output)
-            subspace_center = torch.mean(subspace_codes, dim=0, keepdim=True)
-            return subspace_center
-
-        """Contextualization is only needed for posterior inference. f(t,z)"""
-
-        if f_or_h != "h":
-            prior_z = list(map(contextualization, expert_actions))
-            prior_z = torch.cat(prior_z)
-            prior_z = prior_z.cuda()
-
-            if self._ctx == None:
-                self._ctx = self.context_decoder(prior_z)
-            else:
-                self._ctx = self.context_decoder(self._ctx)
+        Args:
+            ht_batch: [max_seq_len, batch_size, 18] - batch of rally states
+            ts: [seq_len] - time steps
+            steps: [batch_size] - current step for each rally in the batch
+            player_ids_len: int
+            shot_type_len: int
+            bm: Brownian motion (optional)
+        
+        Returns:
+            Tuple of:
+            - _xs: [max_future_len, batch_size, state_dim]
+            - actions: [batch_size, 5] - first action for each rally
+            - shot_logits: [batch_size, shot_type_len]
+            - mlp_actions: [batch_size, 5]
+            - shot_probs: [batch_size, shot_type_len]
+        """
+        global SEQ_LEN
+        
+        # ht_batch: [max_seq_len, batch_size, 18]
+        ht_batch = self.SDE_embed_and_transform(ht_batch).float()
+        
+        # Split match_state and remaining_state
+        match_state = ht_batch[:, :, :self.match_state_dim]
+        remaining_state = ht_batch[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)
+        
+        # ctx: [max_seq_len, batch_size, context_size]
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
+        ctx = torch.flip(ctx, dims=(0,))
+        self.contextualize((ts, ctx), condition[0])
+        
+        batch_size = ht_batch.shape[1]
+        device = ht_batch.device
+        
+        # Collect z0 for each rally at its respective step
+        z0_list = []
+        for b in range(batch_size):
+            step = steps[b]
+            qz0_mean, qz0_logstd = self.qz0_net(ctx[step, b:b+1]).chunk(chunks=2, dim=1)
+            z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
+            z0_list.append(z0)
+        z0 = torch.cat(z0_list, dim=0)  # [batch_size, latent_size]
+        
+        # For simplicity, we process each rally individually for the SDE part
+        # This could be optimized further with a custom SDE solver that handles different ts
+        mlp_actions_list = []
+        shot_probs_list = []
+        
+        for b in range(batch_size):
+            step = steps[b]
+            zs = torchsde.sdeint(self, z0[b:b+1], ts[step:], names={'drift': 'h'}, dt=2/SEQ_LEN, bm=bm)
             
-            prior_z = torch.unsqueeze(prior_z, dim=1)
-            prior_z = prior_z.repeat(1,self.max_seq_len,1)
-
-            state_ref_emb = torch.cat((state_embedding, prior_z), 2)
-            f_input = self.state_ref_encoder(state_ref_emb.view(x.size(0), -1))
-            f_latent = self.f_decoder(f_input)
-        else:
-            prior_z = list(map(contextualization, expert_actions))
-            prior_z = torch.cat(prior_z)
-            prior_z = prior_z.cuda()
-
-            if self._ctx == None:
-                self._ctx = self.context_decoder(prior_z)
-            else:
-                self._ctx = self.context_decoder(self._ctx) 
-
-
-        def cal_center(trajs_list):
-            subspace_output = self.subspace_encoder(trajs_list.cuda())
-            subspace_codes = self.subspace_lmbd(subspace_output)
-            subspace_center = torch.mean(subspace_codes, dim=0, keepdim=True)
-            return subspace_center
-        
-        latent_center = list(map(cal_center, collection_sim_action_trajs_list))
-        latent_center = torch.cat(latent_center)
-        latent_center = latent_center.cuda()
-
-        latent_center_condition = torch.unsqueeze(latent_center, dim=1)
-        latent_center_condition = latent_center_condition.repeat(1,self.max_seq_len,1)
-        cpe_outputs = torch.cat((state_embedding, latent_center_condition), 2)
-
-        predict_shifting_logit = self.predict_shifting(cpe_outputs.view(x.size(0), -1))
-        return_style_latent_code = torch.add(latent_center,predict_shifting_logit)
-        return_style_latent_code = torch.unsqueeze(return_style_latent_code, dim=1)
-        return_style_latent_code = return_style_latent_code.repeat(1,self.max_seq_len,1)
-        
-        if f_or_h == "h":
-            new_e_outputs = torch.cat((state_embedding, return_style_latent_code), 2)
-        else:
-            new_e_outputs = torch.cat((state_embedding, return_style_latent_code), 2)
-        
-        h_input = self.state_ref_encoder(new_e_outputs.view(x.size(0), -1))
-        h_latent = self.h_decoder(h_input)
-
-        if f_or_h == "h":
-            return h_input, h_latent
-        else:
-            return f_input, f_latent, h_input, h_latent
-
-    def sample_expert_eval(self, config, num_samples, sample_from, no_touch, f_or_h):
-        
-        """for predicted action saving"""
-        
-        player_samples = torch.zeros(num_samples, self.max_seq_len, self.states_dim).type(torch.FloatTensor)
-        opponent_samples = torch.zeros(num_samples, self.max_seq_len, self.states_dim).type(torch.FloatTensor)
-        
-        samples = torch.zeros(num_samples, self.max_seq_len, self.states_dim).type(torch.FloatTensor)
-        sample_actions = torch.zeros(num_samples, self.max_seq_len, self.actions_dim).type(torch.FloatTensor)
-        sample_expert_actions = torch.zeros(num_samples, self.max_seq_len,self.actions_dim).type(torch.FloatTensor)
-        sample_actions_shot_logit = []
-
-        vae_lmbd_latent_mean = []
-        vae_lmbd_latent_logvar = []
-
-        op_samples = torch.zeros(num_samples, self.max_seq_len, self.states_dim).type(torch.FloatTensor)
-        op_sample_actions = torch.zeros(num_samples, self.max_seq_len,self.actions_dim).type(torch.FloatTensor)
-        op_sample_expert_actions = torch.zeros(num_samples, self.max_seq_len,self.actions_dim).type(torch.FloatTensor)
-
-        op_sample_actions_shot_logit = []
-
-        op_vae_lmbd_latent_mean = []
-        op_vae_lmbd_latent_logvar = []
-
-        
-        """for decoded action saving"""
-        
-        context_actions = torch.zeros(num_samples, self.max_seq_len, self.actions_dim).type(torch.FloatTensor)
-        op_context_actions = torch.zeros(num_samples, self.max_seq_len, self.actions_dim).type(torch.FloatTensor)
-        context_actions_shot_logit = []
-        op_context_actions_shot_logit = []
-
-        """sample data"""
-        expert_states, expert_actions, op_expert_states, op_expert_actions, record = sample_inputs(num_samples, sample_from, f_or_h, no_touch)
-
-        
-        """battle setting"""
-        
-        eval_len = len(expert_states)
-        op_eval_len = len(op_expert_states)
-        stop_flag = [0] * eval_len
-        op_stop_flag = [0] * op_eval_len
-        ctx_stop_flag = [0] * eval_len
-        op_ctx_stop_flag = [0] * op_eval_len
-        samples = samples.cuda()
-        first_flag = True        
-
-        
-        """brownian motion setting"""
-        bm = BrownianInterval(t0=0, t1=2*self.max_seq_len, size=(num_samples, self.state_embed_dim+1),\
-        dtype=samples.dtype, device=samples.device, levy_area_approximation=LEVY_AREA_APPROXIMATIONS.none,\
-        entropy= config['seed'], tol=1e-5, halfway_tree=True)
-        step_size = self.step_size
-        prev_t = curr_t = 0
-        zs = []
-
-        """loss for landing and moving position"""
-        GMM_loss = 0
-        regularization_loss = 0
-
-        for i in range(self.max_seq_len):
-            for p in range(2):
-                if p == 0:
-                    for j in range(eval_len):
-                        if i < len(expert_actions[j]):
-                            player_num = int(expert_states[j][i][17].item())
-                            insert_expert_actions = expert_actions[j][i][:].cuda()
-                            insert_sample = expert_states[j][i][:].cuda()
-                            sample_expert_actions[j, i, :] = insert_expert_actions
-                            samples[j, i, :] = insert_sample
-                            if i == 0:
-                                player_samples[j, i, :] = insert_sample
-                            else:
-                                inp_states = get_next_player_state(op_sample_actions[j, i-1, :].data, opponent_samples[j, i-1, :].data, player_num)
-                                inp_states = inp_states.cuda()
-                                player_samples[j, i, :] = inp_states.view(1,self.states_dim).data
-                                if f_or_h ==  "h":
-                                    if player_samples[j, i, 0] == 0 :
-                                        stop_flag[j] = 1
-                        else:
-                            if f_or_h == "f":
-                                stop_flag[j] = 1
-                            else:
-                                inp_states = get_next_player_state(op_sample_actions[j, i-1, :].data, opponent_samples[j, i-1, :].data, player_num)
-                                inp_states = inp_states.cuda()
-                                player_samples[j, i, :] = inp_states.view(1,self.states_dim).data
-                                if player_samples[j, i, 0] == 0 :
-                                    stop_flag[j] = 1
-                else:
-                    for j in range(op_eval_len):
-                        if i < len(op_expert_actions[j]):
-                            opponent_num = int(op_expert_states[j][i][17].item())
-                            op_insert_expert_actions = op_expert_actions[j][i][:].cuda()
-                            op_insert_sample = op_expert_states[j][i][:].cuda()
-                            op_sample_expert_actions[j, i, :] = op_insert_expert_actions
-                            op_samples[j, i, :] = op_insert_sample
-
-                            inp_states = get_next_player_state(sample_actions[j, i, :].data, player_samples[j, i, :].data, opponent_num)
-                            inp_states = inp_states.cuda()
-                            opponent_samples[j, i, :] = inp_states.view(1,self.states_dim).data
-                            if f_or_h == "h":
-                                if opponent_samples[j, i, 0] == 0 :
-                                    op_stop_flag[j] = 1
-                        else:
-                            if f_or_h == "f":
-                                op_stop_flag[j] = 1
-                            else:
-                                inp_states = get_next_player_state(sample_actions[j, i, :].data, player_samples[j, i, :].data, opponent_num)
-                                inp_states = inp_states.cuda()
-                                opponent_samples[j, i, :] = inp_states.view(1,self.states_dim).data
-                                if opponent_samples[j, i, 0] == 0 :
-                                    op_stop_flag[j] = 1
-                
-                """action projection layer"""
-
-                if p == 0:
-                    if f_or_h == "f":
-                        z_f, f, z_h, h = self.forward(player_samples, expert_actions.copy(), player_samples[:, i, :], f_or_h)
-                    else:
-                        z_h, h = self.forward(player_samples, expert_actions.copy(), player_samples[:, i, :], f_or_h)
-
-                    vae_lmbd_latent_mean.append(self.subspace_lmbd.latent_mean)
-                    vae_lmbd_latent_logvar.append(self.subspace_lmbd.latent_logvar)
-                    
-                    # context decoder
-                    context_land_logit = self.context_land_area(self._ctx)
-                    context_shot_logit = self.context_shot_type(self._ctx)
-                    context_move_logit = self.context_move_area(self._ctx)
-                    context_actions_shot_logit.append(context_shot_logit)
-                else:
-                    if f_or_h == "f":
-                        z_f, f, z_h, h = self.forward(opponent_samples, op_expert_actions.copy(), opponent_samples[:, i, :], f_or_h)
-                    else:
-                        z_h, h = self.forward(opponent_samples, op_expert_actions.copy(), opponent_samples[:, i, :], f_or_h)
-                    op_vae_lmbd_latent_mean.append(self.subspace_lmbd.latent_mean)
-                    op_vae_lmbd_latent_logvar.append(self.subspace_lmbd.latent_logvar)
-                    
-                    # context decoder                 
-                    context_land_logit = self.context_land_area(self._ctx)
-                    context_shot_logit = self.context_shot_type(self._ctx)
-                    context_move_logit = self.context_move_area(self._ctx)
-                    op_context_actions_shot_logit.append(context_shot_logit)
-
-
-                """SDE integrate"""
-
-                if first_flag == True:
-                    global z0
-                    if f_or_h == "f":
-                        z0 = torch.cat((z_f, z_f.new_zeros(size=(z_f.size(0), 1))), dim=1)
-                    else:
-                        z0 = torch.cat((z_h, z_h.new_zeros(size=(z_h.size(0), 1))), dim=1)
-                    global prev_z
-                    global curr_z 
-                    prev_z = curr_z = z0
-                    zs.append(z0)
-                    first_flag = False
-                    next_t = curr_t + step_size
-                    I_k = bm(curr_t, next_t)
-                else:
-                    next_t = curr_t + step_size
-                    prev_t, prev_z = curr_t, curr_z
-                    I_k = bm(curr_t, next_t)
-                
-                # f_and_g_diagonal
-                if f_or_h == "f":
-                    g = self.g(z_f)
-                else:
-                    g = self.g(z_h)
-                
-                if f_or_h == "f":
-                    u = misc.stable_division(f - h, g)
-                    f_logqp = .5 * (u ** 2).sum(dim=1, keepdim=True)
-                    g_logqp = z_f.new_zeros(size=(z_f.size(0), 1))
-                else:
-                    g_logqp = z_h.new_zeros(size=(z_h.size(0), 1))
-
-                if f_or_h == "f":
-                    f = torch.cat([f, f_logqp], dim=1)
-                else:
-                    f = torch.cat([h, g_logqp], dim=1)
-                
-                g = torch.cat([g, g_logqp], dim=1)
-                g_prod = g * I_k
-                dt = next_t - curr_t
-                curr_z = curr_z + f * dt + g_prod
-                curr_t = next_t
-                zs.append(curr_z)
-                project_embedding, _ = curr_z.split(split_size=(z0.size(1) - 1, 1), dim=1)
-
-                '''
-                sample predicted action
-                '''
-                land_logit = self.predict_land_area(project_embedding)
-                shot_logit = self.predict_shot_type(project_embedding)
-                move_logit = self.predict_move_area(project_embedding)
-                
-                land_logit[land_logit==0] = eps
-                move_logit[move_logit==0] = eps
-
-                land_gmm = D.MixtureSameFamily(D.Categorical(self.softmax(land_logit[:,:self.gmm_num])),\
-                D.Independent(D.Normal(torch.reshape(land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2)),\
-                torch.reshape(torch.abs(torch.clamp(land_logit[:,self.gmm_num*3:],-self.gmm_thres,self.gmm_thres)),(-1,self.gmm_num,2))), 1))
-
-                move_gmm = D.MixtureSameFamily(D.Categorical(self.softmax(move_logit[:,:self.gmm_num])),\
-                D.Independent(D.Normal(torch.reshape(move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2)),\
-                torch.reshape(torch.abs(torch.clamp(move_logit[:,self.gmm_num*3:],-self.gmm_thres,self.gmm_thres)),(-1,self.gmm_num,2))), 1))
-
-                agent_shot_type = torch.multinomial(torch.exp(self.log_softmax(shot_logit)), 1)
-                while agent_shot_type[0, 0] == 0:
-                    agent_shot_type = torch.multinomial(torch.exp(self.log_softmax(shot_logit)), 1)
-                
-                acts = torch.cat((land_gmm.sample(), agent_shot_type, move_gmm.sample()),1)
-
-                """
-                sample decoded action
-                """
-                context_land_logit[context_land_logit==0] = eps
-                context_move_logit[context_move_logit==0] = eps
-
-                context_land_gmm = D.MixtureSameFamily(D.Categorical(self.softmax(context_land_logit[:,:self.gmm_num])),\
-                D.Independent(D.Normal(torch.reshape(context_land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2)),\
-                torch.reshape(torch.abs(torch.clamp(context_land_logit[:,self.gmm_num*3:],-self.gmm_thres,self.gmm_thres)),(-1,self.gmm_num,2))), 1))
-                
-                context_move_gmm = D.MixtureSameFamily(D.Categorical(self.softmax(context_move_logit[:,:self.gmm_num])),\
-                D.Independent(D.Normal(torch.reshape(context_move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2)),\
-                torch.reshape(torch.abs(torch.clamp(context_move_logit[:,self.gmm_num*3:],-self.gmm_thres,self.gmm_thres)),(-1,self.gmm_num,2))), 1))
-
-                context_shot_type = torch.multinomial(torch.exp(self.log_softmax(context_shot_logit)), 1)
-                while context_shot_type[0, 0] == 0:
-                    context_shot_type = torch.multinomial(torch.exp(self.log_softmax(context_shot_logit)), 1)
-                
-                context_acts = torch.cat((context_land_gmm.sample(), context_shot_type, context_move_gmm.sample()),1) 
-                
-                """
-                1. save predicted action and decoded action for evaluation
-                2. compute landing and moving loss (GMM_loss and regularization_loss)
-                """
-                if p == 0:
-                    sample_actions[:, i, :] = acts.view(num_samples,self.actions_dim).data
-                    context_actions[:, i, :] = context_acts.view(num_samples,self.actions_dim).data
-                    sample_actions_shot_logit.append(shot_logit)
-
-                    for j in range(eval_len):
-                        if stop_flag[j] == 1:
-                            sample_actions[j, i, :] = torch.zeros(self.actions_dim).type(torch.FloatTensor)
-                        else:
-                            if i < len(expert_actions[j]):
-                                if expert_actions[j][i][:2].tolist() != [0,1]:
-                                    land_gd = torch.reshape(land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(land_gd[:,r,:], land_gd[:,r:,:], p=2).mean()
-                                    move_gd = torch.reshape(move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(move_gd[:,r,:], move_gd[:,r:,:], p=2).mean()
-                                    GMM_loss += -land_gmm.log_prob(expert_actions[j][i][:2].cuda())[j]
-                                    GMM_loss += -move_gmm.log_prob(expert_actions[j][i][3:].cuda())[j]
-
-                        if check_tatic_next_status(context_actions[j, i, :].data):
-                            ctx_stop_flag[j] = 1
-                        
-                        if ctx_stop_flag[j] == 1:
-                            context_actions[j, i, :] = torch.zeros(self.actions_dim).type(torch.FloatTensor)
-                        else:
-                            if i < len(expert_actions[j]):
-                                if expert_actions[j][i][:2].tolist() != [0,1]:
-                                    context_land_gd = torch.reshape(context_land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(context_land_gd[:,r,:], context_land_gd[:,r:,:], p=2).mean()
-                                    context_move_gd = torch.reshape(context_move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(context_move_gd[:,r,:], context_move_gd[:,r:,:], p=2).mean()
-                                    GMM_loss += -context_land_gmm.log_prob(expert_actions[j][i][:2].cuda())[j]
-                                    GMM_loss += -context_move_gmm.log_prob(expert_actions[j][i][3:].cuda())[j]
-                    stop_flag = [0] * eval_len
-                else:
-                    op_sample_actions[:, i, :] = acts.view(num_samples,self.actions_dim).data
-                    op_context_actions[:, i, :] = context_acts.view(num_samples,self.actions_dim).data
-                    op_sample_actions_shot_logit.append(shot_logit)
-
-                    for j in range(op_eval_len):
-                        if op_stop_flag[j] == 1:
-                            op_sample_actions[j, i, :] = torch.zeros(self.actions_dim).type(torch.FloatTensor)
-                        else:
-                            if i < len(op_expert_actions[j]):
-                                if op_expert_actions[j][i][:2].tolist() != [0,1]:
-                                    land_gd = torch.reshape(land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(land_gd[:,r,:], land_gd[:,r:,:], p=2).mean()
-                                    move_gd = torch.reshape(move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(move_gd[:,r,:], move_gd[:,r:,:], p=2).mean()
-                                    GMM_loss += -land_gmm.log_prob(op_expert_actions[j][i][:2].cuda())[j]
-                                    GMM_loss += -move_gmm.log_prob(op_expert_actions[j][i][3:].cuda())[j]
-                        
-                        if check_tatic_next_status(op_context_actions[j, i, :].data):
-                            op_ctx_stop_flag[j] = 1
-                        
-                        if op_ctx_stop_flag[j] == 1:
-                            op_context_actions[j, i, :] = torch.zeros(self.actions_dim).type(torch.FloatTensor)
-                        else:
-                            if i < len(op_expert_actions[j]):
-                                if op_expert_actions[j][i][:2].tolist() != [0,1]:
-                                    context_land_gd = torch.reshape(context_land_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(context_land_gd[:,r,:], context_land_gd[:,r:,:], p=2).mean()
-                                    context_move_gd = torch.reshape(context_move_logit[:,self.gmm_num:self.gmm_num*3],(-1,self.gmm_num,2))
-                                    for r in range(self.gmm_num):
-                                        regularization_loss += torch.cdist(context_move_gd[:,r,:], context_move_gd[:,r:,:], p=2).mean()
-                                    GMM_loss += -context_land_gmm.log_prob(op_expert_actions[j][i][:2].cuda())[j]
-                                    GMM_loss += -context_move_gmm.log_prob(op_expert_actions[j][i][3:].cuda())[j]
-                    op_stop_flag = [0] * op_eval_len
-
-        """re-choose context"""
-        self._ctx = None
-        
-        """compute SDEs_KLD"""
-        zs = torch.stack(zs, dim=0)
-        zs, log_ratio = zs.split(split_size=(z0.size(1) - 1, 1), dim=2)
-        log_ratio_increments = torch.stack([log_ratio_t_plus_1 - log_ratio_t for log_ratio_t_plus_1, log_ratio_t in zip(log_ratio[1:], log_ratio[:-1])], dim=0).squeeze(dim=2)
-        SDEs_KLD = log_ratio_increments.sum(dim=0).mean(dim=0)
-        SDEs_KLD += (GMM_loss/self.gmm_num)*(1-self.alpha)*0.01
-        SDEs_KLD -= (regularization_loss/self.gmm_num)*self.alpha*0.01
-        
-        return sample_actions, sample_expert_actions,\
-        sample_actions_shot_logit,\
-        op_sample_actions, op_sample_expert_actions,\
-        op_sample_actions_shot_logit,\
-        record, vae_lmbd_latent_mean, vae_lmbd_latent_logvar, op_vae_lmbd_latent_mean, op_vae_lmbd_latent_logvar, SDEs_KLD,\
-        context_actions, context_actions_shot_logit,\
-        op_context_actions, op_context_actions_shot_logit
-        
-    def predict_batchNLLLoss(self, inp, target, shot_d, mean_d, logvar_d):
-        batch_size, seq_len = inp.size()[:2]
-        loss = 0
-
-        ce_fn = nn.CrossEntropyLoss(ignore_index=0, reduction='sum')
-
-        stp_list = [0]*batch_size
-        len_list = [0]*batch_size
-        ans_list = [0]*batch_size
-        gen_list = [0]*batch_size
-        
-        flag_len_list = [0]*batch_size
-        flag_gen_list = [0]*batch_size
-        flag_ans_list = [0]*batch_size
-
-        for j in range(batch_size):
-            for i in range(seq_len):
-                if (i < seq_len-1):
-                    if ((any(target[j, i, :].tolist()) == False) or (any(inp[j, i, :].tolist()) == False)):
-                        if flag_len_list[j] == 0:
-                            len_list[j] = i
-                            stp_list[j] = 1
-                            flag_len_list[j] = 1
-                    if (any(target[j, i, :].tolist()) == False):
-                        if flag_ans_list[j] == 0:
-                            ans_list[j] = i
-                            flag_ans_list[j] = 1
-                    if (any(inp[j, i, :].tolist()) == False):
-                        if flag_gen_list[j] == 0:
-                            gen_list[j] = i
-                            flag_gen_list[j] = 1
-                
-                if stp_list[j] == 0:
-                    loss += ce_fn(torch.unsqueeze(shot_d[i][j],dim=0), torch.unsqueeze(target.data[j, i, 2].type(torch.LongTensor).cuda(),dim=0))
-                    loss += (-0.5 * torch.mean(1 + torch.unsqueeze(logvar_d[i],dim=0) - torch.unsqueeze(mean_d[i],dim=0).pow(2) - torch.unsqueeze(logvar_d[i],dim=0).exp()))/batch_size
-                    
-        GLD = [0]*20
-        ALD = [0]*20
-        for length in gen_list:
-            GLD[length] += 1
-        for length in ans_list:
-            ALD[length] += 1
-        
-        KLD = kl_divergence(GLD, ALD)
-
-        length_error = np.absolute((np.asarray(gen_list) - np.asarray(ans_list)))
-        MLD = np.sum(length_error) / len(ans_list)
-        loss += KLD
-        loss += MLD*len(ans_list)
-
-        return loss, len_list
-
-    def decode_batchNLLLoss(self, inp, target, shot_d):
-        batch_size, seq_len = inp.size()[:2]
-        loss = 0
-
-        ce_fn = nn.CrossEntropyLoss(ignore_index=0, reduction='sum')
-        
-        stp_list = [0]*batch_size
-        len_list = [0]*batch_size
-        ans_list = [0]*batch_size
-        gen_list = [0]*batch_size
-        
-        flag_len_list = [0]*batch_size
-        flag_gen_list = [0]*batch_size
-        flag_ans_list = [0]*batch_size
-
-        for j in range(batch_size):
-            for i in range(seq_len):
-                if (i < seq_len-1):
-                    if ((any(target[j, i, :].tolist()) == False) or (any(inp[j, i, :].tolist()) == False)):
-                        if flag_len_list[j] == 0:
-                            len_list[j] = i
-                            stp_list[j] = 1
-                            flag_len_list[j] = 1
-                    if (any(target[j, i, :].tolist()) == False):
-                        if flag_ans_list[j] == 0:
-                            ans_list[j] = i
-                            flag_ans_list[j] = 1
-                    if (any(inp[j, i, :].tolist()) == False):
-                        if flag_gen_list[j] == 0:
-                            gen_list[j] = i
-                            flag_gen_list[j] = 1
-                
-                if stp_list[j] == 0:
-                    loss += ce_fn(torch.unsqueeze(shot_d[i][j],dim=0), torch.unsqueeze(target.data[j, i, 2].type(torch.LongTensor).cuda(),dim=0))
-                    
-        GLD = [0]*20
-        ALD = [0]*20
-        for length in gen_list:
-            GLD[length] += 1
-        for length in ans_list:
-            ALD[length] += 1
-        KLD = kl_divergence(GLD, ALD)
-
-        length_error = np.absolute((np.asarray(gen_list) - np.asarray(ans_list)))
-        MLD = np.sum(length_error) / len(ans_list)
-        loss += KLD
-        loss += MLD*len(ans_list)
-
-        return loss
-
-    def eval_batchNLLLoss(self, inp, target, shot_d):
-        batch_size, seq_len = inp.size()[:2]
-
-        shot_ce = 0
-        land_mae = 0
-        move_mae = 0
-        land_dtw = 0
-        move_dtw = 0
-
-        ce_fn = nn.CrossEntropyLoss(ignore_index=0, reduction='sum')
-        mae_fn = nn.L1Loss(reduction='sum')
-        
-        stp_list = [0]*batch_size
-        len_list = [0]*batch_size
-        ans_list = [0]*batch_size
-        gen_list = [0]*batch_size
-        
-        flag_len_list = [0]*batch_size
-        flag_gen_list = [0]*batch_size
-        flag_ans_list = [0]*batch_size
-
-        for j in range(batch_size):
-            for i in range(seq_len):
-                if (i < seq_len-1):
-                    if ((any(target[j, i, :].tolist()) == False) or (any(inp[j, i, :].tolist()) == False)):
-                        if flag_len_list[j] == 0:
-                            len_list[j] = i
-                            stp_list[j] = 1
-                            flag_len_list[j] = 1
-                    if (any(target[j, i, :].tolist()) == False):
-                        if flag_ans_list[j] == 0:
-                            ans_list[j] = i
-                            flag_ans_list[j] = 1
-                    if (any(inp[j, i, :].tolist()) == False):
-                        if flag_gen_list[j] == 0:
-                            gen_list[j] = i
-                            flag_gen_list[j] = 1
+            # Decode with condition
+            condition_b = condition[0, b:b+1].unsqueeze(0).expand(zs.size(0), -1, -1)
+            zs_conditioned = torch.cat((zs, condition_b), dim=-1)
+            _remaining_state = self.projector(zs_conditioned)
             
-                if stp_list[j] == 0:
-                    land_mae += mae_fn(inp.data[j, i, 0:2], target.data[j, i, 0:2])
-                    move_mae += mae_fn(inp.data[j, i, 3:], target.data[j, i, 3:])
-                    shot_ce += ce_fn(shot_d[i], torch.unsqueeze(target.data[j, i, 2].type(torch.LongTensor).cuda(),dim=0))
-                    
-            land_dtw += dtw_ndim.distance(inp.data[j, :, :2].detach().cpu().numpy(), target.data[j, :, :2].cpu().numpy())
-            move_dtw += dtw_ndim.distance(inp.data[j, :, 3:].detach().cpu().numpy(), target.data[j, :, 3:].cpu().numpy())
-                
-        return shot_ce, land_mae, land_dtw, move_mae, move_dtw, len_list, gen_list, ans_list
+            # Get first prediction
+            land, shot, move = self.action_model(zs_conditioned[:1])  # Only take first timestep
+            shot_probs = torch.softmax(shot, dim=-1)  # [1, 1, shot_type_len]
+            shot_sample = torch.multinomial(shot_probs.view(-1, shot_type_len), num_samples=1).view(-1, 1, 1)
+            mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [1, 1, 5]
+            
+            mlp_actions_list.append(mlp_action.squeeze(0).squeeze(0))  # [5]
+            shot_probs_list.append(shot_probs.squeeze(0).squeeze(0))  # [shot_type_len]
+        
+        mlp_actions = torch.stack(mlp_actions_list, dim=0)  # [batch_size, 5]
+        shot_probs = torch.stack(shot_probs_list, dim=0)  # [batch_size, shot_type_len]
+        
+        # For compatibility, also return dummy values for other returns
+        # These would need proper implementation if needed
+        dummy_actions = mlp_actions.clone()
+        dummy_shot_logits = shot_probs.clone()
+        
+        return None, dummy_actions, dummy_shot_logits, mlp_actions, shot_probs
+
+def make_dataset(testing, device, split_ratio=0.8):
+    global SEQ_LEN
+
+    with open("Experiments/rallynetv2/data/norm/train_player_traj.pkl", 'rb') as f:
+        player_data = pickle.load(f)
+    with open("Experiments/rallynetv2/data/norm/train_opponent_traj.pkl", 'rb') as f:
+        opponent_data = pickle.load(f)
+    with open("Experiments/rallynetv2/data/norm/train_player_mask.pkl", 'rb') as f:
+        player_masks = pickle.load(f)
+    with open("Experiments/rallynetv2/data/norm/train_opponent_mask.pkl", 'rb') as f:
+        opponent_masks = pickle.load(f)
+
+    merged_data = []
+    merged_masks = []
+    shot_type_set = []
+
+    for player_rally, opponent_rally, player_mask_rally, opponent_mask_rally in zip(player_data, opponent_data, player_masks, opponent_masks):
+        merged_rally = []
+        merged_mask_rally = []
+        player_len = len(player_rally)
+        opponent_len = len(opponent_rally)
+        if player_len > 0:
+            max_len = max(player_len, opponent_len)
+            for i in range(max_len):
+                if i < player_len:
+                    merged_rally.append(player_rally[i])
+                    merged_mask_rally.append(player_mask_rally[i])
+                    shot_type_set.append(player_rally[i][12])
+                if i < opponent_len:
+                    merged_rally.append(opponent_rally[i])
+                    merged_mask_rally.append(opponent_mask_rally[i])
+                    shot_type_set.append(opponent_rally[i][12])
+            merged_data.append(merged_rally)
+            merged_masks.append(merged_mask_rally)
+
+    max_length = max(len(rally) for rally in merged_data)
+    xs = pad_and_convert_to_tensor(merged_data, max_length).cuda(0)
+    masks = pad_and_convert_to_tensor(merged_masks, max_length).cuda(0)
+    ts = torch.linspace(0, xs.shape[0], steps=xs.shape[0], device=device)
+
+    SEQ_LEN = xs.shape[0]
+
+    min_val = torch.min(ts)
+    max_val = torch.max(ts)
+    normalized_tensor = (ts - min_val) / (max_val - min_val)
+    ts = normalized_tensor * 2
+
+    # Keep masks in 3D form: [seq_len, num_rallies, 1] for easier batch extraction
+    masks_3d = masks[:, :, :1]
+
+    # Split dataset into training and testing
+    total_rallies = xs.shape[1]
+    split_index = int(total_rallies * split_ratio)
+
+    return xs, masks, ts, len(player2index), len(set(shot_type_set))
+
+
+def main(
+        batch_size = 32, 
+        latent_size= 32,
+        context_size=64,
+        hidden_size=64,
+        lr_init=5e-4,
+        t0=0.,
+        t1=2.,
+        lr_gamma=0.999,
+        num_iters=30000,
+        kl_anneal_iters=1000,
+        pause_every=50,
+        noise_std=0.1,
+        adjoint=False,
+        train_dir='./dump_weighted/',
+        method="euler",
+        eval = False, 
+        load = False,
+        load_step = 0,
+        split_ratio = 0.8
+):
+    create_folder_if_not_exists(train_dir)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    xs, masks, ts, player_ids_len, shot_type_len = make_dataset(False, device=device, split_ratio=split_ratio)
+
+    latent_sde = LatentSDE(
+        data_size = 37, # 16 + 8 + 8 + (5)
+        latent_size=latent_size,
+        context_size=context_size,
+        hidden_size=hidden_size,
+        player_ids_len = player_ids_len,
+        shot_type_len = shot_type_len
+    ).to(device)
+
+    hyperparameters = {
+        "data_size": 37,
+        "latent_size": latent_size,
+        "context_size": context_size,
+        "hidden_size": hidden_size,
+        "player_ids_len": player_ids_len,
+        "shot_type_len": shot_type_len,
+        "ts": ts,
+        "xs": xs,
+        # "target_players": target_players,
+    }
+    with open('hyperparameters.pkl', 'wb') as f:
+        pickle.dump(hyperparameters, f)
+
+    if load == True:
+        latent_sde.load_state_dict(torch.load(train_dir+"gen_e_"+str(load_step) +".trc", map_location = device))
+
+    optimizer = optim.Adam(params=latent_sde.parameters(), lr=lr_init)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_gamma)
+    kl_scheduler = LinearScheduler(iters=kl_anneal_iters)
+
+    index = 0
+
+    torch.save(latent_sde.state_dict(), train_dir+'gen_e_0.trc')
+
+    for global_step in tqdm(range(1, num_iters + 1)):
+        latent_sde.zero_grad()
+        # apply mask or not
+        batch_masks = masks[:, index:index+batch_size, :].reshape(-1, 1)
+        # batch_masks = None
+        # log_pxs, log_ratio = latent_sde(xs, xs[:,index:index+batch_size,:], ts, batch_masks, noise_std, adjoint, method, False)
+        log_pxs, kl, action_loss = latent_sde(xs, xs[:,index:index+batch_size,:], ts, batch_masks, noise_std, adjoint, method, False)
+
+        index += batch_size
+        if (index <= int(xs.shape[1]) ) and (index + batch_size >= int(xs.shape[1])):
+            shuffled_indices = torch.randperm(xs.size(1))
+            xs = xs[:, shuffled_indices, :]
+            masks = masks[:, shuffled_indices, :]
+            index = 0
+
+        # loss = -log_pxs + (kl * kl_scheduler.val) + action_loss
+        loss = (
+            torch.exp(-latent_sde.log_var_pxs) * (-log_pxs) + latent_sde.log_var_pxs +
+            torch.exp(-latent_sde.log_var_kl) * (kl * kl_scheduler.val) + latent_sde.log_var_kl +
+            torch.exp(-latent_sde.log_var_action) * action_loss + latent_sde.log_var_action
+        )
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(latent_sde.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+        kl_scheduler.step()
+
+        sys.stdout.flush()
+        gc.collect()
+
+        if (global_step % pause_every == 0) or global_step == 1:
+            if load == True:
+                torch.save(latent_sde.state_dict(), train_dir+'gen_e_{}.trc'.format(str(load_step + global_step)))
+            else:
+                torch.save(latent_sde.state_dict(), train_dir+'gen_e_{}.trc'.format(str(global_step)))
+            
+            logging.warning(
+                f'Step: {global_step:06d} | '
+                f'Total Loss: {loss.item():.4f}\n'
+                f'  [Losses] NLL: {(-log_pxs).item():.3f}, KL: {kl.item():.3f}, Action: {action_loss.item():.3f}\n'
+                f'  [Weights] NLL: {torch.exp(-latent_sde.log_var_pxs).item():.4f}, KL: {torch.exp(-latent_sde.log_var_kl).item():.4f}, Action: {torch.exp(-latent_sde.log_var_action).item():.4f}\n'
+                f'  [Status] KL_Coeff: {kl_scheduler.val:.4f}'
+            )
+
+if __name__ == "__main__":
+    main()

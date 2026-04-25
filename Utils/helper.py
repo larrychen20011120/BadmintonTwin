@@ -11,6 +11,59 @@ from copy import copy, deepcopy
 import os
 
 
+def compute_shot_type_weights(data_file=None, method='sqrt_inverse', num_classes=12):
+    """
+    從檔案讀取資料並計算 shot type 的類別權重
+    
+    Args:
+        data_file: 資料檔案路徑 (預設: Experiments/bc/data/norm/train_action.pkl)
+        method: 'sqrt_inverse' (平方根倒數) 或 'uniform' (均勻權重)
+        num_classes: 總類別數 (包含 Type 0)
+    
+    Returns:
+        torch.Tensor: 類別權重 (shape: [num_classes])
+    """
+    # 預設檔案路徑
+    if data_file is None:
+        data_file = 'Experiments/bc/data/norm/train_action.pkl'
+    
+    # 讀取 pickle 檔案 (numpy array, shape: [N, 5])
+    # columns: [landing_x, landing_y, shot_type, moving_x, moving_y]
+    with open(data_file, 'rb') as f:
+        data = pickle.load(f)
+    
+    # 取得 shot_type (第 3 欄, index=2)
+    shot_types = data[:, 2].astype(int)
+    
+    # 排除 0 (初始狀態)
+    shot_types = shot_types[shot_types > 0]
+    
+    # 計算每個 type (1-11) 的出現次數
+    class_counts = np.zeros(11, dtype=np.float32)
+    for shot_type in range(1, 12):
+        class_counts[shot_type - 1] = (shot_types == shot_type).sum()
+    
+    # 避免除以零，將 0 次數替換為 1
+    class_counts = np.maximum(class_counts, 1.0)
+    
+    if method == 'sqrt_inverse':
+        # 平方根倒數 (較溫和)
+        weights = 1.0 / np.sqrt(class_counts)
+    elif method == 'uniform':
+        # 均勻權重
+        weights = np.ones(len(class_counts))
+    else:
+        raise ValueError(f"不支援的 method: {method}. 請使用 'sqrt_inverse' 或 'uniform'.")
+    
+    # 正規化
+    weights = weights / weights.sum() * len(class_counts)
+    
+    # 插入 Type 0 的權重 (ignore_index)
+    full_weights = np.insert(weights, 0, 0.0)
+    
+    return torch.tensor(full_weights, dtype=torch.float32)
+
+
 def edit_distance(seq1, seq2):
     """
     Calculate edit distance (Levenshtein distance) between two sequences.

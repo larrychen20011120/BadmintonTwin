@@ -326,12 +326,12 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 if len(rally_land_gt_seq) > 0:
                     land_pred_array = np.array(rally_land_pred_seq)
                     land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
                     rally_land_dtw_list.append(land_dtw)
                     
                     move_pred_array = np.array(rally_move_pred_seq)
                     move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
+                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
                     rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
@@ -349,6 +349,7 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
+
         
         if total_rallies > 0:
             avg_land_dtw = np.mean(rally_land_dtw_list)
@@ -455,7 +456,8 @@ def train_model(args):
 
     model = BC(input_dim, hidden_dim, player_id_len, shot_type_len, player_id=0).to(device)
 
-    ce_loss = nn.CrossEntropyLoss()
+    class_weights = compute_shot_type_weights(method='uniform').to(device)
+    ce_loss = nn.CrossEntropyLoss(weight=class_weights)
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 

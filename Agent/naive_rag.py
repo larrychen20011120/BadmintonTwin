@@ -11,6 +11,7 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Agent.base_agent import BaseAgent
+from Agent.verbalizer import BadmintonVerbalizer, create_verbalizer
 from Utils.llm import LLM
 from Utils.helper import state_col, action_col, coord2area
 from Utils.badminton_config import LANG_AREA_MAPPING
@@ -218,10 +219,12 @@ class NaiveRAGDatabase:
 class NaiveRAGAgent(BaseAgent):
     """
     NaiveRAG Agent that retrieves similar experiences and uses LLM to generate actions.
+    Supports verbalization to convert state and experiences to natural language.
     """
     
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct", 
-                 api_key="EMPTY", port=16000, top_k=5):
+                 api_key="EMPTY", port=16000, top_k=5, use_verbalizer=False, 
+                 verbalized_prompt=False):
         """
         Initialize NaiveRAG Agent.
         
@@ -232,11 +235,22 @@ class NaiveRAGAgent(BaseAgent):
             api_key: API key for LLM
             port: Port for local LLM server
             top_k: Number of similar experiences to retrieve
+            use_verbalizer: Whether to use verbalizer to convert state/experiences to natural language
+            verbalized_prompt: Whether to use verbalized prompt template (requires use_verbalizer=True)
         """
         super().__init__(player_name)
         
         self.database = database
         self.top_k = top_k
+        self.use_verbalizer = use_verbalizer
+        self.verbalized_prompt = verbalized_prompt and use_verbalizer
+        
+        # Initialize verbalizer if needed
+        if self.use_verbalizer:
+            self.verbalizer = create_verbalizer()
+            print("Verbalizer initialized")
+        else:
+            self.verbalizer = None
         
         # Initialize LLM
         self.llm = LLM(model_name=model_name, api_key=api_key, port=port)
@@ -246,7 +260,17 @@ class NaiveRAGAgent(BaseAgent):
         with open(os.path.join(prompt_dir, "naive_rag_system.md"), "r") as f:
             self.system_prompt = f.read()
         
-        with open(os.path.join(prompt_dir, "naive_rag_user.jinja"), "r") as f:
+        # Choose user template based on verbalizer settings
+        if self.verbalized_prompt:
+            template_file = "naive_rag_user_verbalized.jinja"
+            # Fall back to standard template if verbalized version doesn't exist
+            if not os.path.exists(os.path.join(prompt_dir, template_file)):
+                print(f"Warning: {template_file} not found, using standard template")
+                template_file = "naive_rag_user.jinja"
+        else:
+            template_file = "naive_rag_user.jinja"
+        
+        with open(os.path.join(prompt_dir, template_file), "r") as f:
             self.user_template = Template(f.read())
         
         # Load schema
@@ -266,26 +290,22 @@ class NaiveRAGAgent(BaseAgent):
         Returns:
             action tuple and reasoning
         """
-        # Encode state to get normalized values
-        encoded_state = self.encode_state(state)
         
-        # Build query state for retrieval
-        # encoded_state: [pre_type, player_x, player_y, opponent_x, opponent_y, hit_x, hit_y]
         query_state = {
-            'player_location_x': encoded_state[1],
-            'player_location_y': encoded_state[2],
-            'hit_x': encoded_state[5],
-            'hit_y': encoded_state[6],
-            'opponent_type': float(state[0]),
-            'opponent_location_x': encoded_state[3],
-            'opponent_location_y': encoded_state[4]
+            'player_location_x': state[1][0],
+            'player_location_y': state[2][1],
+            'hit_x': state[3][0],
+            'hit_y': state[3][1],
+            'opponent_type': int(state[0]),
+            'opponent_location_x': state[2][0],
+            'opponent_location_y': state[2][1]
         }
         
         # Retrieve similar experiences
         experiences = self.database.retrieve(query_state, top_k=self.top_k)
         
-        # Build context for LLM
-        context = {
+        # Build state dictionary
+        state_dict = {
             'rally': info.get('rally', 0),
             'ball_round': info['round'][-1] if info.get('round') else 1,
             'player_score': info['score'][0] if info.get('score') else 0,
@@ -303,10 +323,19 @@ class NaiveRAGAgent(BaseAgent):
             'opponent_location_y': query_state['opponent_location_y'],
             'opponent_move_x': 0,  # Not directly available in state
             'opponent_move_y': 0,
-            'launch': launch,
-            'top_k': self.top_k,
-            'experiences': experiences
         }
+        
+        # Build context for LLM using verbalizer if enabled
+        if self.use_verbalizer:
+            context = self.verbalizer.build_prompt_context(state_dict, experiences, launch=launch)
+        else:
+            # Standard context without verbalization
+            context = {
+                **state_dict,
+                'launch': launch,
+                'top_k': self.top_k,
+                'experiences': experiences
+            }
         
         # Render user prompt
         user_prompt = self.user_template.render(**context)
@@ -368,5 +397,70 @@ class NaiveRAGAgent(BaseAgent):
             (0.0, 0.0),
             [0.1] * 10
         ), "Default action due to LLM failure"
+    
+    def verbalize_current_state(self, state, info, launch=False):
+        """
+        Get verbalized state string and retrieved cases string for a given state.
+        
+        This is useful for debugging and analysis to see how the verbalizer
+        converts the current state and retrieved experiences to natural language.
+        
+        Args:
+            state: Environment state [opponent_shot_type, player_pos, opponent_pos, landing_pos]
+            info: Additional info dict
+            launch: Whether this is a serve
+        
+        Returns:
+            Tuple of (state_str, cases_str, experiences)
+            - state_str: Verbalized state as string
+            - cases_str: Verbalized retrieved experiences as string
+            - experiences: List of raw experience dictionaries
+        """
+        
+        # Build query state for retrieval
+        query_state = {
+            'player_location_x': state[1][0],
+            'player_location_y': state[2][1],
+            'hit_x': state[3][0],
+            'hit_y': state[3][1],
+            'opponent_type': int(state[0]),
+            'opponent_location_x': state[2][0],
+            'opponent_location_y': state[2][1]
+        }
+        
+        # Retrieve similar experiences
+        experiences = self.database.retrieve(query_state, top_k=self.top_k)
+        
+        # Build state dictionary
+        state_dict = {
+            'rally': info.get('rally', 0),
+            'ball_round': info['round'][-1] if info.get('round') else 1,
+            'player_score': info['score'][0] if info.get('score') else 0,
+            'opponent_score': info['score'][1] if info.get('score') else 0,
+            'score_status': info['score'][0] - info['score'][1] if info.get('score') else 0,
+            'player_location_x': query_state['player_location_x'],
+            'player_location_y': query_state['player_location_y'],
+            'ball_distance': 0,
+            'ball_distance_x': state[3][0] - state[1][0] if len(state) > 3 else 0,
+            'ball_distance_y': state[3][1] - state[1][1] if len(state) > 3 else 0,
+            'hit_x': query_state['hit_x'],
+            'hit_y': query_state['hit_y'],
+            'opponent_type': query_state['opponent_type'],
+            'opponent_location_x': query_state['opponent_location_x'],
+            'opponent_location_y': query_state['opponent_location_y'],
+            'opponent_move_x': 0,
+            'opponent_move_y': 0,
+        }
+        
+        # Use verbalizer if available
+        if self.verbalizer is not None:
+            state_str = self.verbalizer.verbalize_state(state_dict)
+            cases_str = self.verbalizer.verbalize_experiences(experiences)
+        else:
+            # Fallback to simple string representation
+            state_str = str(state_dict)
+            cases_str = str(experiences)
+        
+        return state_str, cases_str, experiences
 
 

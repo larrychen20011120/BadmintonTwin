@@ -14,6 +14,7 @@ sys.path.append(project_path)
 
 from Agent.base_agent import BaseAgent
 from Agent.naive_rag import NaiveRAGAgent, NaiveRAGDatabase
+from Agent.verbalizer import create_verbalizer, verbalize_state, verbalize_experiences
 from Utils.helper import state_col, action_col, transition, terminate, edit_distance
 
 
@@ -46,9 +47,82 @@ def state_to_env_format(state_18):
     return [opponent_type, player_pos, opponent_pos, landing_pos]
 
 
+def build_state_dict_from_tensor(state_18, info=None):
+    """Build state dictionary from 18-dim state tensor for verbalization.
+    
+    Args:
+        state_18: 18-dim state tensor
+        info: Optional additional info dict with rally, round, score info
+    
+    Returns:
+        State dictionary suitable for verbalization
+    """
+    state_dict = {
+        'rally': info.get('rally', 0) if info else 0,
+        'ball_round': info.get('round', [1])[-1] if info and info.get('round') else int(state_18[1].item()),
+        'player_score': info.get('score', [0, 0])[0] if info else int(state_18[2].item()),
+        'opponent_score': info.get('score', [0, 0])[1] if info else int(state_18[3].item()),
+        'score_status': info.get('score', [0, 0])[0] - info.get('score', [0, 0])[1] if info else int(state_18[4].item()),
+        'player_location_x': float(state_18[5].item()),
+        'player_location_y': float(state_18[6].item()),
+        'ball_distance': float(state_18[7].item()),
+        'ball_distance_x': float(state_18[8].item()),
+        'ball_distance_y': float(state_18[9].item()),
+        'hit_x': float(state_18[10].item()),
+        'hit_y': float(state_18[11].item()),
+        'opponent_type': float(state_18[12].item()),
+        'opponent_location_x': float(state_18[13].item()),
+        'opponent_location_y': float(state_18[14].item()),
+        'opponent_move_x': float(state_18[15].item()),
+        'opponent_move_y': float(state_18[16].item()),
+    }
+    return state_dict
+
+
+def get_verbalized_state_and_cases(state_18, database, info=None, top_k=5):
+    """Get verbalized state string and retrieved cases string for a given state.
+    
+    This function is useful for debugging and analysis purposes to see
+    how the verbalizer converts states and retrieved experiences.
+    
+    Args:
+        state_18: 18-dim state tensor
+        database: NaiveRAGDatabase instance for retrieval
+        info: Optional additional info dict
+        top_k: Number of similar experiences to retrieve
+    
+    Returns:
+        Tuple of (state_str, cases_str, experiences) - verbalized strings and raw experiences
+    """
+    # Build state dictionary
+    state_dict = build_state_dict_from_tensor(state_18, info)
+    
+    # Build query for retrieval (similar to NaiveRAGAgent.predict)
+    query_state = {
+        'player_location_x': state_dict['player_location_x'],
+        'player_location_y': state_dict['player_location_y'],
+        'hit_x': state_dict['hit_x'],
+        'hit_y': state_dict['hit_y'],
+        'opponent_type': state_dict['opponent_type'],
+        'opponent_location_x': state_dict['opponent_location_x'],
+        'opponent_location_y': state_dict['opponent_location_y']
+    }
+    
+    # Retrieve similar experiences
+    experiences = database.retrieve(query_state, top_k=top_k)
+    
+    # Create verbalizer and generate strings
+    verbalizer = create_verbalizer()
+    state_str = verbalizer.verbalize_state(state_dict)
+    cases_str = verbalizer.verbalize_experiences(experiences)
+    
+    return state_str, cases_str, experiences
+
+
 def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_map_path,
                                database_dir, model_name="Qwen/Qwen2.5-7B-Instruct",
-                               api_key="EMPTY", port=16000, top_k=5, skip_first_n=0):
+                               api_key="EMPTY", port=16000, top_k=5, skip_first_n=0,
+                               use_verbalizer=False, verbalized_prompt=False):
     """
     Evaluate NaiveRAG Agent on test set.
     
@@ -98,7 +172,9 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
             model_name=model_name,
             api_key=api_key,
             port=port,
-            top_k=top_k
+            top_k=top_k,
+            use_verbalizer=use_verbalizer,
+            verbalized_prompt=verbalized_prompt
         )
         
         # Storage for metrics
@@ -141,7 +217,9 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
                         model_name=model_name,
                         api_key=api_key,
                         port=port,
-                        top_k=top_k
+                        top_k=top_k,
+                        use_verbalizer=use_verbalizer,
+                        verbalized_prompt=verbalized_prompt
                     )
                 except:
                     # Fallback: opponent also uses target's database
@@ -178,7 +256,7 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
                 
                 # Initialize state
                 current_state = build_state_tensor_from_row(first_row, current_player_id)
-                
+
                 rally_done = False
                 shot_idx = 0
                 
@@ -233,6 +311,8 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
                             rally_move_gt_seq.append(gt_move)
                             rally_shot_pred_seq.append(pred_shot_type)
                             rally_shot_gt_seq.append(gt_shot_type)
+
+                            
                             
                             # Create logits for CTC
                             dummy_logits = torch.zeros(12)
@@ -261,12 +341,12 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
                 if len(rally_land_gt_seq) > 0:
                     land_pred_array = np.array(rally_land_pred_seq)
                     land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
                     rally_land_dtw_list.append(land_dtw)
                     
                     move_pred_array = np.array(rally_move_pred_seq)
                     move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
+                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
                     # CTC loss
@@ -286,6 +366,9 @@ def evaluate_naive_rag_on_test(test_split_path, merged_csv_path, player_index_ma
                     
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
+
+                    # print("Predict Shot: ", rally_shot_pred_seq)
+                    # print("Answer  Shot: ", rally_shot_gt_seq)
         
         # Calculate average scores
         if total_rallies > 0:
@@ -370,7 +453,7 @@ if __name__ == "__main__":
                         default='Data/intermediate_data/player_index_map.json',
                         help='Path to player index mapping')
     parser.add_argument('--database_dir', type=str,
-                        default='Experiments/naive_rag/data',
+                        default='Experiments/naive_rag/data/norm',
                         help='Directory containing NaiveRAG databases')
     parser.add_argument('--model_name', type=str,
                         default='Qwen/Qwen2.5-7B-Instruct',
@@ -387,6 +470,10 @@ if __name__ == "__main__":
     parser.add_argument('--skip_first_n', type=int,
                         default=0,
                         help='Number of initial shots to skip in each rally (default: 0)')
+    parser.add_argument('--use_verbalizer', action='store_true',
+                        help='Enable verbalizer to convert state and experiences to natural language')
+    parser.add_argument('--verbalized_prompt', action='store_true',
+                        help='Use verbalized prompt template (requires --use_verbalizer)')
     parser.add_argument('--output', type=str,
                         default='Experiments/naive_rag/results/naive_rag_eval_results.json',
                         help='Output JSON file for results')
@@ -395,6 +482,11 @@ if __name__ == "__main__":
     
     if args.skip_first_n > 0:
         print(f"Skipping first {args.skip_first_n} shots in each rally")
+    
+    if args.use_verbalizer:
+        print("Verbalizer enabled")
+        if args.verbalized_prompt:
+            print("Using verbalized prompt template")
     
     results = evaluate_naive_rag_on_test(
         args.test_split,
@@ -405,7 +497,9 @@ if __name__ == "__main__":
         args.api_key,
         args.port,
         args.top_k,
-        args.skip_first_n
+        args.skip_first_n,
+        args.use_verbalizer,
+        args.verbalized_prompt
     )
     
     print_results(results)
