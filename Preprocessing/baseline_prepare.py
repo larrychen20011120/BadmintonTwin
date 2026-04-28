@@ -156,6 +156,181 @@ def prepare_naive_rag_data(df, split_content, player2index, output_dir):
     print(f"All databases saved to: {output_dir}")
 
 
+def prepare_timerag_data(df, split_content, player2index, output_dir, window_size=3):
+    """
+    為每個 train 中的玩家構建 TimeRAGDatabase。
+    
+    Args:
+        df: DataFrame with merged data (player column should be player names)
+        split_content: Train/test split dict
+        player2index: Player name to ID mapping
+        output_dir: Directory to save output files
+        window_size: Size of time window for retrieval (default: 3)
+    
+    Output:
+        - {player_name}_db.pkl: One database file per player
+    """
+    # Import here to avoid circular import issues
+    from Agent.timerag import TimeRAGDatabase
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define all columns needed by TimeRAGDatabase
+    # Note: 'set' column is optional and may not be present in all datasets
+    required_cols = [
+        'player',  # Must be player names, not IDs
+        'match_id',
+        # state_col columns
+        'rally', 'ball_round', 'player_score', 'opponent_score', 'score_status',
+        'player_location_x', 'player_location_y',
+        'ball_distance', 'ball_distance_x', 'ball_distance_y', 'hit_x', 'hit_y',
+        'opponent_type', 'opponent_location_x', 'opponent_location_y', 'opponent_move_x', 'opponent_move_y',
+        # action_col columns
+        'landing_x', 'landing_y', 'player_type', 'moving_x', 'moving_y'
+    ]
+    
+    # Check if all required columns are present
+    available_cols = [c for c in required_cols if c in df.columns]
+    missing_cols = set(required_cols) - set(available_cols)
+    if missing_cols:
+        print(f"Warning: Missing columns in DataFrame: {missing_cols}")
+        print(f"Available columns: {df.columns.tolist()}")
+    
+    # Ensure player column contains names (strings), not IDs
+    if df['player'].dtype in ['int64', 'float64'] or not df['player'].dtype == object:
+        print("Warning: player column appears to contain IDs, mapping back to names...")
+        index2player = {v: k for k, v in player2index.items()}
+        df = df.copy()
+        df['player'] = df['player'].map(index2player)
+    
+    # Filter to only include required columns that exist
+    df_filtered = df[available_cols].copy()
+    
+    # Build database for each player in training set
+    train_players = split_content.get('train', {})
+    successful_builds = 0
+    
+    for player_name in tqdm(train_players.keys(), desc=f"Building TimeRAG databases (window_size={window_size})"):
+        if player_name not in player2index:
+            print(f"Warning: {player_name} not in player_index_map, skipping")
+            continue
+        
+        player_id = player2index[player_name]
+        
+        # Filter data for this player (df has player names)
+        player_data = df_filtered[df_filtered['player'] == player_name].copy()
+        
+        if len(player_data) == 0:
+            print(f"Warning: No data found for {player_name}, skipping")
+            continue
+        
+        try:
+            # Create database with window size
+            database = TimeRAGDatabase(df_filtered, player_name, player_id, window_size=window_size)
+            
+            # Save database
+            safe_name = player_name.replace(" ", "_").replace(".", "")
+            output_path = os.path.join(output_dir, f"{safe_name}_db.pkl")
+            database.save(output_path)
+            successful_builds += 1
+        except Exception as e:
+            print(f"Error building database for {player_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    print(f"\nSuccessfully built {successful_builds} TimeRAG databases")
+    print(f"All databases saved to: {output_dir}")
+
+
+def prepare_twin_data(df, split_content, player2index, output_dir, max_scale=10):
+    """
+    為每個 train 中的玩家構建 TwinDatabase (I-MSDP)。
+
+    Args:
+        df: DataFrame with merged data (player column should be player names)
+        split_content: Train/test split dict
+        player2index: Player name to ID mapping
+        output_dir: Directory to save output files
+        max_scale: Maximum suffix length for I-MSDP (default: 10)
+
+    Output:
+        - {player_name}_db.pkl: One database file per player
+    """
+    # Import here to avoid circular import issues
+    from Agent.twin import TwinDatabase
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Define all columns needed by TwinDatabase
+    required_cols = [
+        'player',  # Must be player names, not IDs
+        'match_id',
+        # state_col columns
+        'rally', 'ball_round', 'player_score', 'opponent_score', 'score_status',
+        'player_location_x', 'player_location_y',
+        'ball_distance', 'ball_distance_x', 'ball_distance_y', 'hit_x', 'hit_y',
+        'opponent_type', 'opponent_location_x', 'opponent_location_y', 'opponent_move_x', 'opponent_move_y',
+        # action_col columns
+        'landing_x', 'landing_y', 'player_type', 'moving_x', 'moving_y'
+    ]
+
+    # Check if all required columns are present
+    available_cols = [c for c in required_cols if c in df.columns]
+    missing_cols = set(required_cols) - set(available_cols)
+    if missing_cols:
+        print(f"Warning: Missing columns in DataFrame: {missing_cols}")
+        print(f"Available columns: {df.columns.tolist()}")
+
+    # Ensure player column contains names (strings), not IDs
+    if df['player'].dtype in ['int64', 'float64'] or not df['player'].dtype == object:
+        print("Warning: player column appears to contain IDs, mapping back to names...")
+        index2player = {v: k for k, v in player2index.items()}
+        df = df.copy()
+        df['player'] = df['player'].map(index2player)
+
+    # Filter to only include required columns that exist
+    df_filtered = df[available_cols].copy()
+
+    # Build database for each player in training set
+    train_players = split_content.get('train', {})
+    successful_builds = 0
+
+    for player_name in tqdm(train_players.keys(), desc=f"Building Twin databases (max_scale={max_scale})"):
+        if player_name not in player2index:
+            print(f"Warning: {player_name} not in player_index_map, skipping")
+            continue
+
+        player_id = player2index[player_name]
+
+        # Filter data for this player (df has player names)
+        player_data = df_filtered[df_filtered['player'] == player_name].copy()
+
+        if len(player_data) == 0:
+            print(f"Warning: No data found for {player_name}, skipping")
+            continue
+
+        try:
+            # Create database with max_scale
+            database = TwinDatabase(df_filtered, player_name, player_id, max_scale=max_scale)
+
+            # Save database
+            safe_name = player_name.replace(" ", "_").replace(".", "")
+            output_path = os.path.join(output_dir, f"{safe_name}_db.pkl")
+            database.save(output_path)
+            successful_builds += 1
+        except Exception as e:
+            print(f"Error building database for {player_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    print(f"\nSuccessfully built {successful_builds} Twin databases")
+    print(f"All databases saved to: {output_dir}")
+
+
 def prepared_rallynet_data(df, split_content, player2index, output_dir):
     """
     Prepare data for RallyNet.
@@ -323,8 +498,16 @@ if __name__ == "__main__":
                         help='Prepare RallyNetv2 data')
     parser.add_argument('--naive-rag', action='store_true', 
                         help='Prepare NaiveRAG databases')
-    parser.add_argument('--all', action='store_true', 
+    parser.add_argument('--timerag', action='store_true',
+                        help='Prepare TimeRAG databases')
+    parser.add_argument('--twin', action='store_true',
+                        help='Prepare Twin (I-MSDP) databases')
+    parser.add_argument('--all', action='store_true',
                         help='Prepare all baseline data')
+    parser.add_argument('--max_scale', type=int, default=10,
+                        help='Maximum scale for Twin I-MSDP (default: 10)')
+    parser.add_argument('--window_size', type=int, default=3,
+                        help='Window size for TimeRAG (default: 3)')
     parser.add_argument('--train_split', type=str,
                         default='Data/intermediate_data/train_test_split.json',
                         help='Path to train test split JSON')
@@ -340,6 +523,12 @@ if __name__ == "__main__":
     parser.add_argument('--naive_rag_output', type=str,
                         default='Experiments/naive_rag/data/norm',
                         help='Output directory for NaiveRAG databases')
+    parser.add_argument('--timerag_output', type=str,
+                        default='Experiments/timerag/data/norm',
+                        help='Output directory for TimeRAG databases')
+    parser.add_argument('--twin_output', type=str,
+                        default='Experiments/twin/data/norm',
+                        help='Output directory for Twin databases')
     parser.add_argument('--rallynetv2_output', type=str,
                         default='Experiments/rallynetv2/data/norm',
                         help='Output directory for RallyNetv2 data')
@@ -347,7 +536,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # If no specific flag is set, default to --all
-    if not (args.bc or args.naive_rag or args.rallynetv2 or args.all):
+    if not (args.bc or args.naive_rag or args.timerag or args.twin or args.rallynetv2 or args.all):
         args.all = True
     
     print("="*60)
@@ -393,16 +582,32 @@ if __name__ == "__main__":
         prepare_naive_rag_data(df, split_content, player2index, args.naive_rag_output)
         print()
 
+    if args.all or args.timerag:
+        print("-"*60)
+        print(f"Preparing TimeRAG databases (window_size={args.window_size})...")
+        print("-"*60)
+        # For TimeRAG, we keep player names
+        prepare_timerag_data(df, split_content, player2index, args.timerag_output, window_size=args.window_size)
+        print()
+    
+    if args.all or args.twin:
+        print("-"*60)
+        print(f"Preparing Twin (I-MSDP) databases (max_scale={args.max_scale})...")
+        print("-"*60)
+        # For Twin, we keep player names
+        prepare_twin_data(df, split_content, player2index, args.twin_output, max_scale=args.max_scale)
+        print()
+
     if args.all or args.rallynetv2:
         print("-"*60)
         print("Preparing RallyNetv2 data...")
         print("-"*60)
         df_rallynetv2 = df.copy()
         df_rallynetv2['player'] = df_rallynetv2['player'].map(player2index)
-        # For NaiveRAG, we keep player names
+        # For RallyNetv2, we map player to IDs
         prepared_rallynet_data(df_rallynetv2, split_content, player2index, args.rallynetv2_output)
         print()
-    
+
     print("="*60)
     print("Data preparation complete!")
     print("="*60)

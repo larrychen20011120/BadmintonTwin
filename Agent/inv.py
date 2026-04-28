@@ -150,7 +150,8 @@ input_dim = 32
 hidden_dim = 128
 
 model = MLP(input_dim, hidden_dim, player_id_len, shot_type_len).cuda()
-ce = nn.CrossEntropyLoss(ignore_index = 0)
+class_weights = compute_shot_type_weights(method='uniform').cuda()
+ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index = 0)
 mse = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
@@ -173,8 +174,10 @@ for epoch in range(num_epochs):
         shot_loss = ce(shot_logit, true_shot_type)
         move_loss = mse(move_logit, true_movement_pos)
 
-        loss = (land_loss + shot_loss + move_loss) * batch_masks
-        loss = loss.sum() / batch_masks.sum().clamp(min=1)
+        # loss = (land_loss + shot_loss + move_loss) * batch_masks
+        # loss = loss.sum() / batch_masks.sum().clamp(min=1)
+        loss = land_loss + shot_loss + move_loss
+        
         loss.backward()
         optimizer.step()
         running_loss += loss.item()

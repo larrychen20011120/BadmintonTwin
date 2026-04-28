@@ -10,90 +10,116 @@ conda activate badminton
 
 **Start LLM Server (Required for Agent):**
 ```bash
-sh Scripts/serve_qwen.sh  # Serves Qwen2.5-7B on port 16000
+sh Scripts/serve_qwen.sh  # Serves Qwen2.5-7B on port 16000 via vLLM
+```
+Requires GPU with ~16GB VRAM (uses 92% utilization).
+
+**Data Preprocessing (One-time):**
+```bash
+cd Preprocessing
+python data.py        # Merges shuttleset + shuttleset22 → Data/intermediate_data/merged.csv
+python style_shift.py # Identifies style-shifted matches → Data/intermediate_data/style_shift.json
+python split.py       # Train/test split → Data/intermediate_data/transformed_matches.json
 ```
 
-**Preprocess Data (One-time):**
+## Running Experiments
+
+**Full Pipeline (automated):**
 ```bash
-python Preprocessing/data.py      # Merges shuttleset + shuttleset22
-python Preprocessing/style_shift.py  # Identifies style-shifted matches
-python Preprocessing/split.py     # Train/test split
+python Scripts/run_full_pipeline.py --experiment norm      # Normal matches
+python Scripts/run_full_pipeline.py --experiment shifted   # Style-shifted matches
+python Scripts/run_full_pipeline.py --all                  # Both experiments
+```
+
+**Individual Agent Evaluation:**
+```bash
+# BC (Behavior Cloning) - see Scripts/eval_bc.py
+python Agent/eval_rallynet.py     # RallyNet evaluation
+python Agent/eval_naive_rag.py    # Naive RAG baseline
+python Agent/eval_rallynetv2.py   # RallyNet v2 evaluation
 ```
 
 ## Architecture
 
 **Entry Points:**
-- `Agent/twin.py` - Main LLM-based badminton agent (TwoStageLLMAgent)
-- `BadmintonEnv/Environment.py` - Gym-like environment for rally simulation
-- `BadmintonEnv/Agent/RallyNet.py` - BC model for opponent behavior cloning
+- `Agent/bc.py` - Behavior Cloning agent (main baseline)
+- `Agent/rallynet.py` - RallyNet SDE-based opponent model
+- `Agent/rallynetv2.py` - Extended RallyNet
+- `Agent/naive_rag.py` - RAG baseline using LLM
+- `Agent/base_agent.py` - Abstract base class for all agents
 
 **Key Directory Structure:**
 ```
-Agent/          - Agent implementations (twin.py, bc.py, rallynet.py, naive_rag.py)
-BadmintonEnv/   - Environment + RallyNet BC models
-Preprocessing/  - Data pipeline scripts
-Utils/          - LLM wrapper (port 16000), config, helpers
-Prompts/        - Jinja2 templates for LLM prompts
-Schemas/        - JSON schemas for structured LLM output
-Data/input_data/    - Raw shuttleset CSVs
-Data/offline_data/  - Processed match data
-Data/output_data/   - Simulation outputs
+Agent/              - Agent implementations (bc.py, rallynet.py, naive_rag.py, etc.)
+Experiments/        - Experiment outputs organized by method (bc/, naive_rag/, rallynetv2/, random/)
+Preprocessing/      - Data pipeline scripts (data.py, style_shift.py, split.py)
+Utils/              - LLM wrapper (port 16000), badminton_config.py, helpers
+Prompts/Agent/      - Jinja2 templates for LLM prompts
+Schemas/Agent/      - JSON schemas for structured LLM output
+Scripts/            - Training/evaluation scripts and config.yaml
+Data/intermediate_data/ - Processed match data (merged.csv, transformed_matches.json)
 ```
 
-## Running the Agent
+## Configuration
 
-```bash
-python Agent/twin.py \
-  --player "Kento MOMOTA" \
-  --opponent "Viktor AXELSEN" \
-  --n_rallies 50 \
-  --filename my_output_game \
-  --situation "選手現在腳受傷，移動能力不如往常"
-```
-
-**Arguments:**
-- `--player` - Player agent name (target)
-- `--opponent` - Opponent name or 'ALL' for BC baseline
-- `--constraint/--no-constraint` - Enable physics constraints
-- `--n_rallies` - Number of rallies to simulate
-- `--situation` - Chinese context for the agent (injuries, conditions)
-
-**Output:** `Data/output_data/{filename}.csv` with rally trajectory
+**Central Config:** `Scripts/config.yaml`
+- Defines paths for all experiments (BC, NaiveRAG, Random)
+- BC training params: epochs=100, batch_size=64, lr=0.001
+- NaiveRAG params: port=16000, top_k=5
 
 ## Environment & Actions
 
-**State (8 dims):** `[opponent_shot_type, player_x, player_y, opponent_x, opponent_y, landing_x, landing_y]`
-- Coordinates normalized to [-1, 1] internally
+**State (input to agents):** `[opponent_shot_type, player_x, player_y, opponent_x, opponent_y, landing_x, landing_y]`
+- Coordinates normalized internally: x=[-1, 1], y=[-1, 1]
 - External bounds: x=[-177.5, 177.5], y=[-480, 480]
 
 **Action:** `(shot_type, hit_position, landing_position, move_position, distance)`
-- `shot_type`: 1-11 (Serve short, Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, Drop, Serve long, Missed)
+- `shot_type`: 1-11 per `Utils/badminton_config.py` EN_SHOT2INDEX
 - `landing_position`: x=[-177.5, 177.5], y=[0, 480]
 - `move_position`: x=[-177.5, 177.5], y=[-480, 0]
 
-## Data Processing Notes
-
-- Input datasets: `shuttleset.csv`, `shuttleset22.csv` (place in `Data/input_data/`)
-- Output of pipeline: `transformed_matches.json` (train/test split)
-- Shot type mapping in `Utils/badminton_config.py`: EN_SHOT2INDEX, area_groups
+**Shot Types:**
+1=Serve short, 2=Clear, 3=Push Shot, 4=Smash, 5=Smash Defence, 6=Drive, 7=Net Shot, 8=Lob, 9=Drop, 10=Serve long, 11=Missed
 
 ## LLM Integration
 
-- Local vLLM server expected on port 16000
-- Config: `BadmintonGPT/openai_two_stage.yaml` (referenced but not in repo)
-- Structured output validated against JSON schemas
-- Default model: Qwen/Qwen2.5-7B-Instruct
+- Local vLLM server expected on **port 16000**
+- Default model: `Qwen/Qwen2.5-7B-Instruct`
+- Client wrapper: `Utils/llm.py` - handles schema validation via JSON Schema
+- Structured output enforced with retries (max 10 trials)
 
-## Important Paths
+## Data Processing Notes
 
-- Weights: `BadmintonEnv/Agent/weight/Ralleynet/gen_e_1000.trc`
-- Miss-hit model: `BadmintonEnv/Agent/BC_model/model_weights_merge6.pth`
-- Target players: `input_data/target_players_ids.pkl`
-- Hyperparameters: `BadmintonEnv/Agent/hyperparameters.pkl`
+**Input datasets** (place in `Data/input_data/`):
+- `shuttleset.csv`, `shuttleset22.csv`
+
+**Pipeline outputs:**
+- `Data/intermediate_data/merged.csv` - Combined dataset
+- `Data/intermediate_data/style_shift.json` - Style shift classifications
+- `Data/intermediate_data/transformed_matches.json` - Final train/test data
+
+**Player mappings:** `Data/intermediate_data/player_index_map.json`
+
+## Training BC Models
+
+```bash
+python Scripts/train_bc.py \
+  --experiment norm \
+  --epochs 100 \
+  --batch_size 64
+```
+Weights saved to: `Experiments/bc/weight/{norm,shifted}_model.pth`
+
+## Important File References
+
+- `Utils/badminton_config.py` - Shot type mappings, area groups
+- `Utils/llm.py` - LLM client with schema validation
+- `Scripts/config.yaml` - Centralized experiment configuration
+- `Agent/base_agent.py` - Agent interface definition
 
 ## Gitignore Exclusions
 
 Large artifacts excluded from git:
 - `*.pth`, `*.trc`, `*.pkl`, `*.csv`, `*.png`
-- `Shot_Evaluation/`, `Tactic_Evaluation/`, `Test_preprocess/`
-- `Result/`, `player/`, `*.ipynb`
+- `Experiments/**/results/`, `Experiments/**/data/`
+- `__pycache__/`

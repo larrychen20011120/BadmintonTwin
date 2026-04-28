@@ -14,7 +14,7 @@ from Agent.base_agent import BaseAgent
 from Agent.verbalizer import BadmintonVerbalizer, create_verbalizer
 from Utils.llm import LLM
 from Utils.helper import state_col, action_col, coord2area
-from Utils.badminton_config import LANG_AREA_MAPPING
+from Utils.badminton_config import LANG_AREA_MAPPING, INDEX2EN_SHOT
 
 
 class NaiveRAGDatabase:
@@ -107,11 +107,11 @@ class NaiveRAGDatabase:
     def retrieve(self, query_state, top_k=5):
         """
         Retrieve top-k similar experiences using mixed distance.
-        
+
         Args:
             query_state: Dict or array with retrieval keys
             top_k: Number of experiences to retrieve
-        
+
         Returns:
             List of dicts containing experience data
         """
@@ -124,56 +124,77 @@ class NaiveRAGDatabase:
             n_continuous = len(self.continuous_keys)
             query_continuous = query_state[:n_continuous].astype(np.float32)
             query_discrete = query_state[n_continuous:].astype(np.float32)
-        
+
         # Compute mixed distances (lower is better)
         distances = self._compute_mixed_distance(query_continuous, query_discrete)
-        
+
         # Convert distances to similarities (higher is better)
         # Using negative exponential: similarity = exp(-distance)
         similarities = np.exp(-distances)
-        
+
         # Get top-k indices (smallest distances = largest similarities)
         top_indices = np.argsort(distances)[:top_k]
-        
+
         # Build experience list
         experiences = []
         for idx in top_indices:
             row = self.data.iloc[idx]
             exp = {}
-            
+
             # Add retrieval keys
             for key in self.retrieval_keys:
                 exp[key] = float(row[key])
-            
+
             # Add metadata
             for key in self.metadata_keys:
                 if key in row:
                     exp[key] = float(row[key])
-            
+
+            # Add score_status as integer
+            if 'player_score' in row and 'opponent_score' in row:
+                exp['score_status'] = int(float(row['player_score']) - float(row['opponent_score']))
+
+            # Add semantic area names for all positions
+            if 'player_location_x' in row and 'player_location_y' in row:
+                player_area_id = coord2area(float(row['player_location_x']), float(row['player_location_y']))
+                exp['player_location_area'] = LANG_AREA_MAPPING.get(player_area_id, 'Unknown')
+
+            if 'hit_x' in row and 'hit_y' in row:
+                hit_area_id = coord2area(float(row['hit_x']), float(row['hit_y']))
+                exp['hit_position_area'] = LANG_AREA_MAPPING.get(hit_area_id, 'Unknown')
+
+            if 'opponent_location_x' in row and 'opponent_location_y' in row:
+                opponent_area_id = coord2area(float(row['opponent_location_x']), float(row['opponent_location_y']))
+                exp['opponent_location_area'] = LANG_AREA_MAPPING.get(opponent_area_id, 'Unknown')
+
             # Add actions
             for key in self.action_keys:
                 if key in row:
                     exp[key] = float(row[key])
-            
+
             # Add landing area semantic name
             if 'landing_x' in row and 'landing_y' in row:
                 landing_area_id = coord2area(float(row['landing_x']), float(row['landing_y']))
                 exp['landing_area'] = LANG_AREA_MAPPING.get(landing_area_id, 'Unknown')
             else:
                 exp['landing_area'] = 'Unknown'
-            
+
             # Add movement area semantic name
             if 'moving_x' in row and 'moving_y' in row:
                 movement_area_id = coord2area(float(row['moving_x']), float(row['moving_y']))
                 exp['movement_area'] = LANG_AREA_MAPPING.get(movement_area_id, 'Unknown')
             else:
                 exp['movement_area'] = 'Unknown'
-            
+
+            # Add shot type name
+            if 'opponent_type' in row:
+                exp['opponent_type_name'] = INDEX2EN_SHOT.get(int(row['opponent_type']), f"Unknown({int(row['opponent_type'])})")
+
             # Add similarity score
             exp['similarity'] = float(similarities[idx])
-            
+
             experiences.append(exp)
-        
+
         return experiences
     
     def save(self, filepath):
@@ -304,23 +325,40 @@ class NaiveRAGAgent(BaseAgent):
         # Retrieve similar experiences
         experiences = self.database.retrieve(query_state, top_k=self.top_k)
         
-        # Build state dictionary
+        # Build state dictionary with semantic area names
+        player_score = info['score'][0] if info.get('score') else 0
+        opponent_score = info['score'][1] if info.get('score') else 0
+        player_location_x = query_state['player_location_x']
+        player_location_y = query_state['player_location_y']
+        hit_x = query_state['hit_x']
+        hit_y = query_state['hit_y']
+        opponent_location_x = query_state['opponent_location_x']
+        opponent_location_y = query_state['opponent_location_y']
+
+        # Compute semantic area names
+        player_location_area = LANG_AREA_MAPPING.get(coord2area(player_location_x, player_location_y), 'Unknown')
+        hit_position_area = LANG_AREA_MAPPING.get(coord2area(hit_x, hit_y), 'Unknown')
+        opponent_location_area = LANG_AREA_MAPPING.get(coord2area(opponent_location_x, opponent_location_y), 'Unknown')
+
         state_dict = {
             'rally': info.get('rally', 0),
             'ball_round': info['round'][-1] if info.get('round') else 1,
-            'player_score': info['score'][0] if info.get('score') else 0,
-            'opponent_score': info['score'][1] if info.get('score') else 0,
-            'score_status': info['score'][0] - info['score'][1] if info.get('score') else 0,
-            'player_location_x': query_state['player_location_x'],
-            'player_location_y': query_state['player_location_y'],
+            'player_score': player_score,
+            'opponent_score': opponent_score,
+            'score_status': int(player_score - opponent_score),
+            'player_location_x': player_location_x,
+            'player_location_y': player_location_y,
+            'player_location_area': player_location_area,
             'ball_distance': 0,  # Will be computed if needed
-            'ball_distance_x': state[3][0] - state[1][0] if len(state) > 3 else 0,
-            'ball_distance_y': state[3][1] - state[1][1] if len(state) > 3 else 0,
-            'hit_x': query_state['hit_x'],
-            'hit_y': query_state['hit_y'],
+            'ball_distance_x': hit_x - player_location_x,
+            'ball_distance_y': hit_y - player_location_y,
+            'hit_x': hit_x,
+            'hit_y': hit_y,
+            'hit_position_area': hit_position_area,
             'opponent_type': query_state['opponent_type'],
-            'opponent_location_x': query_state['opponent_location_x'],
-            'opponent_location_y': query_state['opponent_location_y'],
+            'opponent_location_x': opponent_location_x,
+            'opponent_location_y': opponent_location_y,
+            'opponent_location_area': opponent_location_area,
             'opponent_move_x': 0,  # Not directly available in state
             'opponent_move_y': 0,
         }
@@ -430,24 +468,41 @@ class NaiveRAGAgent(BaseAgent):
         
         # Retrieve similar experiences
         experiences = self.database.retrieve(query_state, top_k=self.top_k)
-        
-        # Build state dictionary
+
+        # Build state dictionary with semantic area names
+        player_score = info['score'][0] if info.get('score') else 0
+        opponent_score = info['score'][1] if info.get('score') else 0
+        player_location_x = query_state['player_location_x']
+        player_location_y = query_state['player_location_y']
+        hit_x = query_state['hit_x']
+        hit_y = query_state['hit_y']
+        opponent_location_x = query_state['opponent_location_x']
+        opponent_location_y = query_state['opponent_location_y']
+
+        # Compute semantic area names
+        player_location_area = LANG_AREA_MAPPING.get(coord2area(player_location_x, player_location_y), 'Unknown')
+        hit_position_area = LANG_AREA_MAPPING.get(coord2area(hit_x, hit_y), 'Unknown')
+        opponent_location_area = LANG_AREA_MAPPING.get(coord2area(opponent_location_x, opponent_location_y), 'Unknown')
+
         state_dict = {
             'rally': info.get('rally', 0),
             'ball_round': info['round'][-1] if info.get('round') else 1,
-            'player_score': info['score'][0] if info.get('score') else 0,
-            'opponent_score': info['score'][1] if info.get('score') else 0,
-            'score_status': info['score'][0] - info['score'][1] if info.get('score') else 0,
-            'player_location_x': query_state['player_location_x'],
-            'player_location_y': query_state['player_location_y'],
+            'player_score': player_score,
+            'opponent_score': opponent_score,
+            'score_status': int(player_score - opponent_score),
+            'player_location_x': player_location_x,
+            'player_location_y': player_location_y,
+            'player_location_area': player_location_area,
             'ball_distance': 0,
-            'ball_distance_x': state[3][0] - state[1][0] if len(state) > 3 else 0,
-            'ball_distance_y': state[3][1] - state[1][1] if len(state) > 3 else 0,
-            'hit_x': query_state['hit_x'],
-            'hit_y': query_state['hit_y'],
+            'ball_distance_x': hit_x - player_location_x,
+            'ball_distance_y': hit_y - player_location_y,
+            'hit_x': hit_x,
+            'hit_y': hit_y,
+            'hit_position_area': hit_position_area,
             'opponent_type': query_state['opponent_type'],
-            'opponent_location_x': query_state['opponent_location_x'],
-            'opponent_location_y': query_state['opponent_location_y'],
+            'opponent_location_x': opponent_location_x,
+            'opponent_location_y': opponent_location_y,
+            'opponent_location_area': opponent_location_area,
             'opponent_move_x': 0,
             'opponent_move_y': 0,
         }

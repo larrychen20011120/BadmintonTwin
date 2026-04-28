@@ -1,0 +1,162 @@
+{
+  "HE Bingjiao": {
+    "land_dtw": 0.34518653376405006,
+    "move_dtw": 0.18624028585429767,
+    "shot_ctc": 1.5397521895031596,
+    "edit_dist": 0.5835563983819798,
+    "num_rallies": 86,
+    "num_shots": 373
+  },
+  "Kunlavut VITIDSARN": {
+    "land_dtw": 0.3550746003151834,
+    "move_dtw": 0.16316072084053798,
+    "shot_ctc": 1.6749805135111655,
+    "edit_dist": 0.599356467904855,
+    "num_rallies": 62,
+    "num_shots": 309
+  },
+  "LEE Cheuk Yiu": {
+    "land_dtw": 0.22818808815744496,
+    "move_dtw": 0.09379744040420178,
+    "shot_ctc": 1.2576733128777866,
+    "edit_dist": 0.253448275862069,
+    "num_rallies": 29,
+    "num_shots": 161
+  },
+  "PUSARLA V. Sindhu": {
+    "land_dtw": 0.22215701917824845,
+    "move_dtw": 0.11757809446467979,
+    "shot_ctc": 1.7867872847451105,
+    "edit_dist": 0.37785493827160493,
+    "num_rallies": 36,
+    "num_shots": 149
+  },
+  "Pornpawee CHOCHUWONG": {
+    "land_dtw": 0.2474779819257892,
+    "move_dtw": 0.09249760549406078,
+    "shot_ctc": 1.475061171584659,
+    "edit_dist": 0.33428130511463844,
+    "num_rallies": 36,
+    "num_shots": 148
+  },
+  "Rasmus GEMKE": {
+    "land_dtw": 0.3809581076720048,
+    "move_dtw": 0.19577987021833926,
+    "shot_ctc": 1.9211349925574135,
+    "edit_dist": 0.5961357270180799,
+    "num_rallies": 68,
+    "num_shots": 265
+  },
+  "Ratchanok INTANON": {
+    "land_dtw": 0.29996430145520225,
+    "move_dtw": 0.13362071105212925,
+    "shot_ctc": 1.7061047234186313,
+    "edit_dist": 0.43560680511900024,
+    "num_rallies": 41,
+    "num_shots": 180
+  },
+  "SHI Yuqi": {
+    "land_dtw": 0.3955644176794369,
+    "move_dtw": 0.2047005032596873,
+    "shot_ctc": 2.0043554728544213,
+    "edit_dist": 0.6134719710669077,
+    "num_rallies": 79,
+    "num_shots": 264
+  },
+  "Akane YAMAGUCHI": {
+    "land_dtw": 0.3484123463439336,
+    "move_dtw": 0.17693531856632774,
+    "shot_ctc": 1.7504335172840806,
+    "edit_dist": 0.510060795306697,
+    "num_rallies": 61,
+    "num_shots": 234
+  },
+  "An Se Young": {
+    "land_dtw": 0.3724975337896237,
+    "move_dtw": 0.16655678887132042,
+    "shot_ctc": 1.904547149280332,
+    "edit_dist": 0.5207996406109613,
+    "num_rallies": 53,
+    "num_shots": 192
+  },
+  "Anders ANTONSEN": {
+    "land_dtw": 0.37906556807268565,
+    "move_dtw": 0.19038178934469996,
+    "shot_ctc": 1.845347927964252,
+    "edit_dist": 0.5593340234644583,
+    "num_rallies": 46,
+    "num_shots": 177
+  },
+  "Anthony Sinisuka GINTING": {
+    "land_dtw": 0.37407096368152176,
+    "move_dtw": 0.21596178459313697,
+    "shot_ctc": 1.7170266950831694,
+    "edit_dist": 0.5688816738816739,
+    "num_rallies": 85,
+    "num_shots": 306
+  },
+  "CHEN Yufei": {
+    "land_dtw": 0.41693938905837,
+    "move_dtw": 0.18744357136021708,
+    "shot_ctc": 1.8567555976468464,
+    "edit_dist": 0.6423495754891104,
+    "num_rallies": 86,
+    "num_shots": 313
+  },
+  "CHOU Tien Chen": {
+    "land_dtw": 0.47348537829453163,
+    "move_dtw": 0.1982574761593762,
+    "shot_ctc": 1.9421144003091857,
+    "edit_dist": 0.6134929024463908,
+    "num_rallies": 86,
+    "num_shots": 358
+  },
+  "Carolina MARIN": {
+    "land_dtw": 0.36524871806948994,
+    "move_dtw": 0.21591382417198274,
+    "shot_ctc": 1.9901609950595431,
+    "edit_dist": 0.49634038800705466,
+    "num_rallies": 54,
+    "num_shots": 170
+  },
+  "Jonatan CHRISTIE": {
+    "land_dtw": 0.3649594375551609,
+    "move_dtw": 0.2284270049481392,
+    "shot_ctc": 1.8689008938638787,
+    "edit_dist": 0.6153296119085593,
+    "num_rallies": 95,
+    "num_shots": 338
+  },
+  "Kento MOMOTA": {
+    "land_dtw": 0.38474459439957825,
+    "move_dtw": 0.2104373034707842,
+    "shot_ctc": 1.8424547471498187,
+    "edit_dist": 0.5853782182729552,
+    "num_rallies": 95,
+    "num_shots": 382
+  },
+  "LEE Zii Jia": {
+    "land_dtw": 0.4520255606223906,
+    "move_dtw": 0.2002825936135561,
+    "shot_ctc": 1.9638211555205858,
+    "edit_dist": 0.6057220557220557,
+    "num_rallies": 104,
+    "num_shots": 325
+  },
+  "NG Ka Long Angus": {
+    "land_dtw": 0.32088601423096635,
+    "move_dtw": 0.16556429538967674,
+    "shot_ctc": 1.6864637875556945,
+    "edit_dist": 0.5884949494949495,
+    "num_rallies": 50,
+    "num_shots": 236
+  },
+  "Viktor AXELSEN": {
+    "land_dtw": 0.3749258236138343,
+    "move_dtw": 0.18400496959021787,
+    "shot_ctc": 1.6549507840987174,
+    "edit_dist": 0.5264891619730329,
+    "num_rallies": 93,
+    "num_shots": 351
+  }
+}

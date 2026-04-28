@@ -118,13 +118,24 @@ def run_full_pipeline(experiment_type, prepare_data=True, train=True, evaluate=T
             print("\n❌ 訓練失敗，中止流程")
             return False
     
-    # Step 3: 評估模型
+    # Step 3: 評估 BC 模型
     if evaluate:
         success, duration = run_script(
             'eval_bc.py',
             '--experiment', experiment_type
         )
         step_results.append(('Evaluate BC', success, duration))
+        
+        # Step 4: 評估 TimeRAG 模型
+        success, duration = run_script(
+            'eval_timerag.py',
+            '--test_split', config['paths'][f'{experiment_type}_split'],
+            '--merged_csv', config['paths']['merged_csv'],
+            '--player_map', config['paths']['player_map'],
+            '--database_dir', config['paths']['timerag']['data'][experiment_type],
+            '--output', config['paths']['timerag']['results'][experiment_type]
+        )
+        step_results.append(('Evaluate TimeRAG', success, duration))
     
     # 輸出總結
     total_duration = time.time() - total_start_time
@@ -149,11 +160,13 @@ def run_full_pipeline(experiment_type, prepare_data=True, train=True, evaluate=T
     
     if train:
         model_path = config['paths']['bc']['models'][experiment_type]
-        print(f"  模型: {model_path}")
+        print(f"  BC 模型: {model_path}")
     
     if evaluate:
         result_path = config['paths']['bc']['results'][experiment_type]
-        print(f"  評估結果: {result_path}")
+        print(f"  BC 評估結果: {result_path}")
+        timerag_result_path = config['paths']['timerag']['results'][experiment_type]
+        print(f"  TimeRAG 評估結果: {timerag_result_path}")
     
     print("-"*70)
     

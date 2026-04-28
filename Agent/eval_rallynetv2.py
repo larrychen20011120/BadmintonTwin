@@ -62,10 +62,12 @@ def embed_state_for_sde(state_tensor, inverse_model):
 
 
 def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_map_path,
-                                 model_path, hyperparameters_path, device='cuda', skip_first_n=0):
+                                 model_path, hyperparameters_path, device='cuda', skip_first_n=0,
+                                 batch_size=8):
     """
     Evaluate RallyNetV2 model on test set using per-rally simulation.
     Similar structure to BC evaluation but adapted for SDE-based model.
+    Sequential version - processes one rally at a time.
     """
     
     with open(test_split_path, 'r') as f:
@@ -99,6 +101,12 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
     model.eval()
     
     ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+
+    ts = torch.linspace(0, 71, steps=71, device=device)
+    min_val = torch.min(ts)
+    max_val = torch.max(ts)
+    normalized_tensor = (ts - min_val) / (max_val - min_val)
+    ts = normalized_tensor * 2
     
     player_items = list(test_split['test'].items())
     for target_player_name, test_match_ids in tqdm(player_items, desc="Evaluating players", position=0):
@@ -177,12 +185,6 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                     ht[shot_idx, :, :] = current_state
                     
                     with torch.no_grad():
-                        # Create time steps for current sequence length
-                        ts = torch.linspace(0, 71, steps=71, device=device)
-                        min_val = torch.min(ts)
-                        max_val = torch.max(ts)
-                        normalized_tensor = (ts - min_val) / (max_val - min_val)
-                        ts = normalized_tensor * 2
                         
                         # Use model.sample to get predictions with SDE sampling
                         # Pass ht[:seq_len] which has shape [seq_len, 1, 18]
@@ -194,20 +196,25 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                             shot_type_len=hyperparameters['shot_type_len']
                         )
                         # Extract predictions from mlp_action (shape: [5])
-                        land_logit = mlp_action[0:2].unsqueeze(0)  # [1, 2]
-                        shot_type = mlp_action[2].long().unsqueeze(0)  # [1]
-                        move_logit = mlp_action[3:5].unsqueeze(0)  # [1, 2]
+                        # land_logit = mlp_action[0:2].unsqueeze(0)  # [1, 2]
+                        # shot_type = mlp_action[2].long().unsqueeze(0)  # [1]
+                        # move_logit = mlp_action[3:5].unsqueeze(0)  # [1, 2]
+                        land_logit = inv_action[0:2].unsqueeze(0)  # [1, 2]
+                        shot_type = inv_action[2].long().unsqueeze(0)  # [1]
+                        move_logit = inv_action[3:5].unsqueeze(0)  # [1, 2]
+                        shot_logit = mlp_shot_logit
                     
                     # Apply mask for valid shot types
                     if launch:
                         mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
                     else:
-                        mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(device)
+                        mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0], dtype=torch.bool).to(device)
                     
                     # Re-apply mask to shot_probs and resample if needed
-                    shot_probs_masked = mlp_shot_logit * mask.float()
+                    shot_probs_masked = shot_logit * mask.float()
                     shot_probs_masked = shot_probs_masked / (shot_probs_masked.sum() + 1e-8)
                     shot_type_masked = torch.argmax(shot_probs_masked).unsqueeze(0)
+
                     
                     if is_target_turn:
                         target_player_shot_count += 1
@@ -217,7 +224,7 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                             rally_land_gt_seq.append(gt_action[0:2].numpy())
                             rally_move_pred_seq.append(move_logit.squeeze(0).cpu().numpy())
                             rally_move_gt_seq.append(gt_action[3:5].numpy())
-                            rally_shot_logits_seq.append(mlp_shot_logit.squeeze(0).cpu())
+                            rally_shot_logits_seq.append(shot_logit.squeeze(0).cpu())
                             rally_shot_gt_seq.append(int(gt_action[2].item()))
                             rally_shot_pred_seq.append(int(shot_type_masked.item()))
                             
@@ -231,9 +238,8 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                     
                     # Update state (action affects next state through transition)
                     other_player_id = opponent_player_id if is_target_turn else target_player_id
-                    next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
 
-                    # print(action_tensor)
+                    next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
 
                     if terminate(next_state.cpu()):
                         rally_done = True
@@ -246,12 +252,12 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                 if len(rally_land_gt_seq) > 0:
                     land_pred_array = np.array(rally_land_pred_seq)
                     land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
                     rally_land_dtw_list.append(land_dtw)
                     
                     move_pred_array = np.array(rally_move_pred_seq)
                     move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
+                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
                     rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
@@ -269,6 +275,10 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                     
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
+
+                    print("===============================")
+                    print(rally_shot_gt_seq)
+                    print(rally_shot_pred_seq)
         
         # Store results for this player
         if total_rallies > 0:
@@ -293,6 +303,350 @@ def evaluate_rallynetv2_on_test(test_split_path, merged_csv_path, player_index_m
                 'edit_dist': float('inf'),
                 'num_rallies': 0,
                 'num_shots': 0
+            }
+    
+    return results
+
+
+class RallyState:
+    """Helper class to track the state of a single rally during batch evaluation."""
+    def __init__(self, rally_df, target_player_id, opponent_player_id, target_player_name, opponent_name, device):
+        self.rally_df = rally_df.sort_values('ball_round').reset_index(drop=True)
+        self.target_player_id = target_player_id
+        self.opponent_player_id = opponent_player_id
+        self.target_player_name = target_player_name
+        self.opponent_name = opponent_name
+        self.device = device
+        
+        self.rally_length = len(rally_df)
+        self.ht = torch.zeros(self.rally_length, 18, device=device)  # [rally_length, 18]
+        
+        # Initialize first state
+        first_row = self.rally_df.iloc[0]
+        current_player_name = first_row['player']
+        current_player_id = target_player_id if current_player_name == target_player_name else opponent_player_id
+        self.current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
+        
+        self.shot_idx = 0
+        self.done = False
+        self.target_player_shot_count = 0
+        
+        # For metrics collection
+        self.rally_land_pred_seq = []
+        self.rally_land_gt_seq = []
+        self.rally_move_pred_seq = []
+        self.rally_move_gt_seq = []
+        self.rally_shot_logits_seq = []
+        self.rally_shot_gt_seq = []
+        self.rally_shot_pred_seq = []
+    
+    def step(self, land_logit, move_logit, shot_type_masked, mlp_shot_logit):
+        """Execute one step with the predicted actions."""
+        if self.done or self.shot_idx >= len(self.rally_df):
+            self.done = True
+            return
+        
+        row = self.rally_df.iloc[self.shot_idx]
+        ground_truth_player = row['player']
+        is_target_turn = (ground_truth_player == self.target_player_name)
+        current_player_id = self.target_player_id if is_target_turn else self.opponent_player_id
+        
+        self.current_state[17] = current_player_id
+        
+        # Update ht
+        self.ht[self.shot_idx, :] = self.current_state
+        
+        # Collect metrics if it's target player's turn
+        if is_target_turn:
+            self.target_player_shot_count += 1
+            # Skip first N shots logic handled outside
+            self.rally_land_pred_seq.append(land_logit.squeeze(0).cpu().numpy())
+            gt_action = build_action_tensor_from_row(row)
+            self.rally_land_gt_seq.append(gt_action[0:2].numpy())
+            self.rally_move_pred_seq.append(move_logit.squeeze(0).cpu().numpy())
+            self.rally_move_gt_seq.append(gt_action[3:5].numpy())
+            self.rally_shot_logits_seq.append(mlp_shot_logit.squeeze(0).cpu())
+            self.rally_shot_gt_seq.append(int(gt_action[2].item()))
+            self.rally_shot_pred_seq.append(int(shot_type_masked.item()))
+        
+        # Build action tensor for transition
+        action_tensor = torch.tensor([
+            land_logit[0, 0].item(), land_logit[0, 1].item(),
+            float(shot_type_masked.item()),
+            move_logit[0, 0].item(), move_logit[0, 1].item()
+        ], dtype=torch.float32)
+        
+        # Update state
+        other_player_id = self.opponent_player_id if is_target_turn else self.target_player_id
+        next_state = transition(action_tensor.cpu(), self.current_state.cpu(), other_player_id)
+        
+        if terminate(next_state.cpu()):
+            self.done = True
+        
+        self.current_state = next_state.to(self.device)
+        self.shot_idx += 1
+        
+        if self.shot_idx >= len(self.rally_df):
+            self.done = True
+    
+    def get_metrics(self, skip_first_n=0):
+        """Get metrics for this rally."""
+        # Apply skip_first_n
+        if skip_first_n > 0 and len(self.rally_shot_gt_seq) > skip_first_n:
+            return {
+                'land_pred': self.rally_land_pred_seq[skip_first_n:],
+                'land_gt': self.rally_land_gt_seq[skip_first_n:],
+                'move_pred': self.rally_move_pred_seq[skip_first_n:],
+                'move_gt': self.rally_move_gt_seq[skip_first_n:],
+                'shot_logits': self.rally_shot_logits_seq[skip_first_n:],
+                'shot_gt': self.rally_shot_gt_seq[skip_first_n:],
+                'shot_pred': self.rally_shot_pred_seq[skip_first_n:],
+            }
+        return {
+            'land_pred': self.rally_land_pred_seq,
+            'land_gt': self.rally_land_gt_seq,
+            'move_pred': self.rally_move_pred_seq,
+            'move_gt': self.rally_move_gt_seq,
+            'shot_logits': self.rally_shot_logits_seq,
+            'shot_gt': self.rally_shot_gt_seq,
+            'shot_pred': self.rally_shot_pred_seq,
+        }
+
+
+def evaluate_rallynetv2_on_test_batch(test_split_path, merged_csv_path, player_index_map_path,
+                                       model_path, hyperparameters_path, device='cuda', skip_first_n=0,
+                                       batch_size=8):
+    """
+    Evaluate RallyNetV2 model on test set using batch rally simulation.
+    Processes multiple rallies in parallel for improved throughput.
+    
+    Args:
+        batch_size: Number of rallies to process in parallel (default: 8)
+    """
+    
+    with open(test_split_path, 'r') as f:
+        test_split = json.load(f)
+    with open(player_index_map_path, 'r') as f:
+        player2index = json.load(f)
+    
+    df = pd.read_csv(merged_csv_path)
+    target_cols = state_col + action_col
+    df = df.dropna(subset=target_cols).reset_index(drop=True)
+    
+    results = {}
+    
+    # Load hyperparameters to get model dimensions
+    with open(hyperparameters_path, 'rb') as f:
+        hyperparameters = pickle.load(f)
+    
+    # Import model class
+    from Agent.rallynetv2 import LatentSDE
+    
+    model = LatentSDE(
+        data_size=hyperparameters['data_size'],
+        latent_size=hyperparameters['latent_size'],
+        context_size=hyperparameters['context_size'],
+        hidden_size=hyperparameters['hidden_size'],
+        player_ids_len=hyperparameters['player_ids_len'],
+        shot_type_len=hyperparameters['shot_type_len']
+    ).to(device)
+    
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.eval()
+    
+    ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+
+    ts = torch.linspace(0, 71, steps=71, device=device)
+    min_val = torch.min(ts)
+    max_val = torch.max(ts)
+    normalized_tensor = (ts - min_val) / (max_val - min_val)
+    ts = normalized_tensor * 2
+    
+    # Collect all rallies first
+    all_rallies = []
+    player_items = list(test_split['test'].items())
+    
+    for target_player_name, test_match_ids in player_items:
+        if target_player_name not in player2index:
+            continue
+            
+        target_player_id = player2index[target_player_name]
+        
+        for match_id in test_match_ids:
+            match_df = df[(df['match_id'] == match_id)].copy()
+            if len(match_df) == 0:
+                continue
+            
+            players_in_match = match_df['player'].unique()
+            opponent_name = None
+            for p in players_in_match:
+                if p != target_player_name:
+                    opponent_name = p
+                    break
+            
+            if opponent_name is None or opponent_name not in player2index:
+                continue
+                
+            opponent_player_id = player2index[opponent_name]
+            
+            rallies = match_df.groupby(['set', 'rally'])
+            
+            for (set_num, rally_num), rally_df in rallies:
+                all_rallies.append({
+                    'rally_df': rally_df,
+                    'target_player_name': target_player_name,
+                    'target_player_id': target_player_id,
+                    'opponent_name': opponent_name,
+                    'opponent_player_id': opponent_player_id,
+                })
+    
+    # Process rallies in batches
+    rally_states = []
+    completed_rallies = []
+    
+    for rally_info in tqdm(all_rallies, desc="Initializing rallies"):
+        rally_state = RallyState(
+            rally_info['rally_df'],
+            rally_info['target_player_id'],
+            rally_info['opponent_player_id'],
+            rally_info['target_player_name'],
+            rally_info['opponent_name'],
+            device
+        )
+        rally_states.append(rally_state)
+    
+    # Process in batches until all rallies are done
+    pbar = tqdm(total=len(rally_states), desc="Processing rallies")
+    active_rallies = rally_states[:batch_size]
+    pending_rallies = rally_states[batch_size:]
+    
+    while active_rallies:
+        # Get batch of active rallies
+        batch_rallies = [r for r in active_rallies if not r.done]
+        
+        if not batch_rallies:
+            # All current batch done, load more
+            completed_rallies.extend(active_rallies)
+            pbar.update(len(active_rallies))
+            active_rallies = pending_rallies[:batch_size]
+            pending_rallies = pending_rallies[batch_size:]
+            continue
+        
+        # Build batch tensors
+        max_len = max(r.rally_length for r in batch_rallies)
+        batch_ht = []
+        batch_steps = []
+        batch_is_launch = []
+        
+        for rally in batch_rallies:
+            # Pad ht to max_len
+            ht_padded = torch.zeros(max_len, 18, device=device)
+            ht_padded[:rally.rally_length, :] = rally.ht
+            batch_ht.append(ht_padded)
+            batch_steps.append(rally.shot_idx)
+            batch_is_launch.append(rally.current_state[1].item() == 1)
+        
+        # Stack to [max_len, batch_size, 18]
+        ht_tensor = torch.stack(batch_ht, dim=1)  # [max_len, batch_size, 18]
+        steps_tensor = torch.tensor(batch_steps, device=device)
+        
+        # Batch inference
+        with torch.no_grad():
+            _, _, _, mlp_actions, mlp_shot_logits = model.sample_batch(
+                ht_batch=ht_tensor,
+                ts=ts,
+                steps=steps_tensor,
+                player_ids_len=hyperparameters['player_ids_len'],
+                shot_type_len=hyperparameters['shot_type_len']
+            )
+            # mlp_actions: [batch_size, 5]
+            # mlp_shot_logits: [batch_size, shot_type_len]
+        
+        # Apply masks and process results
+        for i, rally in enumerate(batch_rallies):
+            # Apply mask for valid shot types
+            if batch_is_launch[i]:
+                mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
+            else:
+                mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(device)
+            
+            shot_probs_masked = mlp_shot_logits[i] * mask.float()
+            shot_probs_masked = shot_probs_masked / (shot_probs_masked.sum() + 1e-8)
+            shot_type_masked = torch.argmax(shot_probs_masked)
+            
+            # Extract predictions
+            land_logit = mlp_actions[i, 0:2].unsqueeze(0)  # [1, 2]
+            move_logit = mlp_actions[i, 3:5].unsqueeze(0)  # [1, 2]
+            
+            # Step the rally
+            rally.step(land_logit, move_logit, shot_type_masked, mlp_shot_logits[i])
+    
+    pbar.close()
+    completed_rallies.extend(active_rallies)
+    
+    # Aggregate results by player
+    player_metrics = {}
+    
+    for rally in completed_rallies:
+        player_name = rally.target_player_name
+        if player_name not in player_metrics:
+            player_metrics[player_name] = {
+                'rally_land_dtw_list': [],
+                'rally_move_dtw_list': [],
+                'rally_shot_ctc_list': [],
+                'rally_edit_dist_list': [],
+                'total_rallies': 0,
+                'total_shots': 0,
+            }
+        
+        metrics = rally.get_metrics(skip_first_n=skip_first_n)
+        
+        if len(metrics['shot_gt']) > 0:
+            land_pred_array = np.array(metrics['land_pred'])
+            land_gt_array = np.array(metrics['land_gt'])
+            land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array)
+            player_metrics[player_name]['rally_land_dtw_list'].append(land_dtw)
+            
+            move_pred_array = np.array(metrics['move_pred'])
+            move_gt_array = np.array(metrics['move_gt'])
+            move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array)
+            player_metrics[player_name]['rally_move_dtw_list'].append(move_dtw)
+            
+            rally_shot_logits_tensor = torch.stack(metrics['shot_logits'])
+            rally_shot_targets_tensor = torch.tensor(metrics['shot_gt'], dtype=torch.long)
+            
+            log_probs = F.log_softmax(rally_shot_logits_tensor.unsqueeze(1), dim=-1)
+            input_length = torch.tensor([log_probs.shape[0]], dtype=torch.long)
+            target_length = torch.tensor([len(rally_shot_targets_tensor)], dtype=torch.long)
+            
+            rally_ctc = ctc_loss_fn(log_probs, rally_shot_targets_tensor, input_length, target_length)
+            player_metrics[player_name]['rally_shot_ctc_list'].append(rally_ctc.item())
+            
+            rally_edit_dist = edit_distance(metrics['shot_pred'], metrics['shot_gt'])
+            player_metrics[player_name]['rally_edit_dist_list'].append(rally_edit_dist)
+            
+            player_metrics[player_name]['total_rallies'] += 1
+            player_metrics[player_name]['total_shots'] += len(metrics['shot_gt'])
+    
+    # Compute final results
+    for player_name, metrics in player_metrics.items():
+        if metrics['total_rallies'] > 0:
+            results[player_name] = {
+                'land_dtw': float(np.mean(metrics['rally_land_dtw_list'])),
+                'move_dtw': float(np.mean(metrics['rally_move_dtw_list'])),
+                'shot_ctc': float(np.mean(metrics['rally_shot_ctc_list'])),
+                'edit_dist': float(np.mean(metrics['rally_edit_dist_list'])),
+                'num_rallies': metrics['total_rallies'],
+                'num_shots': metrics['total_shots'],
+            }
+        else:
+            results[player_name] = {
+                'land_dtw': float('inf'),
+                'move_dtw': float('inf'),
+                'shot_ctc': float('inf'),
+                'edit_dist': float('inf'),
+                'num_rallies': 0,
+                'num_shots': 0,
             }
     
     return results
@@ -347,15 +701,29 @@ def eval_model(args):
     if args.skip_first_n > 0:
         print(f"Skipping first {args.skip_first_n} shots in evaluation")
     
-    results = evaluate_rallynetv2_on_test(
-        args.test_split,
-        args.merged_csv,
-        args.player_map,
-        args.model_path,
-        args.hyperparameters,
-        device,
-        args.skip_first_n
-    )
+    if args.use_batch:
+        print(f"Using batch evaluation with batch_size={args.batch_size}")
+        results = evaluate_rallynetv2_on_test_batch(
+            args.test_split,
+            args.merged_csv,
+            args.player_map,
+            args.model_path,
+            args.hyperparameters,
+            device,
+            args.skip_first_n,
+            args.batch_size
+        )
+    else:
+        print("Using sequential evaluation (set --use-batch for faster batch evaluation)")
+        results = evaluate_rallynetv2_on_test(
+            args.test_split,
+            args.merged_csv,
+            args.player_map,
+            args.model_path,
+            args.hyperparameters,
+            device,
+            args.skip_first_n
+        )
     
     print_results(results)
     
@@ -398,6 +766,12 @@ if __name__ == "__main__":
                         help='Output JSON file for evaluation results')
     parser.add_argument('--skip_first_n', type=int, default=0,
                         help='Number of initial shots to skip in evaluation (default: 0)')
+    
+    # Batch evaluation settings
+    parser.add_argument('--use-batch', action='store_true',
+                        help='Use batch evaluation for faster processing (default: sequential)')
+    parser.add_argument('--batch-size', type=int, default=8,
+                        help='Batch size for batch evaluation (default: 8)')
     
     args = parser.parse_args()
     

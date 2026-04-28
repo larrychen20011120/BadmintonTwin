@@ -1,0 +1,54 @@
+Current Game State:
+- Rally: {{ rally|int }}
+- Ball Round: {{ ball_round|int }}
+- Score: Player {{ player_score|int }} - Opponent {{ opponent_score|int }}
+- Score Status: {{ score_status|int }}
+
+Current Positions:
+- Player Location: ({{ "{:.3f}".format(player_location_x) }}, {{ "{:.3f}".format(player_location_y) }}) [{{ player_location_area|default('Unknown') }}]
+- Ball Distance: {{ "{:.3f}".format(ball_distance) }} ({{ "{:.3f}".format(ball_distance_x) }}, {{ "{:.3f}".format(ball_distance_y) }})
+- Hit Position: ({{ "{:.3f}".format(hit_x) }}, {{ "{:.3f}".format(hit_y) }}) [{{ hit_position_area|default('Unknown') }}]
+
+Opponent Information:
+- Opponent Shot Type: {{ opponent_type|int }}
+- Opponent Location: ({{ "{:.3f}".format(opponent_location_x) }}, {{ "{:.3f}".format(opponent_location_y) }}) [{{ opponent_location_area|default('Unknown') }}]
+- Opponent Movement: ({{ "{:.3f}".format(opponent_move_x) }}, {{ "{:.3f}".format(opponent_move_y) }})
+
+{% if launch %}
+**This is a serve shot (ball_round=1). You MUST use shot_type 1 (Serve short) or 10 (Serve long).**
+{% endif %}
+
+---
+
+Retrieved Similar Time Windows (Top {{ top_k|int }}, Window Size: {{ window_size|int }}):
+{% for window in retrieved_windows %}
+Window {{ loop.index }} (Similarity: {{ "{:.2f}".format(window.similarity|default(0.0)) }}):
+{% for state in window.window_states %}{% if not state.padding %}
+  [Shot {{ loop.index }}]: Opponent Type {{ state.opponent_type|int }}, Player at ({{ "{:.3f}".format(state.player_location_x) }}, {{ "{:.3f}".format(state.player_location_y) }}) [{{ state.player_location_area|default('Unknown') }}], Hit at ({{ "{:.3f}".format(state.hit_x) }}, {{ "{:.3f}".format(state.hit_y) }}) [{{ state.hit_position_area|default('Unknown') }}], Opponent at ({{ "{:.3f}".format(state.opponent_location_x) }}, {{ "{:.3f}".format(state.opponent_location_y) }}) [{{ state.opponent_location_area|default('Unknown') }}]
+{% endif %}{% endfor %}
+  -> Result Action: Shot Type {{ window.action.player_type|int }} -> Landing at ({{ "{:.3f}".format(window.action.landing_x) }}, {{ "{:.3f}".format(window.action.landing_y) }}) [{{ window.action.get('landing_area', 'Unknown') }}], Move to ({{ "{:.3f}".format(window.action.moving_x) }}, {{ "{:.3f}".format(window.action.moving_y) }}) [{{ window.action.get('movement_area', 'Unknown') }}]
+
+{% endfor %}
+
+---
+
+Based on the current state and the retrieved time windows, predict your next action. Pay attention to the sequence of states in each window to understand the temporal patterns.
+
+**IMPORTANT**: You MUST output a valid JSON object ONLY. Do not include any text before or after the JSON. The JSON must follow this exact format:
+
+{
+  "shot_type": <integer 1-11>,
+  "landing_area": "<semantic area name from the 33 court areas>",
+  "landing_x": <float -1.0 to 1.0>,
+  "landing_y": <float -1.0 to 1.0>,
+  "movement_area": "<semantic area name from the 33 court areas>",
+  "moving_x": <float -1.0 to 1.0>,
+  "moving_y": <float -1.0 to 1.0>,
+  "reasoning": "<your reasoning based on retrieved time windows>"
+}
+
+Ensure that:
+1. The landing_area and landing_x/y are consistent (coordinates within area bounds)
+2. The movement_area and moving_x/y are consistent
+3. If ball_round=1, shot_type must be 1 or 10
+4. Output ONLY the JSON, no markdown formatting, no explanations

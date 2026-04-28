@@ -278,9 +278,9 @@ def evaluate_rallynet_on_test(test_split_path, merged_csv_path, player_index_map
                     total_rallies += 1
                     total_shots += len(rally_shot_gt_seq)
 
-                    print("===============================")
-                    print(rally_shot_gt_seq)
-                    print(rally_shot_pred_seq)
+                    # print("===============================")
+                    # print(rally_shot_gt_seq)
+                    # print(rally_shot_pred_seq)
         
         # Store results for this player
         if total_rallies > 0:
@@ -570,7 +570,7 @@ def evaluate_rallynet_on_test_batch(test_split_path, merged_csv_path, player_ind
             if batch_is_launch[i]:
                 mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
             else:
-                mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0], dtype=torch.bool).to(device)
+                mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(device)
             
             shot_probs_masked = mlp_shot_logits[i] * mask.float()
             shot_probs_masked = shot_probs_masked / (shot_probs_masked.sum() + 1e-8)
@@ -743,7 +743,7 @@ if __name__ == "__main__":
     
     # Model paths
     parser.add_argument('--model_path', type=str, 
-                        default='Experiments/rallynetv2/weight/gen_e_2700.trc',
+                        default='Experiments/rallynetv2/weight/gen_e_30000.trc',
                         help='Path to RallyNet model weights (.trc file)')
     parser.add_argument('--hyperparameters', type=str,
                         default='Experiments/rallynetv2/hyperparameters.pkl',

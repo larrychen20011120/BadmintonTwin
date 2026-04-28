@@ -36,6 +36,33 @@ paths:
       norm: "Experiments/naive_rag/results/norm_eval.json"
       shifted: "Experiments/naive_rag/results/shifted_eval.json"
 
+  # Random Agent 實驗路徑
+  random:
+    results_dir: "Experiments/random/results"
+    results:
+      norm: "Experiments/random/results/norm_eval.json"
+      shifted: "Experiments/random/results/shifted_eval.json"
+
+  # TimeRAG 實驗路徑
+  timerag:
+    data:
+      norm: "Experiments/timerag/data/norm"
+      shifted: "Experiments/timerag/data/shifted"
+    results_dir: "Experiments/timerag/results"
+    results:
+      norm: "Experiments/timerag/results/norm_eval.json"
+      shifted: "Experiments/timerag/results/shifted_eval.json"
+
+  # Twin (I-MSDP) 實驗路徑
+  twin:
+    data:
+      norm: "Experiments/twin/data/norm"
+      shifted: "Experiments/twin/data/shifted"
+    results_dir: "Experiments/twin/results"
+    results:
+      norm: "Experiments/twin/results/norm_eval.json"
+      shifted: "Experiments/twin/results/shifted_eval.json"
+
 # BC 訓練參數
 bc_training:
   epochs: 100
@@ -51,6 +78,24 @@ naive_rag:
   model_name: "Qwen/Qwen2.5-7B-Instruct"
   api_key: "EMPTY"
   port: 16000
+  top_k: 5
+  skip_first_n: 0
+
+# TimeRAG 參數
+timerag:
+  model_name: "Qwen/Qwen2.5-7B-Instruct"
+  api_key: "EMPTY"
+  port: 16000
+  window_size: 3
+  top_k: 5
+  skip_first_n: 0
+
+# Twin (I-MSDP) 參數
+twin:
+  model_name: "Qwen/Qwen2.5-7B-Instruct"
+  api_key: "EMPTY"
+  port: 16000
+  max_scale: 10
   top_k: 5
   skip_first_n: 0
 

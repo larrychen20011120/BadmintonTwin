@@ -90,9 +90,11 @@ class LLM:
         response_text = response.choices[0].message.content
 
         end_time = time.time()
-        print(f"Response generated in {(end_time - start_time):.4f} seconds.")
-        print(user_prompt)
-        print("=" * 30)
-        print(response_text)
+        # print(f"Response generated in {(end_time - start_time):.4f} seconds.")
+        # print(user_prompt)
+        # print()
+        # print("=" * 50)
+        # print()
+        # print(response_text)
 
         return response_text

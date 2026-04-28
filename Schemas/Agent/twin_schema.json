@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "properties": {
+    "shot_type": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 11,
+      "description": "The type of shot to play (1-11)"
+    },
+    "landing_area": {
+      "type": "string",
+      "enum": [
+        "Deep Left Corner",
+        "Deep Right Corner",
+        "Rear Left Side",
+        "Rear Right Side",
+        "Rear Center",
+        "Rear Left Side Line",
+        "Rear Right Side Line",
+        "Mid Left Side",
+        "Mid Right Side",
+        "Mid Center",
+        "Mid Left Side Line",
+        "Mid Right Side Line",
+        "Front Left Side",
+        "Front Right Side",
+        "Front Center",
+        "Front Left Side Line",
+        "Front Right Side Line",
+        "Out of Bounds"
+      ],
+      "description": "Semantic area name where the shuttle should land"
+    },
+    "landing_x": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "Normalized x-coordinate of landing position (-1 to 1)"
+    },
+    "landing_y": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "Normalized y-coordinate of landing position (-1 to 1)"
+    },
+    "movement_area": {
+      "type": "string",
+      "enum": [
+        "Deep Left Corner",
+        "Deep Right Corner",
+        "Rear Left Side",
+        "Rear Right Side",
+        "Rear Center",
+        "Rear Left Side Line",
+        "Rear Right Side Line",
+        "Mid Left Side",
+        "Mid Right Side",
+        "Mid Center",
+        "Mid Left Side Line",
+        "Mid Right Side Line",
+        "Front Left Side",
+        "Front Right Side",
+        "Front Center",
+        "Front Left Side Line",
+        "Front Right Side Line",
+        "Out of Bounds"
+      ],
+      "description": "Semantic area name where the player should move to"
+    },
+    "moving_x": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "Normalized x-coordinate of movement position (-1 to 1)"
+    },
+    "moving_y": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "Normalized y-coordinate of movement position (-1 to 1)"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Explanation of the decision based on retrieved trajectory segments"
+    }
+  },
+  "required": ["shot_type", "landing_area", "landing_x", "landing_y", "movement_area", "moving_x", "moving_y", "reasoning"],
+  "additionalProperties": false
+}
