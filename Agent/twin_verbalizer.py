@@ -1,288 +1,199 @@
 """
-TwinVerbalizer - Converts multi-scale trajectory segments to natural language strings.
-Specifically designed for the BadmintonTwin I-MSDP framework.
+TwinVerbalizer - Converts state and retrieved trajectory segments to natural language.
+V3 - Turn-based segment format for new prompts.
 """
 
+from collections import Counter
 from Utils.badminton_config import INDEX2EN_SHOT, LANG_AREA_MAPPING
 from Utils.helper import coord2area
 
 
 class TwinVerbalizer:
-    """
-    Verbalizer for BadmintonTwin's multi-scale trajectory retrieval.
-    Converts trajectory segments (sequences of states and actions) to natural language.
-    """
+    """Verbalizer for Twin with turn-based segment format."""
 
     def __init__(self):
-        """Initialize verbalizer."""
         pass
 
-    def _get_area_name(self, x, y):
-        """Get the area name for given coordinates using the standard mapping."""
+    @staticmethod
+    def _get_area_name(x, y):
         area_id = coord2area(float(x), float(y))
-        return LANG_AREA_MAPPING.get(area_id, f"Unknown(area_id={area_id})")
+        return LANG_AREA_MAPPING.get(area_id, f"Unknown({area_id})")
 
-    def _format_coords(self, x, y):
-        """Format coordinates as a string."""
-        return f"(x={x:.3f}, y={y:.3f})"
-
-    def _get_shot_type_name(self, shot_type):
-        """Get shot type name from index."""
+    @staticmethod
+    def _shot_name(shot_type):
         return INDEX2EN_SHOT.get(int(shot_type), f"Unknown({shot_type})")
 
-    def verbalize_trajectory_segment(self, segment, segment_idx=1):
-        """
-        Convert a trajectory segment (multi-step) to natural language description.
-
-        Args:
-            segment: Dict containing:
-                - 'scale': int, length of the trajectory segment
-                - 'similarity': float, normalized distance score (lower is better)
-                - 'total_distance': float, cumulative distance
-                - 'steps': list of dicts, each containing state and action info
-            segment_idx: Index for labeling
-
-        Returns:
-            Semantic string description of the trajectory segment
-        """
-        scale = segment.get('scale', 1)
-        similarity = segment.get('similarity', 0)
-        total_distance = segment.get('total_distance', 0)
-        steps = segment.get('steps', [])
-
-        parts = []
-
-        # Header with scale and similarity
-        parts.append(
-            f"[Segment {segment_idx}, Scale: {scale}, "
-            f"Normalized Distance: {similarity:.4f}, Total Distance: {total_distance:.4f}]"
-        )
-
-        # Describe the trajectory pattern
-        if scale == 1:
-            parts.append("This is a single-shot match:")
+    @staticmethod
+    def _scale_label(scale):
+        if scale <= 3:
+            return "short-scale"
+        elif scale <= 7:
+            return "medium-scale"
         else:
-            parts.append(f"This is a {scale}-shot tactical sequence:")
+            return "long-scale"
 
-        # Describe each step in the sequence
+    def format_segment_turn_based(self, seg, idx):
+        """Format a trajectory segment as turn-based sequence.
+        
+        Segment structure:
+        - steps: list of steps, each containing state and action info
+        - scale: length of the segment
+        - similarity: distance metric
+        
+        Turn-based format:
+        - For each step: describe opponent's shot, then player's response
+        - Only the LAST step's player action shows numerical values
+        """
+        steps = seg.get('steps', [])
+        scale = seg.get('scale', len(steps))
+        dist = seg.get('similarity', 0)
+        
+        lines = []
+        shot_num = 1
+        
         for step_idx, step in enumerate(steps):
-            step_parts = []
-
-            # Determine if this is the current (last) shot or a historical one
-            is_current = (step_idx == len(steps) - 1)
-            time_label = "Current shot" if is_current else f"Shot {step_idx + 1}"
-
-            # Player position
-            player_x = step.get('player_location_x', 0)
-            player_y = step.get('player_location_y', 0)
-            player_area = self._get_area_name(player_x, player_y)
-
-            # Hit position
-            hit_x = step.get('hit_x', 0)
-            hit_y = step.get('hit_y', 0)
-            hit_area = self._get_area_name(hit_x, hit_y)
-
-            # Opponent info
-            opponent_type = step.get('opponent_type', 0)
-            opponent_type_name = self._get_shot_type_name(opponent_type)
-            opponent_x = step.get('opponent_location_x', 0)
-            opponent_y = step.get('opponent_location_y', 0)
-            opponent_area = self._get_area_name(opponent_x, opponent_y)
-
-            # Build step description
-            if step_idx == 0:
-                # First shot in sequence
-                if is_current:
-                    step_parts.append(
-                        f"{time_label}: Player at {player_area} {self._format_coords(player_x, player_y)}, "
-                        f"shuttle at {hit_area} {self._format_coords(hit_x, hit_y)}. "
-                        f"Opponent played {opponent_type_name} from {opponent_area} {self._format_coords(opponent_x, opponent_y)}."
-                    )
+            is_last_step = (step_idx == len(steps) - 1)
+            
+            # Extract data from step
+            ot = int(step.get('opponent_type', 0))
+            on = self._shot_name(ot)
+            ox, oy = step.get('opponent_location_x', 0), step.get('opponent_location_y', 0)
+            hx, hy = step.get('hit_x', 0), step.get('hit_y', 0)
+            px, py = step.get('player_location_x', 0), step.get('player_location_y', 0)
+            pt = int(step.get('player_type', 0))
+            pn = self._shot_name(pt)
+            lx, ly = step.get('landing_x', 0), step.get('landing_y', 0)
+            mx, my = step.get('moving_x', 0), step.get('moving_y', 0)
+            ps = int(step.get('player_score', 0))
+            os = int(step.get('opponent_score', 0))
+            
+            opp_area = self._get_area_name(ox, oy)
+            ball_area = self._get_area_name(hx, hy)
+            player_area = self._get_area_name(px, py)
+            land_area = self._get_area_name(lx, ly)
+            move_area = self._get_area_name(mx, my)
+            
+            is_serve = (shot_num == 1)
+            
+            if is_serve:
+                # Shot 1: Player's serve
+                context = f"I am at {player_area} serving. Score {ps}-{os}."
+                
+                if pt == 11:
+                    action = "MISSED SHOT - fault serve."
                 else:
-                    step_parts.append(
-                        f"{time_label}: Player at {player_area} {self._format_coords(player_x, player_y)}, "
-                        f"shuttle at {hit_area} {self._format_coords(hit_x, hit_y)}. "
-                        f"Opponent played {opponent_type_name} from {opponent_area} {self._format_coords(opponent_x, opponent_y)}."
-                    )
+                    action = f"I serve a {pn} to {land_area}, then move to {move_area}."
+                
+                lines.append(f"Shot {shot_num}: {context}")
+                lines.append(f"        {action}")
+                
+                if is_last_step:
+                    lines.append(f"        Action: (shot_type={pt}, landing_x={round(float(lx), 3)}, landing_y={round(float(ly), 3)}, moving_x={round(float(mx), 3)}, moving_y={round(float(my), 3)})")
+                
+                shot_num += 1
             else:
-                step_parts.append(
-                    f"{time_label}: Player at {player_area} {self._format_coords(player_x, player_y)}, "
-                    f"shuttle at {hit_area} {self._format_coords(hit_x, hit_y)}. "
-                    f"Opponent played {opponent_type_name} from {opponent_area} {self._format_coords(opponent_x, opponent_y)}."
-                )
-
-            # Player's response (action) - only for non-current shots (historical)
-            if not is_current:
-                player_type = step.get('player_type', 0)
-                player_type_name = self._get_shot_type_name(player_type)
-                landing_x = step.get('landing_x', 0)
-                landing_y = step.get('landing_y', 0)
-                landing_area = self._get_area_name(landing_x, landing_y)
-                moving_x = step.get('moving_x', 0)
-                moving_y = step.get('moving_y', 0)
-                movement_area = self._get_area_name(moving_x, moving_y)
-
-                step_parts.append(
-                    f"Player responded with {player_type_name}, "
-                    f"landing at {landing_area} {self._format_coords(landing_x, landing_y)}, "
-                    f"then moved to {movement_area} {self._format_coords(moving_x, moving_y)}."
-                )
-            else:
-                # For current shot, show what action was taken in the historical match
-                if 'player_type' in step:
-                    player_type = step.get('player_type', 0)
-                    player_type_name = self._get_shot_type_name(player_type)
-                    landing_x = step.get('landing_x', 0)
-                    landing_y = step.get('landing_y', 0)
-                    landing_area = self._get_area_name(landing_x, landing_y)
-                    moving_x = step.get('moving_x', 0)
-                    moving_y = step.get('moving_y', 0)
-                    movement_area = self._get_area_name(moving_x, moving_y)
-
-                    step_parts.append(
-                        f"In the historical match, player responded with {player_type_name}, "
-                        f"landing at {landing_area} {self._format_coords(landing_x, landing_y)}, "
-                        f"then moved to {movement_area} {self._format_coords(moving_x, moving_y)}."
-                    )
-
-            parts.append(" ".join(step_parts))
-
-        # Add tactical summary
-        if scale > 1:
-            parts.append("Tactical pattern: Observe how the player adapted their strategy across multiple shots.")
-
-        return "\n".join(parts)
-
-    def verbalize_trajectory_segments(self, segments):
-        """
-        Convert list of trajectory segments to natural language description.
-
-        Args:
-            segments: List of trajectory segment dicts
-
-        Returns:
-            String description of all trajectory segments
-        """
-        if not segments:
-            return "No similar historical trajectory segments were found."
-
-        header = f"Found {len(segments)} similar historical trajectory segments (multi-scale):\n\n"
-
-        verbalized_segments = []
-        for i, seg in enumerate(segments, 1):
-            verbalized_segments.append(self.verbalize_trajectory_segment(seg, i))
-
-        separator = "\n\n---\n\n"
-        return header + separator.join(verbalized_segments)
-
-    def verbalize_state(self, state_dict):
-        """
-        Convert state dictionary to natural language description.
-        (Reused from standard verbalizer for consistency)
-
-        Args:
-            state_dict: Dictionary containing state information
-
-        Returns:
-            Semantic string description of the state
-        """
-        rally = int(state_dict.get('rally', 0))
-        ball_round = int(state_dict.get('ball_round', 1))
-        player_score = int(state_dict.get('player_score', 0))
-        opponent_score = int(state_dict.get('opponent_score', 0))
-
-        player_x = state_dict.get('player_location_x', 0)
-        player_y = state_dict.get('player_location_y', 0)
-        hit_x = state_dict.get('hit_x', 0)
-        hit_y = state_dict.get('hit_y', 0)
-
-        opponent_type = state_dict.get('opponent_type', 0)
-        opponent_x = state_dict.get('opponent_location_x', 0)
-        opponent_y = state_dict.get('opponent_location_y', 0)
-
-        ball_dist = state_dict.get('ball_distance', 0)
-        ball_dist_x = state_dict.get('ball_distance_x', 0)
-        ball_dist_y = state_dict.get('ball_distance_y', 0)
-
-        player_area = self._get_area_name(player_x, player_y)
-        hit_area = self._get_area_name(hit_x, hit_y)
-        opponent_area = self._get_area_name(opponent_x, opponent_y)
-        opponent_type_name = self._get_shot_type_name(opponent_type)
-
-        parts = []
-
-        if ball_round == 1:
-            parts.append(f"Rally {rally} begins with the serve.")
-        else:
-            parts.append(f"This is shot {ball_round} of rally {rally}.")
-
-        score_diff = player_score - opponent_score
-        if score_diff == 0:
-            parts.append(f"The score is tied at {player_score}-{opponent_score}.")
-        elif score_diff > 0:
-            parts.append(f"You are leading {player_score}-{opponent_score}.")
-        else:
-            parts.append(f"You are trailing {player_score}-{opponent_score}.")
-
-        parts.append(
-            f"You are currently at {player_area} {self._format_coords(player_x, player_y)}."
-        )
-
-        if ball_round == 1:
-            parts.append(
-                f"You are serving from {hit_area} {self._format_coords(hit_x, hit_y)}."
-            )
-        else:
-            parts.append(
-                f"The shuttle is at {hit_area} {self._format_coords(hit_x, hit_y)}."
-            )
-            parts.append(
-                f"The ball is at distance {ball_dist:.3f} with "
-                f"dx={ball_dist_x:.3f}, dy={ball_dist_y:.3f} relative to your position."
-            )
-
-        if ball_round > 1:
-            parts.append(
-                f"Your opponent just played a {opponent_type_name} from "
-                f"{opponent_area} {self._format_coords(opponent_x, opponent_y)}."
-            )
-
-        return " ".join(parts)
-
-    def build_prompt_context(self, state_dict, segments, launch=False):
-        """
-        Build full prompt context with verbalized state and trajectory segments.
-
-        Args:
-            state_dict: Dictionary containing state information
-            segments: List of trajectory segment dicts
-            launch: Whether this is a serve shot
-
-        Returns:
-            Dictionary with verbalized strings
-        """
-        state_str = self.verbalize_state(state_dict)
-        segments_str = self.verbalize_trajectory_segments(segments)
-
-        if launch:
-            state_str += " This is a serve situation."
-
+                # Opponent's shot
+                context = f"Opponent is at {opp_area}."
+                action = f"Opponent hits a {on} to {ball_area}."
+                
+                lines.append(f"Shot {shot_num}: {context}")
+                lines.append(f"        {action}")
+                shot_num += 1
+                
+                # Player's response
+                context = f"I am at {player_area}, opponent at {opp_area} played a {on} to {ball_area}."
+                
+                if pt == 11:
+                    action = "MISSED SHOT - could not reach the shuttle."
+                else:
+                    action = f"I move to {ball_area} and hit a {pn} to {land_area}, then recover to {move_area}."
+                
+                lines.append(f"Shot {shot_num}: {context}")
+                lines.append(f"        {action}")
+                
+                if is_last_step:
+                    # Last shot - add numerical action
+                    lines.append(f"        Action: (shot_type={pt}, landing_x={round(float(lx), 3)}, landing_y={round(float(ly), 3)}, moving_x={round(float(mx), 3)}, moving_y={round(float(my), 3)})")
+                
+                shot_num += 1
+        
+        num_shots = shot_num - 1
+        description = "\n".join(lines)
+        scale_label = self._scale_label(scale)
+        
         return {
-            'state_str': state_str,
-            'segments_str': segments_str,
-            'launch': launch,
-            'top_k': len(segments),
-            # Keep original data for compatibility
-            **state_dict,
-            'segments': segments
+            'index': idx,
+            'scale': scale,
+            'scale_label': scale_label,
+            'distance': round(float(dist), 3),
+            'num_shots': num_shots,
+            'description': description
         }
+
+    def build_segments_list(self, segments):
+        """Build a list of formatted segments in turn-based format."""
+        formatted_segments = []
+        for i, seg in enumerate(segments, 1):
+            formatted = self.format_segment_turn_based(seg, i)
+            formatted_segments.append(formatted)
+        return formatted_segments
+
+    def build_trajectory_text(self, state_history, current_state):
+        """Build turn-based trajectory text for current rally."""
+        lines = []
+        
+        for i, sd in enumerate(state_history, 1):
+            br = int(sd.get('ball_round', i))
+            ot = int(sd.get('opponent_type', 0))
+            on = self._shot_name(ot)
+            ox, oy = sd.get('opponent_location_x', 0), sd.get('opponent_location_y', 0)
+            hx, hy = sd.get('hit_x', 0), sd.get('hit_y', 0)
+            px, py = sd.get('player_location_x', 0), sd.get('player_location_y', 0)
+            
+            opp_area = self._get_area_name(ox, oy)
+            ball_area = self._get_area_name(hx, hy)
+            player_area = self._get_area_name(px, py)
+            
+            if br == 1:
+                lines.append(f"Shot 1: I am at {player_area} serving.")
+                lines.append(f"        I serve and move to prepare for the return.")
+            else:
+                lines.append(f"Shot {br}: I am at {player_area}, opponent at {opp_area} played a {on} to {ball_area}.")
+                lines.append(f"        I respond and recover.")
+        
+        return "\n".join(lines)
+
+    def build_prompt_context_nl(self, state_dict, segments, launch=False, state_history=None):
+        """Build full prompt context dict (V3 - turn-based format) for Jinja2."""
+        formatted_segments = self.build_segments_list(segments)
+        
+        trajectory_text = ""
+        if state_history and len(state_history) > 0:
+            trajectory_text = self.build_trajectory_text(state_history, state_dict)
+        
+        # Add semantic names to state_dict for template use
+        px = state_dict.get('player_location_x', 0)
+        py = state_dict.get('player_location_y', 0)
+        ox = state_dict.get('opponent_location_x', 0)
+        oy = state_dict.get('opponent_location_y', 0)
+        hx = state_dict.get('hit_x', 0)
+        hy = state_dict.get('hit_y', 0)
+        ot = state_dict.get('opponent_type', 0)
+        
+        context = {
+            'segments': formatted_segments,
+            'trajectory_text': trajectory_text,
+            'launch': launch,
+            'top_k': len(segments) if segments else 0,
+            'player_location_area': self._get_area_name(px, py),
+            'opponent_location_area': self._get_area_name(ox, oy),
+            'hit_position_area': self._get_area_name(hx, hy),
+            'opponent_type_name': self._shot_name(ot),
+            **state_dict
+        }
+        
+        return context
 
 
 def create_twin_verbalizer():
-    """
-    Factory function to create a TwinVerbalizer instance.
-
-    Returns:
-        TwinVerbalizer instance
-    """
     return TwinVerbalizer()

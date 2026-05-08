@@ -1,72 +1,40 @@
-{% if state_str is defined %}
-{{ state_str }}
+## Current Match Situation
+
+Match: Rally {{ rally|int }}, Shot {{ ball_round|int }}{% if player_score is defined and opponent_score is defined %}, Score {{ player_score|int }}-{{ opponent_score|int }}{% if player_score > opponent_score %} (leading by {{ (player_score - opponent_score)|int }}){% elif player_score < opponent_score %} (trailing by {{ (opponent_score - player_score)|int }}){% else %} (tied){% endif %}{% endif %}
 
 {% if launch %}
-**This is a serve shot (ball_round=1). You MUST use shot_type 1 (Serve short) or 10 (Serve long).**
-{% endif %}
+Now it's my turn to serve.
 
----
-
-{{ segments_str }}
-
+Current Rally Trajectory:
+Shot {{ ball_round|int }}: I am at {{ player_location_area }} serving.
+        I serve and move to prepare for the return.
 {% else %}
-Current Game State:
-- Rally: {{ rally|int }}
-- Ball Round: {{ ball_round|int }}
-- Score: Player {{ player_score|int }} - Opponent {{ opponent_score|int }}
-- Score Status: {{ score_status|int }}
+Current Rally Trajectory:
+{{ trajectory_text }}
 
-Current Positions:
-- Player Location: ({{ "{:.3f}".format(player_location_x) }}, {{ "{:.3f}".format(player_location_y) }}) [{{ player_location_area|default('Unknown') }}]
-- Ball Distance: {{ "{:.3f}".format(ball_distance) }} ({{ "{:.3f}".format(ball_distance_x) }}, {{ "{:.3f}".format(ball_distance_y) }})
-- Hit Position: ({{ "{:.3f}".format(hit_x) }}, {{ "{:.3f}".format(hit_y) }}) [{{ hit_position_area|default('Unknown') }}]
-
-Opponent Information:
-- Opponent Shot Type: {{ opponent_type|int }}
-- Opponent Location: ({{ "{:.3f}".format(opponent_location_x) }}, {{ "{:.3f}".format(opponent_location_y) }}) [{{ opponent_location_area|default('Unknown') }}]
-- Opponent Movement: ({{ "{:.3f}".format(opponent_move_x) }}, {{ "{:.3f}".format(opponent_move_y) }})
-
-{% if launch %}
-**This is a serve shot (ball_round=1). You MUST use shot_type 1 (Serve short) or 10 (Serve long).**
+Shot {{ ball_round|int }}: I am at {{ player_location_area }}, opponent at {{ opponent_location_area }} played a {{ opponent_type_name }} to {{ hit_position_area }}.
+        I respond and recover.
 {% endif %}
 
 ---
 
-Retrieved Trajectory Segments (Top {{ top_k|int }}):
-{% for seg in segments %}
-Segment {{ loop.index }} (Scale: {{ seg.scale|int }}, Normalized Distance: {{ "{:.4f}".format(seg.similarity|default(0.0)) }}):
-{% for step in seg.steps %}
-  Shot {{ loop.index }}:
-  - Context: Rally {{ step.rally|int }}, Round {{ step.ball_round|int }}, Score {{ step.player_score|int }}-{{ step.opponent_score|int }}
-  - Player Position: ({{ "{:.3f}".format(step.player_location_x) }}, {{ "{:.3f}".format(step.player_location_y) }}) [{{ step.player_location_area|default('Unknown') }}]
-  - Hit Position: ({{ "{:.3f}".format(step.hit_x) }}, {{ "{:.3f}".format(step.hit_y) }}) [{{ step.hit_position_area|default('Unknown') }}]
-  - Opponent: Type {{ step.opponent_type|int }} ({{ step.opponent_type_name|default('Unknown') }}) at ({{ "{:.3f}".format(step.opponent_location_x) }}, {{ "{:.3f}".format(step.opponent_location_y) }}) [{{ step.opponent_location_area|default('Unknown') }}]
-{% if step.player_type is defined %}
-  - Action Taken: Shot {{ step.player_type|int }} ({{ step.player_type_name|default('Unknown') }}) → Landing ({{ step.landing_area|default('Unknown') }}) at ({{ "{:.3f}".format(step.landing_x) }}, {{ "{:.3f}".format(step.landing_y) }}), Move to ({{ step.movement_area|default('Unknown') }}) at ({{ "{:.3f}".format(step.moving_x) }}, {{ "{:.3f}".format(step.moving_y) }})
-{% endif %}
-{% endfor %}
-{% endfor %}
-{% endif %}
+## Retrieved Trajectory Segments ({{ top_k|int }} segments, multi-scale)
 
+{% for segment in segments %}
+Segment {{ segment.index }} ({{ segment.scale_label }}, scale={{ segment.scale }}, distance={{ "%.3f"|format(segment.distance) }}, {{ segment.num_shots }} shots):
+{{ segment.description }}
+
+{% endfor %}
 ---
 
-Based on the current state and the retrieved trajectory segments, predict your next action.
+## Step-by-Step Reasoning
 
-**IMPORTANT**: You MUST output a valid JSON object ONLY. Do not include any text before or after the JSON. The JSON must follow this exact format:
+Provide your reasoning, then output the JSON:
 
-{
-  "shot_type": <integer 1-11>,
-  "landing_area": "<semantic area name from the 33 court areas>",
-  "landing_x": <float -1.0 to 1.0>,
-  "landing_y": <float -1.0 to 1.0>,
-  "movement_area": "<semantic area name from the 33 court areas>",
-  "moving_x": <float -1.0 to 1.0>,
-  "moving_y": <float -1.0 to 1.0>,
-  "reasoning": "<your reasoning based on retrieved trajectory segments>"
-}
+[1] Trajectory Analysis:
+[2] Multi-Scale Review:
+[3] Cross-Scale Consistency:
+[4] Shot Decision:
+[5] Landing & Recovery:
 
-Ensure that:
-1. The landing_area and landing_x/y are consistent (coordinates within area bounds)
-2. The movement_area and moving_x/y are consistent
-3. If ball_round=1, shot_type must be 1 or 10
-4. Output ONLY the JSON, no markdown formatting, no explanations
+{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}

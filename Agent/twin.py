@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import pickle
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ from Agent.twin_verbalizer import TwinVerbalizer, create_twin_verbalizer
 from Utils.llm import LLM
 from Utils.helper import coord2area
 from Utils.badminton_config import LANG_AREA_MAPPING, INDEX2EN_SHOT
+from Utils.langfuse_tracing import BadmintonTracer
 
 
 class TwinDatabase:
@@ -25,13 +27,18 @@ class TwinDatabase:
     using an incremental DP approach that reuses similarity states from the previous step.
     """
 
-    # Feature keys used for computing suffix distances (same as NaiveRAG)
-    state_feature_keys = [
-        'opponent_type',
+    # Continuous feature keys (Euclidean distance)
+    continuous_feature_keys = [
         'player_location_x', 'player_location_y',
         'hit_x', 'hit_y',
         'opponent_location_x', 'opponent_location_y'
     ]
+
+    # Discrete feature keys (Hamming distance)
+    discrete_feature_keys = ['opponent_type']
+
+    # Combined keys (kept for backward compatibility in segment building / serialization)
+    state_feature_keys = continuous_feature_keys + discrete_feature_keys
 
     # Action keys
     action_keys = ['landing_x', 'landing_y', 'player_type', 'moving_x', 'moving_y']
@@ -89,7 +96,9 @@ class TwinDatabase:
                 continue
 
             # Extract state features
-            states = rally_df[self.state_feature_keys].values.astype(np.float32)
+            states_cont = rally_df[self.continuous_feature_keys].values.astype(np.float32)
+            states_disc = rally_df[self.discrete_feature_keys].values.astype(np.float32)
+            states_full = rally_df[self.state_feature_keys].values.astype(np.float32)
 
             # Extract actions
             actions = rally_df[self.action_keys].values.astype(np.float32)
@@ -104,7 +113,9 @@ class TwinDatabase:
                 metadata.append(meta)
 
             self.trajectories.append({
-                'states': states,
+                'states_full': states_full,
+                'states_cont': states_cont,
+                'states_disc': states_disc,
                 'actions': actions,
                 'metadata': metadata,
                 'length': len(rally_df)
@@ -115,6 +126,8 @@ class TwinDatabase:
         if self.num_trajectories == 0:
             self.max_traj_length = 0
             self.padded_states = np.zeros((0, 0, len(self.state_feature_keys)), dtype=np.float32)
+            self.padded_continuous = np.zeros((0, 0, len(self.continuous_feature_keys)), dtype=np.float32)
+            self.padded_discrete = np.zeros((0, 0, len(self.discrete_feature_keys)), dtype=np.float32)
             self.padded_actions = np.zeros((0, 0, len(self.action_keys)), dtype=np.float32)
             self.trajectory_lengths = np.array([], dtype=np.int32)
             return
@@ -123,35 +136,46 @@ class TwinDatabase:
         self.trajectory_lengths = np.array([traj['length'] for traj in self.trajectories], dtype=np.int32)
 
         # Build padded state and action arrays for vectorized computation
+        d_cont = len(self.continuous_feature_keys)
+        d_disc = len(self.discrete_feature_keys)
         d_state = len(self.state_feature_keys)
         d_action = len(self.action_keys)
+        self.padded_continuous = np.full((self.num_trajectories, self.max_traj_length, d_cont), np.inf, dtype=np.float32)
+        self.padded_discrete = np.full((self.num_trajectories, self.max_traj_length, d_disc), np.inf, dtype=np.float32)
         self.padded_states = np.full((self.num_trajectories, self.max_traj_length, d_state), np.inf, dtype=np.float32)
         self.padded_actions = np.full((self.num_trajectories, self.max_traj_length, d_action), np.inf, dtype=np.float32)
 
         for i, traj in enumerate(self.trajectories):
             length = traj['length']
-            self.padded_states[i, :length] = traj['states']
+            self.padded_continuous[i, :length] = traj['states_cont']
+            self.padded_discrete[i, :length] = traj['states_disc']
+            self.padded_states[i, :length] = traj['states_full']
             self.padded_actions[i, :length] = traj['actions']
 
     def _compute_base_distance(self, query_state):
         """
-        Compute D_{t,1}: Euclidean distance between query_state and all trajectory points.
+        Compute D_{t,1}: Mixed distance between query_state and all trajectory points.
+
+        Euclidean distance for continuous features (positions),
+        Hamming distance for discrete features (shot type).
 
         Args:
-            query_state: Dict or array with state_feature_keys
+            query_state: Dict with keys in state_feature_keys
 
         Returns:
-            base_dist: [N, M_max] array of distances
+            base_dist: [N, M_max] array of mixed distances
         """
-        # Extract query feature vector
-        if isinstance(query_state, dict):
-            query_vec = np.array([query_state[k] for k in self.state_feature_keys], dtype=np.float32)
-        else:
-            query_vec = np.array(query_state, dtype=np.float32)
+        # Euclidean distance for continuous features
+        query_cont = np.array([float(query_state[k]) for k in self.continuous_feature_keys], dtype=np.float32)
+        diff = self.padded_continuous - query_cont.reshape(1, 1, -1)
+        cont_dist = np.sqrt(np.sum(diff ** 2, axis=-1))
 
-        # Vectorized Euclidean distance: ||query - states[i,j]||
-        diff = self.padded_states - query_vec.reshape(1, 1, -1)
-        dist = np.sqrt(np.sum(diff ** 2, axis=-1))
+        # Hamming distance for discrete features
+        query_disc = int(query_state[self.discrete_feature_keys[0]])
+        disc_dist = (self.padded_discrete[:, :, 0] != query_disc).astype(np.float32)
+
+        # Combined distance
+        dist = cont_dist + disc_dist
 
         # Mask invalid positions (beyond trajectory length) with inf
         mask = np.arange(self.max_traj_length).reshape(1, -1) >= self.trajectory_lengths.reshape(-1, 1)
@@ -282,7 +306,7 @@ class TwinDatabase:
 
             # State features
             for key_idx, key in enumerate(self.state_feature_keys):
-                step[key] = float(traj['states'][pos, key_idx])
+                step[key] = float(traj['states_full'][pos, key_idx])
 
             # Actions
             for key_idx, key in enumerate(self.action_keys):
@@ -342,6 +366,8 @@ class TwinDatabase:
                 'max_traj_length': self.max_traj_length,
                 'trajectory_lengths': self.trajectory_lengths,
                 'padded_states': self.padded_states,
+                'padded_continuous': self.padded_continuous,
+                'padded_discrete': self.padded_discrete,
                 'padded_actions': self.padded_actions,
             }, f)
         print(f"TwinDatabase saved to {filepath}")
@@ -366,6 +392,15 @@ class TwinDatabase:
         instance.padded_states = data['padded_states']
         instance.padded_actions = data['padded_actions']
 
+        if 'padded_continuous' in data and 'padded_discrete' in data:
+            instance.padded_continuous = data['padded_continuous']
+            instance.padded_discrete = data['padded_discrete']
+        else:
+            # Backward compat: extract from padded_states (old format)
+            n_cont = len(cls.continuous_feature_keys)
+            instance.padded_continuous = data['padded_states'][:, :, :n_cont]
+            instance.padded_discrete = data['padded_states'][:, :, n_cont:]
+
         print(f"TwinDatabase loaded from {filepath}")
         return instance
 
@@ -380,7 +415,7 @@ class TwinAgent(BaseAgent):
 
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
                  api_key="EMPTY", port=16000, top_k=5, max_scale=10,
-                 use_verbalizer=False, verbalized_prompt=False):
+                 enable_tracing=True):
         """
         Initialize TwinAgent.
 
@@ -392,23 +427,17 @@ class TwinAgent(BaseAgent):
             port: Port for local LLM server
             top_k: Number of trajectory segments to retrieve
             max_scale: Maximum suffix length (passed to database, should match)
-            use_verbalizer: Whether to use TwinVerbalizer
-            verbalized_prompt: Whether to use verbalized prompt template
+            enable_tracing: Whether to enable Langfuse tracing
         """
         super().__init__(player_name)
 
         self.database = database
         self.top_k = top_k
         self.max_scale = max_scale
-        self.use_verbalizer = use_verbalizer
-        self.verbalized_prompt = verbalized_prompt and use_verbalizer
+        self.tracer = BadmintonTracer("twin", player_name, enable_tracing)
 
-        # Initialize verbalizer if needed
-        if self.use_verbalizer:
-            self.verbalizer = create_twin_verbalizer()
-            print("TwinVerbalizer initialized")
-        else:
-            self.verbalizer = None
+        # Initialize verbalizer
+        self.verbalizer = create_twin_verbalizer()
 
         # Initialize LLM
         self.llm = LLM(model_name=model_name, api_key=api_key, port=port)
@@ -418,16 +447,8 @@ class TwinAgent(BaseAgent):
         with open(os.path.join(prompt_dir, "twin_system.md"), "r") as f:
             self.system_prompt = f.read()
 
-        # Choose user template based on verbalizer settings
-        if self.verbalized_prompt:
-            template_file = "twin_user_verbalized.jinja"
-            if not os.path.exists(os.path.join(prompt_dir, template_file)):
-                print(f"Warning: {template_file} not found, using standard template")
-                template_file = "twin_user.jinja"
-        else:
-            template_file = "twin_user.jinja"
-
-        with open(os.path.join(prompt_dir, template_file), "r") as f:
+        # Load user template
+        with open(os.path.join(prompt_dir, "twin_user.jinja"), "r") as f:
             self.user_template = Template(f.read())
 
         # Load schema
@@ -438,6 +459,14 @@ class TwinAgent(BaseAgent):
         # Rally tracking for incremental retrieval
         self.current_rally = None
         self.query_history = []
+        self.trajectory = []  # full state_dicts for trajectory narrative
+        self.prev_dist_tensor = None
+
+    def reset_history(self):
+        """Reset rally tracking state."""
+        self.current_rally = None
+        self.query_history = []
+        self.trajectory = []
         self.prev_dist_tensor = None
 
     def predict(self, state, info, launch):
@@ -457,6 +486,7 @@ class TwinAgent(BaseAgent):
         if self.current_rally != rally_num:
             self.current_rally = rally_num
             self.query_history = []
+            self.trajectory = []
             self.prev_dist_tensor = None
 
         # Build query state from env state (same features as NaiveRAG, but corrected mapping)
@@ -472,11 +502,13 @@ class TwinAgent(BaseAgent):
         self.query_history.append(query_state)
 
         # Incremental retrieval using I-MSDP
+        t0 = time.time()
         segments, self.prev_dist_tensor = self.database.incremental_retrieve(
             query_state,
             prev_distance_tensor=self.prev_dist_tensor,
             top_k=self.top_k
         )
+        t1 = time.time()
 
         # Build state dictionary with semantic area names
         player_score = info['score'][0] if info.get('score') else 0
@@ -515,41 +547,53 @@ class TwinAgent(BaseAgent):
             'opponent_move_y': 0,
         }
 
-        # Build context for LLM using verbalizer if enabled
-        if self.use_verbalizer:
-            context = self.verbalizer.build_prompt_context(state_dict, segments, launch=launch)
-        else:
-            context = {
-                **state_dict,
-                'launch': launch,
-                'top_k': self.top_k,
-                'segments': segments
-            }
+        self.tracer.start_trace(state_dict, info, launch)
+        self.tracer.log_retrieval(state_dict, segments, "twin", int((t1 - t0) * 1000))
+        
+        # Track rally trajectory
+        self.trajectory.append(state_dict)
+
+        # Build context for LLM using verbalizer
+        state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
+        context = self.verbalizer.build_prompt_context_nl(state_dict, segments, launch=launch, state_history=state_history)
 
         # Render user prompt
         user_prompt = self.user_template.render(**context)
 
         # Get LLM response
-        response = self.llm.get_verified_response(
+        t0 = time.time()
+        response, raw_llm_output, usage = self.llm.get_verified_response(
             schema=self.schema,
             system_prompt=self.system_prompt,
             user_prompt=user_prompt,
             max_trials=5
         )
+        t1 = time.time()
+        self.tracer.log_generation(
+            self.system_prompt, user_prompt, response,
+            latency_ms=int((t1 - t0) * 1000),
+            raw_llm_output=raw_llm_output,
+            usage=usage,
+        )
 
         if response is None:
             print("Warning: LLM response failed, using default action")
+            self.tracer.end_trace({"shot_type": "default_fallback"}, "LLM response failed")
             return self._default_action(launch)
 
         # Parse response
         shot_type = response['shot_type']
-        landing_area = response.get('landing_area', 'Unknown')
-        landing_x = response['landing_x']
-        landing_y = response['landing_y']
-        movement_area = response.get('movement_area', 'Unknown')
-        moving_x = response['moving_x']
-        moving_y = response['moving_y']
-        reasoning = response['reasoning']
+        landing_x = response.get('landing_x', 0.0)
+        landing_y = response.get('landing_y', 0.0)
+        moving_x = response.get('moving_x', 0.0)
+        moving_y = response.get('moving_y', 0.0)
+        reasoning = response.get('reasoning', '')
+
+        if shot_type == 11:
+            landing_x = 0.0
+            landing_y = 0.0
+            moving_x = 0.0
+            moving_y = 0.0
 
         # Apply serve mask if needed
         if launch and shot_type not in [1, 10]:
@@ -565,7 +609,11 @@ class TwinAgent(BaseAgent):
             [0.1] * 10  # Uniform distribution for compatibility
         )
 
-        reasoning = f"[Landing: {landing_area}, Movement: {movement_area}] {reasoning}"
+        self.tracer.end_trace({
+            "shot_type": int(shot_type),
+            "landing": [landing_x, landing_y],
+            "movement": [moving_x, moving_y],
+        }, reasoning)
 
         return action, reasoning
 

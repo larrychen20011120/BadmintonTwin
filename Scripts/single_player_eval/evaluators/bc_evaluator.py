@@ -14,10 +14,9 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.append(project_path)
 
 from .base_evaluator import BaseEvaluator
-from Agent.bc import BC, build_state_tensor_from_row, build_action_tensor_from_row
-from Utils.helper import state_col, action_col, transition, terminate, edit_distance
-from torch.nn import CTCLoss
-from dtaidistance import dtw_ndim
+from Agent.bc import BC, build_state_tensor_from_row
+from Utils.helper import state_col, action_col, transition, terminate
+from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
 import torch.nn.functional as F
 
 
@@ -25,16 +24,20 @@ class BCEvaluator(BaseEvaluator):
     """BC模型單一選手評估器"""
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0, 
-                 model_path=None):
+                 model_path=None, teacher_forcing=False, save_trajectories=False):
         """
         Args:
             player_name: 選手名稱
             experiment: 實驗類型
             device: 運算裝置
-            skip_first_n: 跳過前n個shots
+            skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             model_path: 模型路徑（可選，預設使用config中的路徑）
+            teacher_forcing: 是否使用 teacher forcing 模式
+            save_trajectories: 是否儲存原始軌跡
         """
-        super().__init__(player_name, experiment, device, skip_first_n)
+        super().__init__(player_name, experiment, device, skip_first_n,
+                         teacher_forcing=teacher_forcing,
+                         save_trajectories=save_trajectories)
         
         # 設定模型路徑
         if model_path is None:
@@ -79,8 +82,8 @@ class BCEvaluator(BaseEvaluator):
     def get_algorithm_name(self):
         return "bc"
     
-    def evaluate(self):
-        """執行BC模型評估"""
+    def simulate(self):
+        """執行BC模型模擬，收集trajectory"""
         device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
         
         # 取得選手的測試比賽
@@ -114,50 +117,43 @@ class BCEvaluator(BaseEvaluator):
                 rallies_data.append({
                     'rally_df': rally_df.sort_values('ball_round').reset_index(drop=True),
                     'opponent_player_id': opponent_player_id,
-                    'opponent_name': opponent_name
+                    'opponent_name': opponent_name,
+                    'match_id': match_id,
+                    'set_num': int(set_num),
+                    'rally_num': int(rally_num),
                 })
         
         if not rallies_data:
-            return {
-                self.player_name: {
-                    'land_dtw': float('inf'),
-                    'move_dtw': float('inf'),
-                    'shot_ctc': float('inf'),
-                    'edit_dist': float('inf'),
-                    'num_rallies': 0,
-                    'num_shots': 0
-                }
-            }
+            return []
         
-        # 評估每個rally
-        ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+        rally_trajectories = []
         
-        rally_land_dtw_list = []
-        rally_move_dtw_list = []
-        rally_shot_ctc_list = []
-        rally_edit_dist_list = []
-        total_rallies = 0
-        total_shots = 0
-        
-        for rally_info in tqdm(rallies_data, desc=f"Evaluating {self.player_name}"):
+        for rally_info in tqdm(rallies_data, desc=f"Simulating {self.player_name}"):
             rally_df = rally_info['rally_df']
             opponent_player_id = rally_info['opponent_player_id']
+            opponent_name = rally_info['opponent_name']
+            match_id = rally_info['match_id']
+            set_num = rally_info['set_num']
+            rally_num = rally_info['rally_num']
             
-            rally_land_pred_seq = []
-            rally_land_gt_seq = []
-            rally_move_pred_seq = []
-            rally_move_gt_seq = []
-            rally_shot_logits_seq = []
-            rally_shot_gt_seq = []
-            rally_shot_pred_seq = []
+            # 收集完整GT（雙方玩家，不受simulation影響）
+            rally_gt_full_seq = []
+            for _, row in rally_df.iterrows():
+                rally_gt_full_seq.append(build_gt_shot_from_row(row))
             
-            target_player_shot_count = 0
+            # 收集預測（雙方玩家）
+            rally_pred_full_seq = []
+            
+            # Determine target player's score at rally start
+            first_row = rally_df.iloc[0]
+            target_player_won = None
             
             # 初始化第一個state
-            first_row = rally_df.iloc[0]
             current_player_name = first_row['player']
             current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
             current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
+            
+            simulation_ended_early = False
             
             for shot_idx in range(len(rally_df)):
                 row = rally_df.iloc[shot_idx]
@@ -165,13 +161,20 @@ class BCEvaluator(BaseEvaluator):
                 is_target_turn = (ground_truth_player == self.player_name)
                 
                 current_player_id = self.player_id if is_target_turn else opponent_player_id
-                current_state[17] = current_player_id
                 
-                launch = (current_state[1].item() == 1)
+                if self.teacher_forcing:
+                    # Teacher forcing: always use GT state from row
+                    state_for_pred = build_state_tensor_from_row(row, current_player_id).to(device)
+                else:
+                    # Rollout: use accumulated state
+                    current_state[17] = current_player_id
+                    state_for_pred = current_state
+                
+                launch = (state_for_pred[1].item() == 1)
                 
                 # 模型預測
                 with torch.no_grad():
-                    land_logit, shot_logit, move_logit = self.model(current_state.unsqueeze(0))
+                    land_logit, shot_logit, move_logit = self.model(state_for_pred.unsqueeze(0))
                     
                     # Apply mask
                     if launch:
@@ -183,19 +186,20 @@ class BCEvaluator(BaseEvaluator):
                     masked_probs = shot_probs.masked_fill(~mask, 0.0)
                     sum_probs = masked_probs.sum(dim=-1, keepdim=True)
                     shot_probs = torch.where(sum_probs > 0, masked_probs / sum_probs, mask.float() / mask.sum())
-                    shot_type = torch.argmax(shot_probs, dim=-1)
+                    # shot_type = torch.argmax(shot_probs, dim=-1)
+                    # use categorical sampling to allow for more diverse predictions
+                    shot_type = torch.multinomial(shot_probs, num_samples=1).squeeze(-1)
+
                 
-                if is_target_turn:
-                    target_player_shot_count += 1
-                    if target_player_shot_count > self.skip_first_n:
-                        rally_land_pred_seq.append(land_logit.squeeze(0).cpu().numpy())
-                        gt_action = build_action_tensor_from_row(row)
-                        rally_land_gt_seq.append(gt_action[0:2].numpy())
-                        rally_move_pred_seq.append(move_logit.squeeze(0).cpu().numpy())
-                        rally_move_gt_seq.append(gt_action[3:5].numpy())
-                        rally_shot_logits_seq.append(shot_logit.squeeze(0).cpu())
-                        rally_shot_gt_seq.append(int(gt_action[2].item()))
-                        rally_shot_pred_seq.append(int(shot_type.item()))
+                # 收集預測（雙方玩家）
+                land_2d = [land_logit[0, 0].item(), land_logit[0, 1].item()]
+                move_2d = [move_logit[0, 0].item(), move_logit[0, 1].item()]
+                rally_pred_full_seq.append(build_pred_shot(
+                    ground_truth_player, int(shot_type.item()), land_2d, move_2d, int(row['ball_round'])))
+                
+                if self.teacher_forcing:
+                    # In teacher-forcing mode, do not transition; state resets from row each step
+                    continue
                 
                 # Build action tensor
                 action_tensor = torch.tensor([
@@ -209,60 +213,28 @@ class BCEvaluator(BaseEvaluator):
                 next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
                 
                 if terminate(next_state.cpu()):
+                    simulation_ended_early = True
                     break
                 
                 current_state = next_state.to(device)
             
-            # Calculate rally-level metrics
-            if len(rally_land_gt_seq) > 0:
-                land_pred_array = np.array(rally_land_pred_seq)
-                land_gt_array = np.array(rally_land_gt_seq)
-                land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
-                rally_land_dtw_list.append(land_dtw)
-                
-                move_pred_array = np.array(rally_move_pred_seq)
-                move_gt_array = np.array(rally_move_gt_seq)
-                move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
-                rally_move_dtw_list.append(move_dtw)
-                
-                rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
-                rally_shot_targets_tensor = torch.tensor(rally_shot_gt_seq, dtype=torch.long)
-                
-                log_probs = F.log_softmax(rally_shot_logits_tensor.unsqueeze(1), dim=-1)
-                input_length = torch.tensor([log_probs.shape[0]], dtype=torch.long)
-                target_length = torch.tensor([len(rally_shot_targets_tensor)], dtype=torch.long)
-                
-                rally_ctc = ctc_loss_fn(log_probs, rally_shot_targets_tensor, input_length, target_length)
-                rally_shot_ctc_list.append(rally_ctc.item())
-                
-                rally_edit_dist = edit_distance(rally_shot_pred_seq, rally_shot_gt_seq)
-                rally_edit_dist_list.append(rally_edit_dist)
-                
-                total_rallies += 1
-                total_shots += len(rally_shot_gt_seq)
+            # Save rally trajectory (包含雙方玩家，GT完整長度)
+            if self.save_trajectories:
+                rally_trajectories.append({
+                    'match_id': match_id,
+                    'set': set_num,
+                    'rally': rally_num,
+                    'target_player': self.player_name,
+                    'opponent_player': opponent_name,
+                    'gt_sequence': rally_gt_full_seq,
+                    'pred_sequence': rally_pred_full_seq,
+                    'target_player_won': target_player_won,
+                    'rally_length_gt': len(rally_gt_full_seq),
+                    'rally_length_pred': len(rally_pred_full_seq),
+                    'simulation_ended_early': simulation_ended_early,
+                })
         
-        # Build results
-        if total_rallies > 0:
-            results = {
-                self.player_name: {
-                    'land_dtw': float(np.mean(rally_land_dtw_list)),
-                    'move_dtw': float(np.mean(rally_move_dtw_list)),
-                    'shot_ctc': float(np.mean(rally_shot_ctc_list)),
-                    'edit_dist': float(np.mean(rally_edit_dist_list)),
-                    'num_rallies': total_rallies,
-                    'num_shots': total_shots
-                }
-            }
-        else:
-            results = {
-                self.player_name: {
-                    'land_dtw': float('inf'),
-                    'move_dtw': float('inf'),
-                    'shot_ctc': float('inf'),
-                    'edit_dist': float('inf'),
-                    'num_rallies': 0,
-                    'num_shots': 0
-                }
-            }
+        # Save full trajectories
+        self._save_trajectories_if_needed(rally_trajectories)
         
-        return results
+        return rally_trajectories

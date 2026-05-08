@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import pickle
 import numpy as np
 import pandas as pd
@@ -11,10 +12,11 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Agent.base_agent import BaseAgent
-from Agent.verbalizer import BadmintonVerbalizer, create_verbalizer
+from Agent.timerag_verbalizer import TimeRAGVerbalizer, create_timerag_verbalizer
 from Utils.llm import LLM
 from Utils.helper import state_col, action_col, coord2area
 from Utils.badminton_config import LANG_AREA_MAPPING, INDEX2EN_SHOT
+from Utils.langfuse_tracing import BadmintonTracer
 
 
 class TimeRAGDatabase:
@@ -350,8 +352,7 @@ class TimeRAGAgent(BaseAgent):
     """
     
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
-                 api_key="EMPTY", port=16000, top_k=5, use_verbalizer=False,
-                 verbalized_prompt=False):
+                 api_key="EMPTY", port=16000, top_k=5, enable_tracing=True):
         """
         Initialize TimeRAG Agent.
         
@@ -362,23 +363,21 @@ class TimeRAGAgent(BaseAgent):
             api_key: API key for LLM
             port: Port for local LLM server
             top_k: Number of similar windows to retrieve
-            use_verbalizer: Whether to use verbalizer
-            verbalized_prompt: Whether to use verbalized prompt template
+            enable_tracing: Whether to enable Langfuse tracing
         """
         super().__init__(player_name)
         
         self.database = database
         self.window_size = database.window_size
         self.top_k = top_k
-        self.use_verbalizer = use_verbalizer
-        self.verbalized_prompt = verbalized_prompt and use_verbalizer
+        self.tracer = BadmintonTracer("timerag", player_name, enable_tracing)
         
-        # Initialize verbalizer if needed
-        if self.use_verbalizer:
-            self.verbalizer = create_verbalizer()
-            print("Verbalizer initialized")
-        else:
-            self.verbalizer = None
+        # Trajectory tracking for current rally (full state_dicts)
+        self.trajectory = []
+        self._current_rally = None
+        
+        # Initialize verbalizer
+        self.verbalizer = create_timerag_verbalizer()
         
         # Initialize LLM
         self.llm = LLM(model_name=model_name, api_key=api_key, port=port)
@@ -388,16 +387,8 @@ class TimeRAGAgent(BaseAgent):
         with open(os.path.join(prompt_dir, "timerag_system.md"), "r") as f:
             self.system_prompt = f.read()
         
-        # Choose user template
-        if self.verbalized_prompt:
-            template_file = "timerag_user_verbalized.jinja"
-            if not os.path.exists(os.path.join(prompt_dir, template_file)):
-                print(f"Warning: {template_file} not found, using standard template")
-                template_file = "timerag_user.jinja"
-        else:
-            template_file = "timerag_user.jinja"
-        
-        with open(os.path.join(prompt_dir, template_file), "r") as f:
+        # Load user template
+        with open(os.path.join(prompt_dir, "timerag_user.jinja"), "r") as f:
             self.user_template = Template(f.read())
         
         # Load schema
@@ -453,8 +444,10 @@ class TimeRAGAgent(BaseAgent):
         return query_continuous, query_discrete
     
     def reset_history(self):
-        """Reset state history (call at start of new rally)."""
+        """Reset state history and trajectory tracking."""
         self.state_history = []
+        self.trajectory = []
+        self._current_rally = None
     
     def predict(self, state, info, launch):
         """
@@ -472,7 +465,9 @@ class TimeRAGAgent(BaseAgent):
         query_continuous, query_discrete = self._build_query_window(state)
         
         # Retrieve similar windows
+        t0 = time.time()
         retrieved_windows = self.database.retrieve(query_continuous, query_discrete, top_k=self.top_k)
+        t1 = time.time()
         
         # Build state dictionary for current state
         player_score = info['score'][0] if info.get('score') else 0
@@ -511,40 +506,58 @@ class TimeRAGAgent(BaseAgent):
             'opponent_move_x': 0,
             'opponent_move_y': 0,
         }
+
+        self.tracer.start_trace(state_dict, info, launch)
+        self.tracer.log_retrieval(state_dict, retrieved_windows, "timerag", int((t1 - t0) * 1000))
         
-        # Build context for LLM
-        context = {
-            **state_dict,
-            'launch': launch,
-            'window_size': self.window_size,
-            'top_k': self.top_k,
-            'retrieved_windows': retrieved_windows
-        }
+        # Track rally trajectory
+        rally_num = info.get('rally', 0)
+        if self._current_rally != rally_num:
+            self._current_rally = rally_num
+            self.trajectory = []
+        self.trajectory.append(state_dict)
+        
+        # Build context for LLM using verbalizer
+        state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
+        context = self.verbalizer.build_prompt_context_nl(state_dict, retrieved_windows, launch=launch, window_size=self.window_size, state_history=state_history)
         
         # Render user prompt
         user_prompt = self.user_template.render(**context)
         
         # Get LLM response
-        response = self.llm.get_verified_response(
+        t0 = time.time()
+        response, raw_llm_output, usage = self.llm.get_verified_response(
             schema=self.schema,
             system_prompt=self.system_prompt,
             user_prompt=user_prompt,
             max_trials=5
         )
+        t1 = time.time()
+        self.tracer.log_generation(
+            self.system_prompt, user_prompt, response,
+            latency_ms=int((t1 - t0) * 1000),
+            raw_llm_output=raw_llm_output,
+            usage=usage,
+        )
         
         if response is None:
             print("Warning: LLM response failed, using default action")
+            self.tracer.end_trace({"shot_type": "default_fallback"}, "LLM response failed")
             return self._default_action(launch)
-        
+
         # Parse response
         shot_type = response['shot_type']
-        landing_area = response.get('landing_area', 'Unknown')
-        landing_x = response['landing_x']
-        landing_y = response['landing_y']
-        movement_area = response.get('movement_area', 'Unknown')
-        moving_x = response['moving_x']
-        moving_y = response['moving_y']
-        reasoning = response['reasoning']
+        landing_x = response.get('landing_x', 0.0)
+        landing_y = response.get('landing_y', 0.0)
+        moving_x = response.get('moving_x', 0.0)
+        moving_y = response.get('moving_y', 0.0)
+        reasoning = response.get('reasoning', '')
+        
+        if shot_type == 11:
+            landing_x = 0.0
+            landing_y = 0.0
+            moving_x = 0.0
+            moving_y = 0.0
         
         # Apply serve mask if needed
         if launch and shot_type not in [1, 10]:
@@ -560,7 +573,11 @@ class TimeRAGAgent(BaseAgent):
             [0.1] * 10
         )
         
-        reasoning = f"[Landing: {landing_area}, Movement: {movement_area}] {reasoning}"
+        self.tracer.end_trace({
+            "shot_type": int(shot_type),
+            "landing": [landing_x, landing_y],
+            "movement": [moving_x, moving_y],
+        }, reasoning)
         
         return action, reasoning
     

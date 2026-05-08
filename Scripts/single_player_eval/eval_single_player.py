@@ -49,6 +49,8 @@ def get_algorithm_map():
         RallyNetEvaluator,
         RallyNetV2Evaluator,
         NaiveRAGEvaluator,
+        TimeRAGEvaluator,
+        TwinEvaluator,
         RandomEvaluator
     )
     
@@ -57,6 +59,8 @@ def get_algorithm_map():
         'rallynet': RallyNetEvaluator,
         'rallynetv2': RallyNetV2Evaluator,
         'naive_rag': NaiveRAGEvaluator,
+        'timerag': TimeRAGEvaluator,
+        'twin': TwinEvaluator,
         'random': RandomEvaluator,
     }
 
@@ -103,6 +107,8 @@ def list_available_algorithms():
         ('rallynet', 'RallyNet - SDE-based模型 (未實現)', False),
         ('rallynetv2', 'RallyNetV2 - 擴展版RallyNet', True),
         ('naive_rag', 'NaiveRAG - 基於檢索的LLM方法', True),
+        ('timerag', 'TimeRAG - 時間窗口檢索的LLM方法', True),
+        ('twin', 'Twin (I-MSDP) - 多尺度軌跡檢索的LLM方法', True),
         ('random', 'Random Agent - 隨機基線', True),
     ]
 
@@ -199,15 +205,9 @@ def evaluate_single_player(algorithm, player_name, experiment='norm', device='cu
     # 執行評估
     try:
         print(f"開始評估 {player_name}...")
-        results = evaluator.evaluate()
+        results = evaluator.simulate()
         
-        # 顯示結果
-        evaluator.print_results(results)
-        
-        # 儲存結果
-        if save_results:
-            output_path = evaluator.save_results(results)
-            print(f"✅ 結果已儲存至: {output_path}")
+        print(f"✅ 模擬完成，共收集 {len(results)} 個rallies")
         
         return results
         
@@ -257,7 +257,7 @@ def main():
     parser.add_argument(
         '--algorithm',
         type=str,
-        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'random'],
+        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'timerag', 'twin', 'random'],
         help='要使用的演算法'
     )
     
@@ -297,6 +297,12 @@ def main():
         help='不儲存評估結果'
     )
     
+    parser.add_argument(
+        '--save-trajectories',
+        action='store_true',
+        help='儲存原始軌跡（雙方選手、完整 GT 序列）到 pickle 檔案'
+    )
+    
     # 資訊參數
     parser.add_argument(
         '--list-players',
@@ -333,7 +339,21 @@ def main():
         '--top-k',
         type=int,
         default=5,
-        help='RAG檢索數量（僅適用於naive_rag，預設: 5）'
+        help='RAG檢索數量（僅適用於naive_rag, timerag, twin，預設: 5）'
+    )
+    
+    parser.add_argument(
+        '--window-size',
+        type=int,
+        default=3,
+        help='時間窗口大小（僅適用於timerag，預設: 3）'
+    )
+    
+    parser.add_argument(
+        '--max-scale',
+        type=int,
+        default=10,
+        help='I-MSDP最大suffix長度（僅適用於twin，預設: 10）'
     )
     
     args = parser.parse_args()
@@ -364,6 +384,8 @@ def main():
         kwargs['seed'] = args.seed
     if args.top_k != 5:
         kwargs['top_k'] = args.top_k
+    if args.save_trajectories:
+        kwargs['save_trajectories'] = True
     
     # 執行評估
     results = evaluate_single_player(

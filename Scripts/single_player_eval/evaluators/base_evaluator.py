@@ -14,18 +14,23 @@ class BaseEvaluator(ABC):
     所有演算法的evaluator都應該繼承這個類別
     """
     
-    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0):
+    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
+                 teacher_forcing=False, save_trajectories=False):
         """
         Args:
             player_name: 選手完整名稱
             experiment: 實驗類型 ('norm' 或 'shifted')
             device: 運算裝置
-            skip_first_n: 跳過前n個shots
+            skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
+            teacher_forcing: 是否使用 teacher forcing（餵 GT state）模式
+            save_trajectories: 是否儲存原始軌跡（雙方選手、完整 GT）
         """
         self.player_name = player_name
         self.experiment = experiment
         self.device = device
         self.skip_first_n = skip_first_n
+        self.teacher_forcing = teacher_forcing
+        self.save_trajectories = save_trajectories
         
         # 載入config
         self.config = self._load_config()
@@ -39,7 +44,7 @@ class BaseEvaluator(ABC):
         """載入設定檔"""
         import yaml
         config_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
             'config.yaml'
         )
         with open(config_path, 'r') as f:
@@ -67,22 +72,12 @@ class BaseEvaluator(ABC):
         return test_data[self.player_name]
     
     @abstractmethod
-    def evaluate(self):
+    def simulate(self):
         """
-        執行評估
+        執行模擬並收集trajectory
         
         Returns:
-            dict: 評估結果，格式與現有eval結果相同
-            {
-                'player_name': {
-                    'land_dtw': float,
-                    'move_dtw': float, 
-                    'shot_ctc': float,
-                    'edit_dist': float,
-                    'num_rallies': int,
-                    'num_shots': int
-                }
-            }
+            list: trajectory list，每個element是一個rally dict
         """
         pass
     
@@ -91,63 +86,16 @@ class BaseEvaluator(ABC):
         """取得演算法名稱"""
         pass
     
-    def save_results(self, results, output_dir=None):
-        """
-        儲存評估結果
-        
-        Args:
-            results: 評估結果字典
-            output_dir: 輸出目錄（可選）
-        
-        Returns:
-            str: 儲存的檔案路徑
-        """
-        if output_dir is None:
-            # 預設路徑: Experiments/{algorithm}/results/single_player/
-            algorithm = self.get_algorithm_name()
-            output_dir = os.path.join(
-                'Experiments', algorithm, 'results', 'single_player'
-            )
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 檔名格式: {player_name}_{experiment}_eval.json
-        safe_player_name = self.player_name.replace(' ', '_')
-        filename = f"{safe_player_name}_{self.experiment}_eval.json"
-        output_path = os.path.join(output_dir, filename)
-        
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        return output_path
-    
-    def print_results(self, results):
-        """
-        印出評估結果
-        
-        Args:
-            results: 評估結果字典
-        """
-        import numpy as np
-        
-        print("\n" + "="*80)
-        print(f"{self.get_algorithm_name().upper()} Single Player Evaluation Results")
-        print("="*80)
-        print(f"Player: {self.player_name}")
-        print(f"Experiment: {self.experiment}")
-        print(f"Skip First N: {self.skip_first_n}")
-        print("-"*80)
-        
-        player_data = results.get(self.player_name, {})
-        
-        if player_data.get('num_rallies', 0) > 0:
-            print(f"Land DTW:    {player_data['land_dtw']:.4f}")
-            print(f"Move DTW:    {player_data['move_dtw']:.4f}")
-            print(f"Shot CTC:    {player_data['shot_ctc']:.4f}")
-            print(f"Edit Dist:   {player_data['edit_dist']:.4f}")
-            print(f"Rallies:     {player_data['num_rallies']}")
-            print(f"Shots:       {player_data['num_shots']}")
-        else:
-            print("No rallies evaluated.")
-        
-        print("="*80)
+    def _save_trajectories_if_needed(self, rally_trajectories):
+        """Save rally trajectory dicts to pickle if --save-trajectories is set."""
+        if not self.save_trajectories:
+            return
+        from Scripts.single_player_eval.trajectory_store import save_trajectories
+
+        safe_name = self.player_name.replace(' ', '_')
+        algo = self.get_algorithm_name()
+        output_path = os.path.join(
+            'Experiments', algo, 'trajectories',
+            f"{safe_name}_{self.experiment}.pkl"
+        )
+        save_trajectories(rally_trajectories, output_path)

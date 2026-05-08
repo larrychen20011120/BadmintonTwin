@@ -1,55 +1,36 @@
-Current Game State:
-- Rally: {{ rally|int }}
-- Ball Round: {{ ball_round|int }}
-- Score: Player {{ player_score|int }} - Opponent {{ opponent_score|int }}
-- Score Status: {{ score_status|int }}
+## Current Match Situation
 
-Current Positions:
-- Player Location: ({{ "{:.3f}".format(player_location_x) }}, {{ "{:.3f}".format(player_location_y) }}) [{{ player_location_area|default('Unknown') }}]
-- Ball Distance: {{ "{:.3f}".format(ball_distance) }} ({{ "{:.3f}".format(ball_distance_x) }}, {{ "{:.3f}".format(ball_distance_y) }})
-- Hit Position: ({{ "{:.3f}".format(hit_x) }}, {{ "{:.3f}".format(hit_y) }}) [{{ hit_position_area|default('Unknown') }}]
-
-Opponent Information:
-- Opponent Shot Type: {{ opponent_type|int }}
-- Opponent Location: ({{ "{:.3f}".format(opponent_location_x) }}, {{ "{:.3f}".format(opponent_location_y) }}) [{{ opponent_location_area|default('Unknown') }}]
-- Opponent Movement: ({{ "{:.3f}".format(opponent_move_x) }}, {{ "{:.3f}".format(opponent_move_y) }})
+Match: Rally {{ rally|int }}, Shot {{ ball_round|int }}{% if player_score is defined and opponent_score is defined %}, Score {{ player_score|int }}-{{ opponent_score|int }}{% if player_score > opponent_score %} (leading by {{ (player_score - opponent_score)|int }}){% elif player_score < opponent_score %} (trailing by {{ (opponent_score - player_score)|int }}){% else %} (tied){% endif %}{% endif %}{% if set_number is defined %}, Set {{ set_number|int }}{% endif %}
 
 {% if launch %}
-**This is a serve shot (ball_round=1). You MUST use shot_type 1 (Serve short) or 10 (Serve long).**
+Now it's my turn to serve.
+
+Context: I am at {{ player_location_area }}{% if player_location_area in ['Rear Center', 'Rear Right Side', 'Rear Right Side Line'] %} (right service court){% elif player_location_area in ['Rear Left Side', 'Rear Left Side Line'] %} (left service court){% endif %}, opponent at {{ opponent_location_area }} receiving. Score {{ player_score|int }}-{{ opponent_score|int }}.
+Available serves: Short Serve to Front Right or Front Left, or Long Serve to Rear Right or Rear Left.
+{% else %}
+Context: I am at {{ player_location_area }}, opponent at {{ opponent_location_area }} played a {{ opponent_type_name }} to {{ hit_position_area }}.
 {% endif %}
 
 ---
 
-Retrieved Similar Experiences (Top {{ top_k|int }}):
-{% for exp in experiences %}
-Experience {{ loop.index }} (Similarity: {{ "{:.2f}".format(exp.similarity|default(0.0)) }}):
-- Context: Rally {{ exp.rally|int }}, Round {{ exp.ball_round|int }}, Score {{ exp.player_score|int }}-{{ exp.opponent_score|int }} (Diff: {{ exp.score_status|default(0)|int }})
-- Player Position: ({{ "{:.3f}".format(exp.player_location_x) }}, {{ "{:.3f}".format(exp.player_location_y) }}) [{{ exp.player_location_area|default('Unknown') }}]
-- Ball Distance: {{ "{:.3f}".format(exp.ball_distance) }} ({{ "{:.3f}".format(exp.ball_distance_x) }}, {{ "{:.3f}".format(exp.ball_distance_y) }})
-- Hit Position: ({{ "{:.3f}".format(exp.hit_x) }}, {{ "{:.3f}".format(exp.hit_y) }}) [{{ exp.hit_position_area|default('Unknown') }}]
-- Opponent: Type {{ exp.opponent_type|int }} at ({{ "{:.3f}".format(exp.opponent_location_x) }}, {{ "{:.3f}".format(exp.opponent_location_y) }}) [{{ exp.opponent_location_area|default('Unknown') }}]
-- Action Taken: Shot Type {{ exp.player_type|int }} → Landing Area ({{ exp.landing_area|default('Unknown') }}) at ({{ "{:.3f}".format(exp.landing_x) }}, {{ "{:.3f}".format(exp.landing_y) }}) [{{ exp.landing_area|default('Unknown') }}], Move to ({{ "{:.3f}".format(exp.moving_x) }}, {{ "{:.3f}".format(exp.moving_y) }}) [{{ exp.movement_area|default('Unknown') }}]
-{% endfor %}
+## Retrieved Similar Cases ({{ top_k|int }} total)
 
+{% for case in cases %}
+Case {{ loop.index }} (similarity={{ "%.3f"|format(case.similarity) }}):
+Context: {{ case.context }}
+Action: {{ case.action }}
+Action: (shot_type={{ case.shot_type }}, landing_x={{ "%.3f"|format(case.landing_x) }}, landing_y={{ "%.3f"|format(case.landing_y) }}, moving_x={{ "%.3f"|format(case.moving_x) }}, moving_y={{ "%.3f"|format(case.moving_y) }})
+
+{% endfor %}
 ---
 
-Based on the current state and the retrieved experiences, predict your next action.
+## Step-by-Step Reasoning
 
-**IMPORTANT**: You MUST output a valid JSON object ONLY. Do not include any text before or after the JSON. The JSON must follow this exact format:
+Provide your reasoning, then output the JSON:
 
-{
-  "shot_type": <integer 1-11>,
-  "landing_area": "<semantic area name from the 33 court areas>",
-  "landing_x": <float -1.0 to 1.0>,
-  "landing_y": <float -1.0 to 1.0>,
-  "movement_area": "<semantic area name from the 33 court areas>",
-  "moving_x": <float -1.0 to 1.0>,
-  "moving_y": <float -1.0 to 1.0>,
-  "reasoning": "<your reasoning based on retrieved experiences>"
-}
+[1] Situation Analysis:
+[2] Case Pattern Review:
+[3] Shot Decision:
+[4] Landing & Recovery:
 
-Ensure that:
-1. The landing_area and landing_x/y are consistent (coordinates within area bounds)
-2. The movement_area and moving_x/y are consistent
-3. If ball_round=1, shot_type must be 1 or 10
-4. Output ONLY the JSON, no markdown formatting, no explanations
+{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}

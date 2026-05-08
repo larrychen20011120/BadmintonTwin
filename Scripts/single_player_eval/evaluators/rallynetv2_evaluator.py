@@ -11,33 +11,36 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import torch.nn.functional as F
-from torch.nn import CTCLoss
-from dtaidistance import dtw_ndim
 
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.append(project_path)
 
 from .base_evaluator import BaseEvaluator
 from Agent.rallynetv2 import LatentSDE
-from Agent.eval_rallynetv2 import build_state_tensor_from_row, build_action_tensor_from_row
-from Utils.helper import state_col, action_col, transition, terminate, edit_distance
+from Agent.eval_rallynetv2 import build_state_tensor_from_row
+from Utils.helper import state_col, action_col, transition, terminate
+from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
 
 
 class RallyNetV2Evaluator(BaseEvaluator):
     """RallyNetV2單一選手評估器"""
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
-                 model_path=None, hyperparameters_path=None):
+                 model_path=None, hyperparameters_path=None,
+                 teacher_forcing=False, save_trajectories=False):
         """
         Args:
             player_name: 選手名稱
             experiment: 實驗類型
             device: 運算裝置
-            skip_first_n: 跳過前n個shots
+            skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             model_path: 模型路徑（可選）
             hyperparameters_path: hyperparameters路徑（可選）
+            teacher_forcing: 是否使用 teacher forcing 模式
         """
-        super().__init__(player_name, experiment, device, skip_first_n)
+        super().__init__(player_name, experiment, device, skip_first_n,
+                         teacher_forcing=teacher_forcing,
+                         save_trajectories=save_trajectories)
         
         # 設定模型路徑
         if model_path is None:
@@ -106,23 +109,16 @@ class RallyNetV2Evaluator(BaseEvaluator):
     def get_algorithm_name(self):
         return "rallynetv2"
     
-    def evaluate(self):
-        """執行RallyNetV2評估"""
+    def simulate(self):
+        """執行RallyNetV2模擬，收集trajectory"""
         device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
         
         # 取得選手的測試比賽
         test_match_ids = self.get_player_test_matches()
         
-        ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+        rally_trajectories = []
         
-        rally_land_dtw_list = []
-        rally_move_dtw_list = []
-        rally_shot_ctc_list = []
-        rally_edit_dist_list = []
-        total_rallies = 0
-        total_shots = 0
-        
-        for match_id in tqdm(test_match_ids, desc=f"Matches for {self.player_name}"):
+        for match_id in tqdm(test_match_ids, desc=f"Simulating {self.player_name}"):
             match_df = self.df[self.df['match_id'] == match_id].copy()
             if len(match_df) == 0:
                 continue
@@ -149,28 +145,40 @@ class RallyNetV2Evaluator(BaseEvaluator):
                 if len(rally_df) == 0:
                     continue
                 
-                rally_land_pred_seq = []
-                rally_land_gt_seq = []
-                rally_move_pred_seq = []
-                rally_move_gt_seq = []
-                rally_shot_logits_seq = []
-                rally_shot_gt_seq = []
-                rally_shot_pred_seq = []
+                # 收集完整GT（雙方玩家，不受simulation影響）
+                rally_gt_full_seq = []
+                for _, row in rally_df.iterrows():
+                    rally_gt_full_seq.append(build_gt_shot_from_row(row))
                 
-                target_player_shot_count = 0
+                # 收集預測（雙方玩家）
+                rally_pred_full_seq = []
+                
+                target_player_won = None
+
+                first_row = rally_df.iloc[0]
                 
                 # 初始化第一個state
-                first_row = rally_df.iloc[0]
                 current_player_name = first_row['player']
                 current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
                 current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
                 
                 # 初始化ht tensor
                 rally_length = len(rally_df)
-                ht = torch.zeros(rally_length, 1, 18, device=device)
+                
+                if self.teacher_forcing:
+                    # Pre-build ht with all GT states
+                    ht = torch.zeros(rally_length, 1, 18, device=device)
+                    for i in range(rally_length):
+                        row_i = rally_df.iloc[i]
+                        pname = row_i['player']
+                        pid = self.player_id if pname == self.player_name else opponent_player_id
+                        ht[i, :, :] = build_state_tensor_from_row(row_i, pid).to(device)
+                else:
+                    ht = torch.zeros(rally_length, 1, 18, device=device)
                 
                 rally_done = False
                 shot_idx = 0
+                simulation_ended_early = False
                 
                 while not rally_done and shot_idx < len(rally_df):
                     row = rally_df.iloc[shot_idx]
@@ -178,11 +186,14 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     is_target_turn = (ground_truth_player == self.player_name)
                     current_player_id = self.player_id if is_target_turn else opponent_player_id
                     
-                    current_state[17] = current_player_id
-                    launch = (current_state[1].item() == 1)
-                    
-                    # Update ht
-                    ht[shot_idx, :, :] = current_state
+                    if self.teacher_forcing:
+                        # ht already pre-built with GT states
+                        launch = (ht[shot_idx, 0, 1].item() == 1)
+                    else:
+                        current_state[17] = current_player_id
+                        launch = (current_state[1].item() == 1)
+                        # Update ht with current (potentially rolled-out) state
+                        ht[shot_idx, :, :] = current_state
                     
                     with torch.no_grad():
                         _xs, inv_action, inv_shot_logit, mlp_action, mlp_shot_logit = self.model.sample(
@@ -209,17 +220,15 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     shot_probs_masked = shot_probs_masked / (shot_probs_masked.sum() + 1e-8)
                     shot_type_masked = torch.argmax(shot_probs_masked).unsqueeze(0)
                     
-                    if is_target_turn:
-                        target_player_shot_count += 1
-                        if target_player_shot_count > self.skip_first_n:
-                            rally_land_pred_seq.append(land_logit.squeeze(0).cpu().numpy())
-                            gt_action = build_action_tensor_from_row(row)
-                            rally_land_gt_seq.append(gt_action[0:2].numpy())
-                            rally_move_pred_seq.append(move_logit.squeeze(0).cpu().numpy())
-                            rally_move_gt_seq.append(gt_action[3:5].numpy())
-                            rally_shot_logits_seq.append(shot_logit.squeeze(0).cpu())
-                            rally_shot_gt_seq.append(int(gt_action[2].item()))
-                            rally_shot_pred_seq.append(int(shot_type_masked.item()))
+                    # 收集預測（雙方玩家）
+                    land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]
+                    move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
+                    rally_pred_full_seq.append(build_pred_shot(
+                        ground_truth_player, int(shot_type_masked.item()), land_2d, move_2d, int(row['ball_round'])))
+                    
+                    if self.teacher_forcing:
+                        shot_idx += 1
+                        continue
                     
                     # Build action tensor
                     action_tensor = torch.tensor([
@@ -234,60 +243,28 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     
                     if terminate(next_state.cpu()):
                         rally_done = True
+                        simulation_ended_early = True
                     
                     current_state = next_state.to(device)
                     shot_idx += 1
                 
-                # Calculate rally-level metrics
-                if len(rally_land_gt_seq) > 0:
-                    land_pred_array = np.array(rally_land_pred_seq)
-                    land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
-                    rally_land_dtw_list.append(land_dtw)
-                    
-                    move_pred_array = np.array(rally_move_pred_seq)
-                    move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
-                    rally_move_dtw_list.append(move_dtw)
-                    
-                    rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
-                    rally_shot_targets_tensor = torch.tensor(rally_shot_gt_seq, dtype=torch.long)
-                    
-                    log_probs = F.log_softmax(rally_shot_logits_tensor.unsqueeze(1), dim=-1)
-                    input_length = torch.tensor([log_probs.shape[0]], dtype=torch.long)
-                    target_length = torch.tensor([len(rally_shot_targets_tensor)], dtype=torch.long)
-                    
-                    rally_ctc = ctc_loss_fn(log_probs, rally_shot_targets_tensor, input_length, target_length)
-                    rally_shot_ctc_list.append(rally_ctc.item())
-                    
-                    rally_edit_dist = edit_distance(rally_shot_pred_seq, rally_shot_gt_seq)
-                    rally_edit_dist_list.append(rally_edit_dist)
-                    
-                    total_rallies += 1
-                    total_shots += len(rally_shot_gt_seq)
+                # Save rally trajectory (包含雙方玩家，GT完整長度)
+                if self.save_trajectories:
+                    rally_trajectories.append({
+                        'match_id': match_id,
+                        'set': int(set_num),
+                        'rally': int(rally_num),
+                        'target_player': self.player_name,
+                        'opponent_player': opponent_name,
+                        'gt_sequence': rally_gt_full_seq,
+                        'pred_sequence': rally_pred_full_seq,
+                        'target_player_won': target_player_won,
+                        'rally_length_gt': len(rally_gt_full_seq),
+                        'rally_length_pred': len(rally_pred_full_seq),
+                        'simulation_ended_early': simulation_ended_early,
+                    })
         
-        # Build results
-        if total_rallies > 0:
-            results = {
-                self.player_name: {
-                    'land_dtw': float(np.mean(rally_land_dtw_list)),
-                    'move_dtw': float(np.mean(rally_move_dtw_list)),
-                    'shot_ctc': float(np.mean(rally_shot_ctc_list)),
-                    'edit_dist': float(np.mean(rally_edit_dist_list)),
-                    'num_rallies': total_rallies,
-                    'num_shots': total_shots
-                }
-            }
-        else:
-            results = {
-                self.player_name: {
-                    'land_dtw': float('inf'),
-                    'move_dtw': float('inf'),
-                    'shot_ctc': float('inf'),
-                    'edit_dist': float('inf'),
-                    'num_rallies': 0,
-                    'num_shots': 0
-                }
-            }
+        # Save full trajectories
+        self._save_trajectories_if_needed(rally_trajectories)
         
-        return results
+        return rally_trajectories
