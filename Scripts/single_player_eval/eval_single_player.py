@@ -46,7 +46,6 @@ def get_algorithm_map():
     """
     from Scripts.single_player_eval.evaluators import (
         BCEvaluator,
-        RallyNetEvaluator,
         RallyNetV2Evaluator,
         NaiveRAGEvaluator,
         TimeRAGEvaluator,
@@ -56,7 +55,6 @@ def get_algorithm_map():
     
     return {
         'bc': BCEvaluator,
-        'rallynet': RallyNetEvaluator,
         'rallynetv2': RallyNetV2Evaluator,
         'naive_rag': NaiveRAGEvaluator,
         'timerag': TimeRAGEvaluator,
@@ -322,6 +320,14 @@ def main():
         type=str,
         help='自訂模型路徑（僅適用於bc, rallynet, rallynetv2）'
     )
+
+    parser.add_argument(
+        '--distribution',
+        type=str,
+        default='deterministic',
+        choices=['deterministic', 'gaussian'],
+        help='BC輸出模式（僅適用於bc）：deterministic 或 gaussian（預設: deterministic）'
+    )
     
     parser.add_argument(
         '--hyperparameters-path',
@@ -378,6 +384,8 @@ def main():
     kwargs = {}
     if args.model_path:
         kwargs['model_path'] = args.model_path
+    if args.algorithm == 'bc' and args.distribution:
+        kwargs['distribution'] = args.distribution
     if args.hyperparameters_path:
         kwargs['hyperparameters_path'] = args.hyperparameters_path
     if args.seed is not None:

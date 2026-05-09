@@ -43,6 +43,23 @@ class LinearScheduler(object):
     def val(self):
         return self._val
 
+class MatchStateEncoder(nn.Module):
+    """MLP encoder for match state (rally, ball_round, player_score, opponent_score, score_status)."""
+    def __init__(self, input_size=5, hidden_size=32, output_size=16):
+        super(MatchStateEncoder, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size),
+            nn.ReLU()
+        )
+        self.max_values =  torch.tensor([42, 71, 21, 21, 21], dtype=torch.float32)
+    
+    def forward(self, match_state):
+        # match_state: [seq_len, batch_size, 5]
+        match_state = match_state / self.max_values.to(match_state.device)  # Normalize each feature by its max value
+        return self.mlp(match_state)
+
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
         super(Encoder, self).__init__()
@@ -53,37 +70,6 @@ class Encoder(nn.Module):
         out, _ = self.gru(inp)
         out = self.lin(out)
         return out
-
-class INV(nn.Module):
-    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len):
-        super(INV, self).__init__()
-        self.fc = nn.Linear(input_size + input_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.shot_embedding = nn.Embedding(shot_type_len, 8)
-        self.player_embedding = nn.Embedding(player_id_len, 8)
-        
-        self.predict_land_area = nn.Linear(hidden_size, 2, bias=False)
-        self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
-        self.predict_move_area = nn.Linear(hidden_size, 2, bias=False)
-
-    def embed_and_transform(self, state):
-        shot_types = state[:, :, 12].long()
-        player_ids = state[:, :, 17].long()
-        shot_embeds = self.shot_embedding(shot_types)
-        player_embeds = self.player_embedding(player_ids)
-        state = torch.cat((state[:, :, :12], shot_embeds, state[:, :, 13:17], player_embeds), dim=-1)
-        return state
-
-    def forward(self, x):
-        # x = x.float()
-        # raw_out = torch.cat((self.embed_and_transform(x[:, :18]), self.embed_and_transform(x[:, 18:])), -1)
-        out = self.fc(x)
-        out = self.relu(out)
-        land_logit = self.predict_land_area(out)
-        move_logit = self.predict_move_area(out)
-        shot_logit = self.predict_shot_type(out)
-
-        return land_logit, shot_logit, move_logit
 
 class MLP(nn.Module):
     def __init__(self, input_size, hidden_size, player_id_len, shot_type_len):
@@ -107,41 +93,45 @@ class LatentSDE(nn.Module):
     sde_type = "ito"
     noise_type = "diagonal"
 
-    def __init__(self, data_size, latent_size, context_size, hidden_size, player_ids_len, shot_type_len):
+    def __init__(self, data_size, latent_size, context_size, hidden_size, player_ids_len, shot_type_len, match_state_dim=5, condition_size=16):
         super(LatentSDE, self).__init__()
         self.action_dim = 5
+        self.match_state_dim = match_state_dim
+        self.condition_size = condition_size
         self.state_dim = data_size - self.action_dim
-        self.log_softmax = nn.LogSoftmax(dim = -1)
+        self.remaining_state_dim = self.state_dim - self.match_state_dim  # State without match_state
+        self.log_softmax = nn.LogSoftmax(dim=-1)
 
         self.shot_type_len = shot_type_len
         self.player_ids_len = player_ids_len
-        
-        # ================= #
-        inverse_model = INV(32, 128, player_ids_len, shot_type_len).cuda(0)
-        inverse_model.load_state_dict(torch.load("Experiments/rallynetv2/weight/INV_weight.pth", weights_only=True))
-        inverse_model.eval()
-        self.inverse_model = inverse_model
-        # ================= #
+
+        self.shot_embedding = nn.Embedding(shot_type_len, 8)
+        self.player_embedding = nn.Embedding(player_ids_len, 8)
 
         # ================= #
-        self.action_model = MLP(latent_size, 128, player_ids_len, shot_type_len).cuda(0)
-        class_weights = compute_shot_type_weights(method='uniform').cuda(0)
-        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index = 0)
+        self.action_model = MLP(latent_size + condition_size, 128, player_ids_len, shot_type_len).cuda(0)
+        class_weights = compute_shot_type_weights(method='sqrt_inverse').cuda(0)
+        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=0)
         self.mse = nn.MSELoss()
         # ================= #
 
+        # Match State Encoder (condition encoder).
+        self.match_state_encoder = MatchStateEncoder(input_size=match_state_dim, hidden_size=32, output_size=condition_size).cuda(0)
 
-        # Encoder.
-        self.encoder = Encoder(input_size=self.state_dim, hidden_size=hidden_size, output_size=context_size)
+        # Encoder (encodes remaining_state + condition).
+        self.encoder = Encoder(input_size=self.remaining_state_dim + condition_size, hidden_size=hidden_size, output_size=context_size)
         self.qz0_net = nn.Linear(context_size, latent_size + latent_size)
-        # Decoder.
+        
+        # Decoder (f_net: drift with condition).
         self.f_net = nn.Sequential(
-            nn.Linear(latent_size + context_size, hidden_size),
+            nn.Linear(latent_size + context_size + condition_size, hidden_size),
             nn.Softplus(),
             nn.Linear(hidden_size, hidden_size),
             nn.Softplus(),
             nn.Linear(hidden_size, latent_size),
         )
+        
+        # Prior drift (h_net: no condition, standard prior).
         self.h_net = nn.Sequential(
             nn.Linear(latent_size, hidden_size),
             nn.Softplus(),
@@ -162,29 +152,60 @@ class LatentSDE(nn.Module):
                 for _ in range(latent_size)
             ]
         )
-        self.projector = nn.Linear(latent_size, self.state_dim)
+        
+        # Projector (latent -> remaining_state, conditioned on match_state).
+        self.projector = nn.Linear(latent_size + condition_size, self.remaining_state_dim)
         self.pz0_mean = nn.Parameter(torch.zeros(1, latent_size))
         self.pz0_logstd = nn.Parameter(torch.zeros(1, latent_size))
         self._ctx = None
-
+        self._condition = None
+        self.log_var_pxs = nn.Parameter(torch.tensor(0.0))
+        self.log_var_kl = nn.Parameter(torch.tensor(0.0))
+        self.log_var_action = nn.Parameter(torch.tensor(0.0))
 
     def SDE_embed_and_transform(self, tensor_data):
         max_length, batch_size, _ = tensor_data.shape
         # Split state and action
-        state = tensor_data[:, :, :18]
+        # State structure: [match_state(5), remaining_state(13), action(5)]
+        # remaining_state structure: [features(5-11, 7 dims), shot_type(12), features(13-16, 4 dims), player_id(17)]
+        match_state = tensor_data[:, :, :5]  # [rally, ball_round, player_score, opponent_score, score_status]
+        remaining_state = tensor_data[:, :, 5:18]  # remaining 13 dims
         action = tensor_data[:, :, 18:]
-        state = self.inverse_model.embed_and_transform(state) 
-        # Concatenate the state and action back together
-        transformed_data = torch.cat((state, action), dim=2)
+        
+        # Directly embed remaining_state without using dummy match_state
+        # remaining_state indices mapping:
+        # - indices 0-6: correspond to original indices 5-11 (7 dims of features)
+        # - index 7: correspond to original index 12 (shot_type, needs embedding)
+        # - indices 8-11: correspond to original indices 13-16 (4 dims of features)
+        # - index 12: correspond to original index 17 (player_id, needs embedding)
+        
+        shot_types = remaining_state[:, :, 7].long()  # shot_type at index 7
+        player_ids = remaining_state[:, :, 12].long()  # player_id at index 12
+        
+        shot_embeds = self.shot_embedding(shot_types)  # [seq_len, batch_size, 8]
+        player_embeds = self.player_embedding(player_ids)  # [seq_len, batch_size, 8]
+        
+        # Concatenate: [features(0-6, 7 dims), shot_embed(8), features(8-11, 4 dims), player_embed(8)]
+        remaining_state_embedded = torch.cat([
+            remaining_state[:, :, :7],    # original indices 5-11
+            shot_embeds,                   # shot embedding replaces index 12
+            remaining_state[:, :, 8:12],   # original indices 13-16
+            player_embeds                  # player embedding replaces index 17
+        ], dim=2)  # 7 + 8 + 4 + 8 = 27 dims
+        
+        # Concatenate the match_state, embedded remaining_state, and action
+        transformed_data = torch.cat((match_state, remaining_state_embedded, action), dim=2)
         return transformed_data
 
-    def contextualize(self, ctx):
+    def contextualize(self, ctx, condition):
         self._ctx = ctx  # A tuple of tensors of sizes (T,), (T, batch_size, d).
+        self._condition = condition  # [batch_size, condition_size]
     
     def f(self, t, y):
         ts, ctx = self._ctx
         i = min(torch.searchsorted(ts, t, right=True), len(ts) - 1)
-        return self.f_net(torch.cat((y, ctx[i]), dim=1))
+        # Concatenate latent, context, and condition for the drift
+        return self.f_net(torch.cat((y, ctx[i], self._condition), dim=1))
 
     def h(self, t, y):
         return self.h_net(y)
@@ -194,14 +215,27 @@ class LatentSDE(nn.Module):
         out = [g_net_i(y_i) for (g_net_i, y_i) in zip(self.g_nets, y)]
         return torch.cat(out, dim=1)
 
-    def forward(self, total_xs, xs, ts, masks, noise_std, adjoint=False, method="euler", online=False, train_env = None, seeds_env = None):
+    def forward(self, total_xs, xs, ts, masks, noise_std, adjoint=False, method="euler", online=False, train_env=None, seeds_env=None):
         global SEQ_LEN
         # data preprocess
         xs = self.SDE_embed_and_transform(xs).float()
+        
+        # Split match_state and remaining_state
+        # xs structure after SDE_embed_and_transform: [match_state(5), remaining_state_embedded(27), action(5)]
+        match_state = xs[:, :, :self.match_state_dim]  # [seq_len, batch_size, 5]
+        remaining_state = xs[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]  # [seq_len, batch_size, 27]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)  # [seq_len, batch_size, condition_size]
+        
         # Contextualization is only needed for posterior inference.
-        ctx = self.encoder(torch.flip(xs[:,:,:self.state_dim], dims=(0,)))
+        # Concatenate remaining_state with condition for the encoder
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
         ctx = torch.flip(ctx, dims=(0,))
-        self.contextualize((ts, ctx))
+        
+        # Use the first timestep's condition for SDE (or could use all timesteps)
+        self.contextualize((ts, ctx), condition[0])  # condition[0]: [batch_size, condition_size]
 
         qz0_mean, qz0_logstd = self.qz0_net(ctx[0]).chunk(chunks=2, dim=1)
         z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
@@ -217,16 +251,21 @@ class LatentSDE(nn.Module):
         else:
             zs, log_ratio = torchsde.sdeint(self, z0, ts, dt=2/SEQ_LEN, logqp=True, method=method)
 
-        _xs = self.projector(zs)
+        # Decode: concatenate latent with condition, project back to remaining_state
+        # Expand condition to match zs length
+        condition_expanded = condition[0].unsqueeze(0).expand(zs.size(0), -1, -1)  # [seq_len, batch_size, condition_size]
+        zs_conditioned = torch.cat((zs, condition_expanded), dim=-1)
+        _remaining_state = self.projector(zs_conditioned)  # Only reconstruct remaining_state, not match_state
 
 
         """ MLP training start """
-        true_actions = xs[:,:,-self.action_dim:]
+        true_actions = xs[:, :, -self.action_dim:]
         true_land = true_actions[:, :, :2].view(-1, 2)
         true_move = true_actions[:, :, 3:].view(-1, 2)
         true_shot = true_actions[:, :, 2].long().view(-1)
 
-        land, shot, move = self.action_model(zs)
+        # Action model with condition
+        land, shot, move = self.action_model(zs_conditioned)
 
         land_loss = self.mse(land.view(-1, 2), true_land)
         shot_loss = self.ce(shot.view(-1, self.shot_type_len), true_shot)
@@ -241,8 +280,10 @@ class LatentSDE(nn.Module):
             move_loss = (move_loss * mask_flat).sum() / valid_count
         """ MLP training end """
 
-        xs_dist = Normal(loc=_xs, scale=noise_std)
-        log_pxs = xs_dist.log_prob(xs[:,:,:self.state_dim]).sum(dim=(0, 2)).mean(dim=0)
+        # Only compute reconstruction loss for remaining_state (not match_state)
+        xs_dist = Normal(loc=_remaining_state, scale=noise_std)
+        # log_pxs = xs_dist.log_prob(remaining_state).sum(dim=(0, 2)).mean(dim=0)
+        log_pxs = xs_dist.log_prob(remaining_state).mean()
 
 
         qz0 = torch.distributions.Normal(loc=qz0_mean, scale=qz0_logstd.exp())
@@ -250,7 +291,10 @@ class LatentSDE(nn.Module):
         logqp0 = torch.distributions.kl_divergence(qz0, pz0).sum(dim=1).mean(dim=0)
         logqp_path = log_ratio.sum(dim=0).mean(dim=0)
 
-        return log_pxs, logqp0 + logqp_path + land_loss + shot_loss + move_loss
+        total_action_loss = land_loss + shot_loss + move_loss
+        total_kl = logqp0 + logqp_path
+
+        return log_pxs, total_kl, total_action_loss
 
     def predict_actions(self, model, state_sequence):
         actions = []
@@ -284,22 +328,39 @@ class LatentSDE(nn.Module):
         global SEQ_LEN
         
         ht = self.SDE_embed_and_transform(ht).float()
-        ctx = self.encoder(torch.flip(ht[:,:,:self.state_dim], dims=(0,)))
+        
+        # Split match_state and remaining_state
+        match_state = ht[:, :, :self.match_state_dim]
+        remaining_state = ht[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)
+        
+        # Encode remaining_state with condition
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
         ctx = torch.flip(ctx, dims=(0,))
-        self.contextualize((ts, ctx))
+        self.contextualize((ts, ctx), condition[0])
+        
         qz0_mean, qz0_logstd = self.qz0_net(ctx[step]).chunk(chunks=2, dim=1)
         z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
         zs = torchsde.sdeint(self, z0, ts[step:], names={'drift': 'h'}, dt=2/SEQ_LEN, bm=bm)
         
-        _xs = self.projector(zs)
+        # Decode with condition
+        condition_expanded = condition[0].unsqueeze(0).expand(zs.size(0), -1, -1)
+        zs_conditioned = torch.cat((zs, condition_expanded), dim=-1)
+        # _remaining_state = self.projector(zs_conditioned)
         
-        action, shot_logit = self.predict_actions(self.inverse_model, _xs) # 所以 forward 時不需要再過一次 embedding 了
+        # Reconstruct full state for predict_actions (need to reconstruct match_state from input)
+        # _xs = torch.cat([match_state, _remaining_state], dim=-1)
+        
+        # action, shot_logit = self.predict_actions(self.inverse_model, _xs)
 
-        land, shot, move = self.action_model(zs)
+        land, shot, move = self.action_model(zs_conditioned)
         shot_probs = torch.softmax(shot, dim=-1)  # [61, 1, 12]
         shot_sample = torch.multinomial(shot_probs.view(-1, 12), num_samples=1).view(-1, 1, 1)  # [61, 1, 1]
         mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [61, 1, 5]
-        return _xs, action[0,:], shot_logit[0], mlp_action[0,:,:].squeeze(0), shot[0,:,:]
+        return None, None, None, mlp_action[0,:,:].squeeze(0), shot[0,:,:]
     
     @torch.no_grad()
     def sample_batch(self, ht_batch, ts, steps, player_ids_len, shot_type_len, bm=None):
@@ -327,10 +388,18 @@ class LatentSDE(nn.Module):
         # ht_batch: [max_seq_len, batch_size, 18]
         ht_batch = self.SDE_embed_and_transform(ht_batch).float()
         
+        # Split match_state and remaining_state
+        match_state = ht_batch[:, :, :self.match_state_dim]
+        remaining_state = ht_batch[:, :, self.match_state_dim:self.match_state_dim + self.remaining_state_dim]
+        
+        # Encode match_state to get condition
+        condition = self.match_state_encoder(match_state)
+        
         # ctx: [max_seq_len, batch_size, context_size]
-        ctx = self.encoder(torch.flip(ht_batch[:,:,:self.state_dim], dims=(0,)))
+        encoder_input = torch.cat((remaining_state, condition), dim=-1)
+        ctx = self.encoder(torch.flip(encoder_input, dims=(0,)))
         ctx = torch.flip(ctx, dims=(0,))
-        self.contextualize((ts, ctx))
+        self.contextualize((ts, ctx), condition[0])
         
         batch_size = ht_batch.shape[1]
         device = ht_batch.device
@@ -352,10 +421,14 @@ class LatentSDE(nn.Module):
         for b in range(batch_size):
             step = steps[b]
             zs = torchsde.sdeint(self, z0[b:b+1], ts[step:], names={'drift': 'h'}, dt=2/SEQ_LEN, bm=bm)
-            _xs = self.projector(zs)
+            
+            # Decode with condition
+            condition_b = condition[0, b:b+1].unsqueeze(0).expand(zs.size(0), -1, -1)
+            zs_conditioned = torch.cat((zs, condition_b), dim=-1)
+            _remaining_state = self.projector(zs_conditioned)
             
             # Get first prediction
-            land, shot, move = self.action_model(zs[:1])  # Only take first timestep
+            land, shot, move = self.action_model(zs_conditioned[:1])  # Only take first timestep
             shot_probs = torch.softmax(shot, dim=-1)  # [1, 1, shot_type_len]
             shot_sample = torch.multinomial(shot_probs.view(-1, shot_type_len), num_samples=1).view(-1, 1, 1)
             mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [1, 1, 5]
@@ -435,7 +508,7 @@ def main(
         latent_size= 32,
         context_size=64,
         hidden_size=64,
-        lr_init=1e-4,
+        lr_init=5e-4,
         t0=0.,
         t1=2.,
         lr_gamma=0.999,
@@ -444,7 +517,7 @@ def main(
         pause_every=50,
         noise_std=0.1,
         adjoint=False,
-        train_dir='./dump/',
+        train_dir='./dump_weighted/',
         method="euler",
         eval = False, 
         load = False,
@@ -493,9 +566,10 @@ def main(
     for global_step in tqdm(range(1, num_iters + 1)):
         latent_sde.zero_grad()
         # apply mask or not
-        # batch_masks = masks[:, index:index+batch_size, :].reshape(-1, 1)
-        batch_masks = None
-        log_pxs, log_ratio = latent_sde(xs, xs[:,index:index+batch_size,:], ts, batch_masks, noise_std, adjoint, method, False)
+        batch_masks = masks[:, index:index+batch_size, :].reshape(-1, 1)
+        # batch_masks = None
+        # log_pxs, log_ratio = latent_sde(xs, xs[:,index:index+batch_size,:], ts, batch_masks, noise_std, adjoint, method, False)
+        log_pxs, kl, action_loss = latent_sde(xs, xs[:,index:index+batch_size,:], ts, batch_masks, noise_std, adjoint, method, False)
 
         index += batch_size
         if (index <= int(xs.shape[1]) ) and (index + batch_size >= int(xs.shape[1])):
@@ -504,8 +578,14 @@ def main(
             masks = masks[:, shuffled_indices, :]
             index = 0
 
-        loss = - log_pxs +  log_ratio * kl_scheduler.val
+        # loss = -log_pxs + (kl * kl_scheduler.val) + action_loss
+        loss = (
+            torch.exp(-latent_sde.log_var_pxs) * (-log_pxs) + latent_sde.log_var_pxs +
+            torch.exp(-latent_sde.log_var_kl) * (kl * kl_scheduler.val) + latent_sde.log_var_kl +
+            torch.exp(-latent_sde.log_var_action) * action_loss + latent_sde.log_var_action
+        )
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(latent_sde.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
         kl_scheduler.step()
@@ -520,8 +600,12 @@ def main(
                 torch.save(latent_sde.state_dict(), train_dir+'gen_e_{}.trc'.format(str(global_step)))
             
             logging.warning(
-                f'global_step: {global_step:06d}, '
-                f'log_pxs: {log_pxs :.4f}, log_ratio: {log_ratio:.4f}, loss: {loss:.4f}, kl_coeff: {kl_scheduler.val:.4f}')
+                f'Step: {global_step:06d} | '
+                f'Total Loss: {loss.item():.4f}\n'
+                f'  [Losses] NLL: {(-log_pxs).item():.3f}, KL: {kl.item():.3f}, Action: {action_loss.item():.3f}\n'
+                f'  [Weights] NLL: {torch.exp(-latent_sde.log_var_pxs).item():.4f}, KL: {torch.exp(-latent_sde.log_var_kl).item():.4f}, Action: {torch.exp(-latent_sde.log_var_action).item():.4f}\n'
+                f'  [Status] KL_Coeff: {kl_scheduler.val:.4f}'
+            )
 
 if __name__ == "__main__":
     main()

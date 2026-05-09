@@ -14,7 +14,7 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.append(project_path)
 
 from .base_evaluator import BaseEvaluator
-from Agent.bc import BC, build_state_tensor_from_row
+from Agent.bc import BC, build_state_tensor_from_row, sample_from_gaussian
 from Utils.helper import state_col, action_col, transition, terminate
 from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
 import torch.nn.functional as F
@@ -24,7 +24,8 @@ class BCEvaluator(BaseEvaluator):
     """BC模型單一選手評估器"""
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0, 
-                 model_path=None, teacher_forcing=False, save_trajectories=False):
+                 model_path=None, teacher_forcing=False, save_trajectories=False,
+                 distribution=None):
         """
         Args:
             player_name: 選手名稱
@@ -32,12 +33,20 @@ class BCEvaluator(BaseEvaluator):
             device: 運算裝置
             skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             model_path: 模型路徑（可選，預設使用config中的路徑）
+            distribution: 輸出模式，可選 deterministic 或 gaussian
             teacher_forcing: 是否使用 teacher forcing 模式
             save_trajectories: 是否儲存原始軌跡
         """
         super().__init__(player_name, experiment, device, skip_first_n,
                          teacher_forcing=teacher_forcing,
                          save_trajectories=save_trajectories)
+
+        if distribution is None:
+            distribution = self.config['bc_training'].get('distribution', 'deterministic')
+
+        if distribution not in ('deterministic', 'gaussian'):
+            raise ValueError('distribution must be deterministic or gaussian')
+        self.distribution = distribution
         
         # 設定模型路徑
         if model_path is None:
@@ -71,7 +80,8 @@ class BCEvaluator(BaseEvaluator):
             hidden_size=self.config['bc_training']['hidden_dim'],
             player_id_len=self.config['bc_training']['player_id_len'],
             shot_type_len=self.config['bc_training']['shot_type_len'],
-            player_id=self.player_id
+            player_id=self.player_id,
+            distribution=self.distribution
         ).to(device)
         
         model.load_state_dict(torch.load(self.model_path, map_location=device, weights_only=True))
@@ -192,8 +202,20 @@ class BCEvaluator(BaseEvaluator):
 
                 
                 # 收集預測（雙方玩家）
-                land_2d = [land_logit[0, 0].item(), land_logit[0, 1].item()]
-                move_2d = [move_logit[0, 0].item(), move_logit[0, 1].item()]
+                if self.distribution == 'gaussian':
+                    land_2d = sample_from_gaussian(
+                        land_logit,
+                        self.model.land_log_sigma_x,
+                        self.model.land_log_sigma_y
+                    )[0].tolist()
+                    move_2d = sample_from_gaussian(
+                        move_logit,
+                        self.model.move_log_sigma_x,
+                        self.model.move_log_sigma_y
+                    )[0].tolist()
+                else:
+                    land_2d = [land_logit[0, 0].item(), land_logit[0, 1].item()]
+                    move_2d = [move_logit[0, 0].item(), move_logit[0, 1].item()]
                 rally_pred_full_seq.append(build_pred_shot(
                     ground_truth_player, int(shot_type.item()), land_2d, move_2d, int(row['ball_round'])))
                 
@@ -203,9 +225,9 @@ class BCEvaluator(BaseEvaluator):
                 
                 # Build action tensor
                 action_tensor = torch.tensor([
-                    land_logit[0, 0].item(), land_logit[0, 1].item(),
+                    land_2d[0], land_2d[1],
                     float(shot_type.item()),
-                    move_logit[0, 0].item(), move_logit[0, 1].item()
+                    move_2d[0], move_2d[1]
                 ], dtype=torch.float32)
                 
                 # State transition

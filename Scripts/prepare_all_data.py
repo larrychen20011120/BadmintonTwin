@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 統一資料準備腳本
-準備 BC、NaiveRAG 和 TimeRAG 的 norm 與 shifted 資料
+準備 BC、NaiveRAG、TimeRAG 和 Twin 的 norm 與 shifted 資料
 
 使用方式:
     python Scripts/prepare_all_data.py              # 準備所有資料
@@ -10,6 +10,7 @@
     python Scripts/prepare_all_data.py --bc         # 只準備 BC 資料
     python Scripts/prepare_all_data.py --naive-rag  # 只準備 NaiveRAG 資料
     python Scripts/prepare_all_data.py --timerag    # 只準備 TimeRAG 資料
+    python Scripts/prepare_all_data.py --twin       # 只準備 Twin 資料
 """
 
 import argparse
@@ -31,25 +32,29 @@ def load_config():
 
 
 def run_baseline_prepare(
-    train_split, 
-    bc_output, 
+    train_split,
+    bc_output,
     naive_rag_output,
     timerag_output=None,
-    prepare_bc=True, 
+    twin_output=None,
+    prepare_bc=True,
     prepare_rag=True,
-    prepare_timerag=False
+    prepare_timerag=False,
+    prepare_twin=False
 ):
     """
     執行 baseline_prepare.py
-    
+
     Args:
         train_split: train/test split 檔案路徑
         bc_output: BC 資料輸出目錄
         naive_rag_output: NaiveRAG 資料輸出目錄
         timerag_output: TimeRAG 資料輸出目錄
+        twin_output: Twin 資料輸出目錄
         prepare_bc: 是否準備 BC 資料
         prepare_rag: 是否準備 NaiveRAG 資料
         prepare_timerag: 是否準備 TimeRAG 資料
+        prepare_twin: 是否準備 Twin 資料
     """
     config = load_config()
     merged_csv = config['paths']['merged_csv']
@@ -107,7 +112,7 @@ def run_baseline_prepare(
         print(f"  Split: {train_split}")
         print(f"  輸出: {timerag_output}")
         print(f"{'='*70}")
-        
+
         cmd = [
             'python', script_path,
             '--timerag',
@@ -116,13 +121,35 @@ def run_baseline_prepare(
             '--player_map', player_map,
             '--timerag_output', timerag_output
         ]
-        
+
         result = subprocess.run(cmd, cwd=project_path)
         if result.returncode != 0:
             print(f"❌ TimeRAG 資料準備失敗: {train_split}")
             return False
         print(f"✅ TimeRAG 資料準備完成: {timerag_output}")
-    
+
+    if prepare_twin and twin_output:
+        print(f"\n{'='*70}")
+        print(f"準備 Twin (I-MSDP) 資料")
+        print(f"  Split: {train_split}")
+        print(f"  輸出: {twin_output}")
+        print(f"{'='*70}")
+
+        cmd = [
+            'python', script_path,
+            '--twin',
+            '--train_split', train_split,
+            '--merged_csv', merged_csv,
+            '--player_map', player_map,
+            '--twin_output', twin_output
+        ]
+
+        result = subprocess.run(cmd, cwd=project_path)
+        if result.returncode != 0:
+            print(f"❌ Twin 資料準備失敗: {train_split}")
+            return False
+        print(f"✅ Twin 資料準備完成: {twin_output}")
+
     return True
 
 
@@ -147,7 +174,7 @@ def create_style_shift_split_if_needed(config):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='準備 BC 和 NaiveRAG 的訓練資料',
+        description='準備 BC、NaiveRAG、TimeRAG 和 Twin 的訓練資料',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例:
@@ -157,6 +184,7 @@ def main():
   python Scripts/prepare_all_data.py --bc         # 只準備 BC 資料 (兩種 split)
   python Scripts/prepare_all_data.py --naive-rag  # 只準備 NaiveRAG 資料 (兩種 split)
   python Scripts/prepare_all_data.py --timerag    # 只準備 TimeRAG 資料 (兩種 split)
+  python Scripts/prepare_all_data.py --twin       # 只準備 Twin 資料 (兩種 split)
         """
     )
     
@@ -185,21 +213,30 @@ def main():
         action='store_true',
         help='只準備 TimeRAG 資料'
     )
-    
+    parser.add_argument(
+        '--twin',
+        action='store_true',
+        help='只準備 Twin (I-MSDP) 資料'
+    )
+
     args = parser.parse_args()
     
     # 載入設定檔
     config = load_config()
     
     # 如果沒有指定特定類型，則全部準備
-    prepare_norm = args.norm or (not args.shifted and not args.bc and not args.naive_rag and not args.timerag)
-    prepare_shifted = args.shifted or (not args.norm and not args.bc and not args.naive_rag and not args.timerag)
-    prepare_bc = args.bc or (not args.naive_rag and not args.timerag)
-    prepare_rag = args.naive_rag or (not args.bc and not args.timerag)
-    prepare_timerag_data = args.timerag or (not args.bc and not args.naive_rag)
-    
+    specific_baseline = args.bc or args.naive_rag or args.timerag or args.twin
+    specific_experiment = args.norm or args.shifted
+
+    prepare_norm = args.norm or (not specific_experiment and not specific_baseline)
+    prepare_shifted = args.shifted or (not specific_experiment and not specific_baseline)
+    prepare_bc = args.bc or (not args.naive_rag and not args.timerag and not args.twin)
+    prepare_rag = args.naive_rag or (not args.bc and not args.timerag and not args.twin)
+    prepare_timerag_data = args.timerag or (not args.bc and not args.naive_rag and not args.twin)
+    prepare_twin_data = args.twin or (not args.bc and not args.naive_rag and not args.timerag)
+
     # 如果指定了特定類型，則按照指定來
-    if args.norm or args.shifted:
+    if specific_experiment:
         prepare_norm = args.norm
         prepare_shifted = args.shifted
     
@@ -212,6 +249,7 @@ def main():
     print(f"  - BC 資料:       {'是' if prepare_bc else '否'}")
     print(f"  - NaiveRAG 資料: {'是' if prepare_rag else '否'}")
     print(f"  - TimeRAG 資料:  {'是' if prepare_timerag_data else '否'}")
+    print(f"  - Twin 資料:     {'是' if prepare_twin_data else '否'}")
     print("="*70)
     
     # 準備 shifted 資料前，先確認 style_shift_split.json 存在
@@ -223,30 +261,34 @@ def main():
     
     # 準備 Norm 資料
     if prepare_norm:
-        if prepare_bc or prepare_rag or prepare_timerag_data:
+        if prepare_bc or prepare_rag or prepare_timerag_data or prepare_twin_data:
             result = run_baseline_prepare(
                 train_split=config['paths']['norm_split'],
                 bc_output=config['paths']['bc']['data']['norm'],
                 naive_rag_output=config['paths']['naive_rag']['data']['norm'],
                 timerag_output=config['paths']['timerag']['data']['norm'] if 'timerag' in config['paths'] else None,
+                twin_output=config['paths']['twin']['data']['norm'] if 'twin' in config['paths'] else None,
                 prepare_bc=prepare_bc,
                 prepare_rag=prepare_rag,
-                prepare_timerag=prepare_timerag_data
+                prepare_timerag=prepare_timerag_data,
+                prepare_twin=prepare_twin_data
             )
             if not result:
                 success = False
-    
+
     # 準備 Shifted 資料
     if prepare_shifted:
-        if prepare_bc or prepare_rag or prepare_timerag_data:
+        if prepare_bc or prepare_rag or prepare_timerag_data or prepare_twin_data:
             result = run_baseline_prepare(
                 train_split=config['paths']['shifted_split'],
                 bc_output=config['paths']['bc']['data']['shifted'],
                 naive_rag_output=config['paths']['naive_rag']['data']['shifted'],
                 timerag_output=config['paths']['timerag']['data']['shifted'] if 'timerag' in config['paths'] else None,
+                twin_output=config['paths']['twin']['data']['shifted'] if 'twin' in config['paths'] else None,
                 prepare_bc=prepare_bc,
                 prepare_rag=prepare_rag,
-                prepare_timerag=prepare_timerag_data
+                prepare_timerag=prepare_timerag_data,
+                prepare_twin=prepare_twin_data
             )
             if not result:
                 success = False
@@ -276,7 +318,14 @@ def main():
             print(f"  - Norm:    {config['paths']['timerag']['data']['norm']}")
         if prepare_shifted:
             print(f"  - Shifted: {config['paths']['timerag']['data']['shifted']}")
-    
+
+    if prepare_twin_data and 'twin' in config['paths']:
+        print("\nTwin (I-MSDP) 資料位置:")
+        if prepare_norm:
+            print(f"  - Norm:    {config['paths']['twin']['data']['norm']}")
+        if prepare_shifted:
+            print(f"  - Shifted: {config['paths']['twin']['data']['shifted']}")
+
     print("="*70)
     
     return 0 if success else 1

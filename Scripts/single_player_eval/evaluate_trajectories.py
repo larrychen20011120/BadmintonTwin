@@ -37,8 +37,12 @@ Output Files (with --visualize):
 """
 
 import argparse
+import csv
+import glob
 import json
+import math
 import os
+import re
 import sys
 import pickle
 import numpy as np
@@ -391,6 +395,260 @@ class SequenceMetrics:
 
 
 # =============================================================================
+# Experiment-Level Table Helpers
+# =============================================================================
+
+def parse_trajectory_filename(path: str) -> Dict[str, Any]:
+    """Parse generation metadata from a trajectory pickle filename."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    generation_match = re.match(r'^(?P<base>.+)_gen(?P<generation>\d+)$', stem)
+    if generation_match:
+        return {
+            'trajectory_base': generation_match.group('base'),
+            'generation': int(generation_match.group('generation')),
+        }
+
+    indexed_match = re.match(r'^\d{4}_(?P<base>.+)$', stem)
+    if indexed_match:
+        return {
+            'trajectory_base': indexed_match.group('base'),
+            'generation': 1,
+        }
+
+    return {
+        'trajectory_base': stem,
+        'generation': 1,
+    }
+
+
+def discover_trajectory_files(trajectory_dir: str, latest_only: bool = False) -> List[str]:
+    """Discover trajectory pickle files under an experiment trajectory directory."""
+    pattern = os.path.join(trajectory_dir, '**', '*.pkl')
+    files = sorted(glob.glob(pattern, recursive=True))
+
+    if not latest_only:
+        return files
+
+    latest_by_base = {}
+    for path in files:
+        parsed = parse_trajectory_filename(path)
+        base = parsed['trajectory_base']
+        generation = parsed['generation']
+        current = latest_by_base.get(base)
+        if current is None or generation > current[0]:
+            latest_by_base[base] = (generation, path)
+
+    return sorted(path for _, path in latest_by_base.values())
+
+
+def finite_mean(values: List[Any], weights: Optional[List[float]] = None) -> float:
+    """Mean over finite numeric values only, optionally weighted."""
+    finite_values = []
+    finite_weights = []
+    for idx, value in enumerate(values):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            finite_values.append(numeric)
+            if weights is not None:
+                finite_weights.append(float(weights[idx]))
+
+    if not finite_values:
+        return float('nan')
+
+    if weights is None:
+        return float(np.mean(finite_values))
+
+    weight_sum = float(np.sum(finite_weights))
+    if weight_sum <= 0:
+        return float('nan')
+    return float(np.average(finite_values, weights=finite_weights))
+
+
+def format_table_value(value: Any) -> str:
+    if isinstance(value, float):
+        if math.isnan(value):
+            return 'nan'
+        if math.isinf(value):
+            return 'inf'
+        return f'{value:.6f}'
+    return str(value)
+
+
+def print_table(title: str, rows: List[Dict], columns: List[str], max_rows: int = 50):
+    """Print a compact text table. Set max_rows <= 0 to print all rows."""
+    print()
+    print(title)
+    print('=' * len(title))
+    if not rows:
+        print('(no rows)')
+        return
+
+    visible_rows = rows if max_rows <= 0 else rows[:max_rows]
+    formatted_rows = [
+        {column: format_table_value(row.get(column, '')) for column in columns}
+        for row in visible_rows
+    ]
+    widths = {
+        column: max(len(column), *(len(row[column]) for row in formatted_rows))
+        for column in columns
+    }
+
+    header = ' | '.join(column.ljust(widths[column]) for column in columns)
+    separator = '-+-'.join('-' * widths[column] for column in columns)
+    print(header)
+    print(separator)
+    for row in formatted_rows:
+        print(' | '.join(row[column].ljust(widths[column]) for column in columns))
+
+    if max_rows > 0 and len(rows) > max_rows:
+        print(f'... showing {max_rows} of {len(rows)} rows')
+
+
+def print_player_metric_table(title: str,
+                              player_rows: List[Dict],
+                              metric_specs: List[Tuple[str, str, str]],
+                              summary_rows: List[Dict],
+                              max_rows: int = 50):
+    """Print player rows with experiment averages appended below a rule.
+
+    metric_specs entries are (display_column, player_row_key, summary_row_key).
+    """
+    base_columns = [
+        'target_player', 'generation', 'num_matches', 'num_rallies',
+        'num_gt_shots', 'num_pred_shots', 'early_end_rate',
+    ]
+    metric_columns = [display for display, _, _ in metric_specs]
+    columns = base_columns + metric_columns
+
+    rows_to_print = player_rows if max_rows <= 0 else player_rows[:max_rows]
+    display_rows = []
+
+    for row in rows_to_print:
+        display_row = {column: row.get(column, '') for column in base_columns}
+        for display, player_key, _ in metric_specs:
+            display_row[display] = row.get(player_key, '')
+        display_rows.append(display_row)
+
+    summary_display_rows = []
+    for row in summary_rows:
+        display_row = {
+            'target_player': row.get('average_type', ''),
+            'generation': '',
+            'num_matches': row.get('num_matches', ''),
+            'num_rallies': row.get('num_rallies', ''),
+            'num_gt_shots': row.get('num_gt_shots', ''),
+            'num_pred_shots': row.get('num_pred_shots', ''),
+            'early_end_rate': '',
+        }
+        for display, _, summary_key in metric_specs:
+            display_row[display] = row.get(summary_key, '')
+        summary_display_rows.append(display_row)
+
+    all_rows = display_rows + summary_display_rows
+    print()
+    print(title)
+    print('=' * len(title))
+    if not all_rows:
+        print('(no rows)')
+        return
+
+    formatted_rows = [
+        {column: format_table_value(row.get(column, '')) for column in columns}
+        for row in all_rows
+    ]
+    widths = {
+        column: max(len(column), *(len(row[column]) for row in formatted_rows))
+        for column in columns
+    }
+    header = ' | '.join(column.ljust(widths[column]) for column in columns)
+    separator = '-+-'.join('-' * widths[column] for column in columns)
+
+    print(header)
+    print(separator)
+    for idx, row in enumerate(formatted_rows):
+        if idx == len(display_rows) and summary_display_rows:
+            print(separator)
+        print(' | '.join(row[column].ljust(widths[column]) for column in columns))
+
+    if max_rows > 0 and len(player_rows) > max_rows:
+        print(f'... showing {max_rows} of {len(player_rows)} player rows')
+
+
+def write_csv_rows(path: str, rows: List[Dict], columns: List[str]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, '') for column in columns})
+
+
+def sequence_metrics_for_trajectories(trajectories: List[Dict], target_player_only: bool) -> Dict[str, float]:
+    data = extract_sequences(trajectories, target_player_only=target_player_only)
+    seq_metrics = SequenceMetrics()
+    dtw = seq_metrics.compute_dtw(
+        data['land_pred_seqs'], data['land_gt_seqs'],
+        data['move_pred_seqs'], data['move_gt_seqs']
+    )
+    ctc = seq_metrics.compute_ctc(data['shot_pred_seqs'], data['shot_gt_seqs'])
+    edit = seq_metrics.compute_edit_distance(data['shot_pred_seqs'], data['shot_gt_seqs'])
+
+    return {
+        'land_dtw': dtw.get('land_dtw', float('nan')),
+        'move_dtw': dtw.get('move_dtw', float('nan')),
+        'shot_ctc': ctc.get('shot_ctc', float('nan')),
+        'edit_distance': edit.get('edit_distance', float('nan')),
+    }
+
+
+def distribution_metrics_for_trajectories(trajectories: List[Dict], target_player_only: bool) -> Dict[str, float]:
+    data = extract_sequences(trajectories, target_player_only=target_player_only)
+    dist_metrics = DistributionMetrics()
+    cond_metrics = ConditionalMetrics()
+
+    landing_wasserstein = dist_metrics.wasserstein_1d(data['all_land_pred'], data['all_land_gt'])
+    move_wasserstein = dist_metrics.wasserstein_1d(data['all_move_pred'], data['all_move_gt'])
+    per_shot_landing = cond_metrics.per_shot_landing_js(
+        data['all_land_pred'], data['all_land_gt'],
+        data['all_shot_pred'], data['all_shot_gt']
+    )
+    per_shot_move = cond_metrics.per_shot_move_js(
+        data['all_move_pred'], data['all_move_gt'],
+        data['all_shot_pred'], data['all_shot_gt']
+    )
+    per_prev_transition = cond_metrics.per_prev_shot_transition_js(
+        data['shot_pred_seqs'], data['shot_gt_seqs']
+    )
+    per_shot_mdc = cond_metrics.per_shot_landing_mdc(
+        data['all_land_pred'], data['all_land_gt'],
+        data['all_shot_pred'], data['all_shot_gt']
+    )
+
+    return {
+        'landing_area_js': dist_metrics.area_distribution_js(data['all_land_pred'], data['all_land_gt']),
+        'move_area_js': dist_metrics.area_distribution_js(data['all_move_pred'], data['all_move_gt']),
+        'shot_distribution_js': dist_metrics.shot_distribution_js(data['all_shot_pred'], data['all_shot_gt']),
+        'landing_x_wasserstein': landing_wasserstein.get('x_wasserstein', float('nan')),
+        'landing_y_wasserstein': landing_wasserstein.get('y_wasserstein', float('nan')),
+        'landing_mean_wasserstein': landing_wasserstein.get('mean_wasserstein', float('nan')),
+        'move_x_wasserstein': move_wasserstein.get('x_wasserstein', float('nan')),
+        'move_y_wasserstein': move_wasserstein.get('y_wasserstein', float('nan')),
+        'move_mean_wasserstein': move_wasserstein.get('mean_wasserstein', float('nan')),
+        'per_shot_landing_js': per_shot_landing.get('weighted_average', float('nan')),
+        'per_shot_move_js': per_shot_move.get('weighted_average', float('nan')),
+        'per_prev_shot_transition_js': per_prev_transition.get('weighted_average', float('nan')),
+        'joint_area_shot_js': cond_metrics.joint_area_shot_js(
+            data['all_land_pred'], data['all_shot_pred'],
+            data['all_land_gt'], data['all_shot_gt']
+        ),
+        'mdc_ratio': per_shot_mdc.get('weighted_average', float('nan')),
+    }
+
+
+# =============================================================================
 # Distribution Metrics
 # =============================================================================
 
@@ -630,7 +888,9 @@ class ConditionalMetrics:
                 q[next_shot - 1] = transitions_gt[prev_shot].get(next_shot, 0)
             
             # Skip if no transitions
-            if q.sum() == 0:
+            pred_support = int(p.sum())
+            gt_support = int(q.sum())
+            if gt_support == 0:
                 continue
             
             # Smooth and normalize
@@ -640,15 +900,15 @@ class ConditionalMetrics:
             q = q / q.sum()
             
             js = js_divergence(p, q)
-            weight = q.sum() - 11  # Subtract smoothing
+            weight = float(gt_support)
             
             weighted_js += js * weight
             total_weight += weight
             
             per_prev_shot[str(prev_shot)] = {
                 'js_divergence': js,
-                'support_gt': int(q.sum() - 11),
-                'support_pred': int(p.sum() - 11),
+                'support_gt': gt_support,
+                'support_pred': pred_support,
             }
         
         return {
@@ -1872,6 +2132,290 @@ def evaluate_trajectories(trajectory_file: str,
     return results
 
 
+RALLY_LEVEL_COLUMNS = [
+    'trajectory_file', 'target_player', 'generation', 'num_matches', 'num_rallies',
+    'num_gt_shots', 'num_pred_shots', 'early_end_rate',
+    'mean_land_dtw', 'mean_move_dtw', 'mean_shot_ctc', 'mean_edit_distance',
+]
+
+DISTRIBUTION_METRIC_COLUMNS = [
+    'landing_area_js', 'move_area_js', 'shot_distribution_js',
+    'landing_mean_wasserstein', 'move_mean_wasserstein',
+    'per_shot_landing_js', 'per_shot_move_js', 'per_prev_shot_transition_js',
+    'joint_area_shot_js', 'mdc_ratio',
+]
+
+MATCH_LEVEL_COLUMNS = [
+    'trajectory_file', 'target_player', 'generation', 'num_matches', 'num_rallies',
+    'num_gt_shots', 'num_pred_shots', 'early_end_rate',
+] + [f'match_avg_{column}' for column in DISTRIBUTION_METRIC_COLUMNS] + [
+    f'rally_weighted_{column}' for column in DISTRIBUTION_METRIC_COLUMNS
+]
+
+SUMMARY_METRIC_COLUMNS = [
+    'land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance',
+    'landing_area_js', 'move_area_js', 'shot_distribution_js',
+    'landing_mean_wasserstein', 'move_mean_wasserstein',
+    'per_shot_landing_js', 'per_shot_move_js', 'per_prev_shot_transition_js',
+    'joint_area_shot_js', 'mdc_ratio',
+]
+
+EXPERIMENT_SUMMARY_COLUMNS = [
+    'average_type', 'num_trajectory_files', 'num_matches', 'num_rallies',
+    'num_gt_shots', 'num_pred_shots',
+] + [f'mean_{column}' for column in SUMMARY_METRIC_COLUMNS]
+
+
+def evaluate_trajectory_directory(trajectory_dir: str,
+                                  output_dir: str,
+                                  latest_only: bool = False,
+                                  target_player_only: bool = True,
+                                  print_max_rows: int = 50) -> Dict:
+    """Evaluate every trajectory pickle in a directory as one experiment."""
+    print('=' * 80)
+    print('Experiment Trajectory Evaluation')
+    print('=' * 80)
+    print(f'Input dir:  {trajectory_dir}')
+    print(f'Output dir: {output_dir}')
+    print(f'Latest only: {latest_only}')
+    print(f'Target Player Only: {target_player_only}')
+    print()
+
+    trajectory_files = discover_trajectory_files(trajectory_dir, latest_only=latest_only)
+    if not trajectory_files:
+        raise ValueError(f'No trajectory pickle files found under: {trajectory_dir}')
+
+    print(f'Found {len(trajectory_files)} trajectory files')
+
+    rally_rows = []
+    match_groups = defaultdict(list)
+    match_sequence_values = defaultdict(lambda: defaultdict(list))
+
+    for trajectory_file in trajectory_files:
+        trajectories = load_trajectories(trajectory_file)
+        parsed = parse_trajectory_filename(trajectory_file)
+        trajectory_name = os.path.basename(trajectory_file)
+        generation = parsed['generation']
+
+        for traj in trajectories:
+            target_player = traj.get('target_player', '')
+            match_id = traj.get('match_id', '')
+            key = (trajectory_name, target_player, generation, match_id)
+            match_groups[key].append(traj)
+
+            sequence_values = sequence_metrics_for_trajectories([traj], target_player_only)
+            row = {
+                'trajectory_file': trajectory_name,
+                'target_player': target_player,
+                'generation': generation,
+                'match_id': match_id,
+                'set': traj.get('set', ''),
+                'rally': traj.get('rally', ''),
+                'opponent_player': traj.get('opponent_player', ''),
+                'num_gt_shots': len(traj.get('gt_sequence', [])),
+                'num_pred_shots': len(traj.get('pred_sequence', [])),
+                'simulation_ended_early': bool(traj.get('simulation_ended_early', False)),
+                **sequence_values,
+            }
+            rally_rows.append(row)
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+                match_sequence_values[key][metric_name].append(row[metric_name])
+
+    match_rows = []
+    for key, trajectories in sorted(match_groups.items(), key=lambda item: item[0]):
+        trajectory_name, target_player, generation, match_id = key
+        data = extract_sequences(trajectories, target_player_only=target_player_only)
+        distribution_values = distribution_metrics_for_trajectories(trajectories, target_player_only)
+        early_end_count = sum(1 for traj in trajectories if traj.get('simulation_ended_early', False))
+
+        match_rows.append({
+            'trajectory_file': trajectory_name,
+            'target_player': target_player,
+            'generation': generation,
+            'match_id': match_id,
+            'num_rallies': len(trajectories),
+            'num_gt_shots': int(len(data['all_shot_gt'])),
+            'num_pred_shots': int(len(data['all_shot_pred'])),
+            'early_end_rate': early_end_count / max(len(trajectories), 1),
+            **distribution_values,
+        })
+
+    match_rows_by_key = defaultdict(list)
+    for match_row in match_rows:
+        key = (
+            match_row['trajectory_file'],
+            match_row['target_player'],
+            match_row['generation'],
+        )
+        match_rows_by_key[key].append(match_row)
+
+    rally_rows_by_key = defaultdict(list)
+    for rally_row in rally_rows:
+        key = (
+            rally_row['trajectory_file'],
+            rally_row['target_player'],
+            rally_row['generation'],
+        )
+        rally_rows_by_key[key].append(rally_row)
+
+    player_rally_rows = []
+    for key in sorted(rally_rows_by_key.keys()):
+        trajectory_name, target_player, generation = key
+        rows = rally_rows_by_key[key]
+        related_match_rows = match_rows_by_key.get(key, [])
+        num_rallies = len(rows)
+        early_end_count = sum(1 for row in rows if row.get('simulation_ended_early'))
+
+        player_rally_rows.append({
+            'trajectory_file': trajectory_name,
+            'target_player': target_player,
+            'generation': generation,
+            'num_matches': len({row.get('match_id') for row in rows}),
+            'num_rallies': num_rallies,
+            'num_gt_shots': sum(int(row.get('num_gt_shots', 0)) for row in related_match_rows),
+            'num_pred_shots': sum(int(row.get('num_pred_shots', 0)) for row in related_match_rows),
+            'early_end_rate': early_end_count / max(num_rallies, 1),
+            'mean_land_dtw': finite_mean([row.get('land_dtw') for row in rows]),
+            'mean_move_dtw': finite_mean([row.get('move_dtw') for row in rows]),
+            'mean_shot_ctc': finite_mean([row.get('shot_ctc') for row in rows]),
+            'mean_edit_distance': finite_mean([row.get('edit_distance') for row in rows]),
+        })
+
+    player_match_rows = []
+    for key in sorted(match_rows_by_key.keys()):
+        trajectory_name, target_player, generation = key
+        rows = match_rows_by_key[key]
+        num_rallies = sum(int(row.get('num_rallies', 0)) for row in rows)
+        player_row = {
+            'trajectory_file': trajectory_name,
+            'target_player': target_player,
+            'generation': generation,
+            'num_matches': len(rows),
+            'num_rallies': num_rallies,
+            'num_gt_shots': sum(int(row.get('num_gt_shots', 0)) for row in rows),
+            'num_pred_shots': sum(int(row.get('num_pred_shots', 0)) for row in rows),
+            'early_end_rate': finite_mean(
+                [row.get('early_end_rate') for row in rows],
+                weights=[row.get('num_rallies', 0) for row in rows],
+            ),
+        }
+
+        weights = [row.get('num_rallies', 0) for row in rows]
+        for metric_name in DISTRIBUTION_METRIC_COLUMNS:
+            player_row[f'match_avg_{metric_name}'] = finite_mean(
+                [row.get(metric_name) for row in rows]
+            )
+            player_row[f'rally_weighted_{metric_name}'] = finite_mean(
+                [row.get(metric_name) for row in rows],
+                weights=weights,
+            )
+
+        player_match_rows.append(player_row)
+
+    sequence_match_means = {
+        metric_name: [
+            finite_mean(match_sequence_values[key][metric_name])
+            for key in sorted(match_groups.keys())
+        ]
+        for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']
+    }
+    match_weights = [row['num_rallies'] for row in match_rows]
+
+    summary_rows = []
+    for average_type in ['match_average', 'rally_weighted_average']:
+        row = {
+            'average_type': average_type,
+            'num_trajectory_files': len(trajectory_files),
+            'num_matches': len(match_rows),
+            'num_rallies': len(rally_rows),
+            'num_gt_shots': sum(int(match_row['num_gt_shots']) for match_row in match_rows),
+            'num_pred_shots': sum(int(match_row['num_pred_shots']) for match_row in match_rows),
+        }
+
+        if average_type == 'match_average':
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+                row[f'mean_{metric_name}'] = finite_mean(sequence_match_means[metric_name])
+            for metric_name in SUMMARY_METRIC_COLUMNS[4:]:
+                row[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in match_rows])
+        else:
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+                row[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in rally_rows])
+            for metric_name in SUMMARY_METRIC_COLUMNS[4:]:
+                row[f'mean_{metric_name}'] = finite_mean(
+                    [match_row.get(metric_name) for match_row in match_rows],
+                    weights=match_weights,
+                )
+
+        summary_rows.append(row)
+
+    os.makedirs(output_dir, exist_ok=True)
+    rally_csv = os.path.join(output_dir, 'rally_level_metrics.csv')
+    match_csv = os.path.join(output_dir, 'match_level_metrics.csv')
+    summary_csv = os.path.join(output_dir, 'experiment_summary.csv')
+    json_path = os.path.join(output_dir, 'experiment_metrics.json')
+
+    write_csv_rows(rally_csv, player_rally_rows, RALLY_LEVEL_COLUMNS)
+    write_csv_rows(match_csv, player_match_rows, MATCH_LEVEL_COLUMNS)
+    write_csv_rows(summary_csv, summary_rows, EXPERIMENT_SUMMARY_COLUMNS)
+
+    results = {
+        'trajectory_dir': trajectory_dir,
+        'latest_only': latest_only,
+        'target_player_only': target_player_only,
+        'trajectory_files': trajectory_files,
+        'rally_level_metrics': player_rally_rows,
+        'match_level_metrics': player_match_rows,
+        'experiment_summary': summary_rows,
+    }
+    with open(json_path, 'w') as f:
+        json.dump(results, f, indent=2, default=str)
+
+    rally_metric_specs = [
+        ('land_dtw', 'mean_land_dtw', 'mean_land_dtw'),
+        ('move_dtw', 'mean_move_dtw', 'mean_move_dtw'),
+        ('shot_ctc', 'mean_shot_ctc', 'mean_shot_ctc'),
+        ('edit_distance', 'mean_edit_distance', 'mean_edit_distance'),
+    ]
+    match_metric_specs = [
+        ('landing_area_js', 'match_avg_landing_area_js', 'mean_landing_area_js'),
+        ('move_area_js', 'match_avg_move_area_js', 'mean_move_area_js'),
+        ('shot_distribution_js', 'match_avg_shot_distribution_js', 'mean_shot_distribution_js'),
+        ('landing_wasserstein', 'match_avg_landing_mean_wasserstein', 'mean_landing_mean_wasserstein'),
+        ('move_wasserstein', 'match_avg_move_mean_wasserstein', 'mean_move_mean_wasserstein'),
+        ('per_shot_landing_js', 'match_avg_per_shot_landing_js', 'mean_per_shot_landing_js'),
+        ('per_shot_move_js', 'match_avg_per_shot_move_js', 'mean_per_shot_move_js'),
+        ('transition_js', 'match_avg_per_prev_shot_transition_js', 'mean_per_prev_shot_transition_js'),
+        ('joint_area_shot_js', 'match_avg_joint_area_shot_js', 'mean_joint_area_shot_js'),
+        ('mdc_ratio', 'match_avg_mdc_ratio', 'mean_mdc_ratio'),
+    ]
+
+    print_player_metric_table(
+        'Rally-Level Metrics By Player (sequence)',
+        player_rally_rows,
+        rally_metric_specs,
+        summary_rows,
+        max_rows=print_max_rows,
+    )
+    print_player_metric_table(
+        'Match-Level Metrics By Player (distribution)',
+        player_match_rows,
+        match_metric_specs,
+        summary_rows,
+        max_rows=print_max_rows,
+    )
+
+    print()
+    print(f'Rally-level CSV: {rally_csv}')
+    print(f'Match-level CSV: {match_csv}')
+    print(f'Experiment summary CSV: {summary_csv}')
+    print(f'Experiment metrics JSON: {json_path}')
+    print('=' * 80)
+    print('Experiment Evaluation Complete!')
+    print('=' * 80)
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Evaluate saved trajectories without re-running simulation.',
@@ -1901,6 +2445,13 @@ Examples:
         --trajectory-file Experiments/naive_rag/trajectories/*.pkl \\
         --all-players
 
+    # Evaluate every trajectory in an experiment directory
+    python Scripts/single_player_eval/evaluate_trajectories.py \
+        --trajectory-dir Experiments/twin/trajectories/norm \
+        --output-dir Experiments/twin/results/trajectory_analysis/norm \
+        --latest-only \
+        --no-visualize
+
 Supported Metrics:
     all              - Compute all metrics
     dtw              - Dynamic Time Warping for landing/move positions
@@ -1911,8 +2462,10 @@ Supported Metrics:
         """
     )
     
-    parser.add_argument('--trajectory-file', type=str, required=True,
-                        help='Path to trajectory pickle file')
+    parser.add_argument('--trajectory-file', type=str,
+                        help='Path to one trajectory pickle file')
+    parser.add_argument('--trajectory-dir', type=str,
+                        help='Directory containing trajectory pickle files for experiment-level analysis')
     parser.add_argument('--output-dir', type=str, default='./evaluation_results',
                         help='Output directory for results and visualizations')
     parser.add_argument('--metrics', nargs='+', 
@@ -1925,9 +2478,30 @@ Supported Metrics:
                         help='Disable visualizations')
     parser.add_argument('--all-players', action='store_true',
                         help='Evaluate all players in trajectories (not just target player)')
+    parser.add_argument('--latest-only', action='store_true',
+                        help='In --trajectory-dir mode, only evaluate the latest generation for each player trajectory')
+    parser.add_argument('--print-max-rows', type=int, default=50,
+                        help='Maximum rows to print per table in --trajectory-dir mode; use 0 to print all rows')
     
     args = parser.parse_args()
-    
+
+    if bool(args.trajectory_file) == bool(args.trajectory_dir):
+        print("Error: specify exactly one of --trajectory-file or --trajectory-dir")
+        return 1
+
+    if args.trajectory_dir:
+        if not os.path.isdir(args.trajectory_dir):
+            print(f"Error: Trajectory directory not found: {args.trajectory_dir}")
+            return 1
+        evaluate_trajectory_directory(
+            trajectory_dir=args.trajectory_dir,
+            output_dir=args.output_dir,
+            latest_only=args.latest_only,
+            target_player_only=(not args.all_players),
+            print_max_rows=args.print_max_rows,
+        )
+        return 0
+
     if not os.path.exists(args.trajectory_file):
         print(f"Error: Trajectory file not found: {args.trajectory_file}")
         return 1

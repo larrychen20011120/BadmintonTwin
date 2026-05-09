@@ -414,7 +414,7 @@ class TwinAgent(BaseAgent):
     """
 
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
-                 api_key="EMPTY", port=16000, top_k=5, max_scale=10,
+                 api_key="EMPTY", port=16000, base_url=None, top_k=5, max_scale=10,
                  enable_tracing=True):
         """
         Initialize TwinAgent.
@@ -440,7 +440,7 @@ class TwinAgent(BaseAgent):
         self.verbalizer = create_twin_verbalizer()
 
         # Initialize LLM
-        self.llm = LLM(model_name=model_name, api_key=api_key, port=port)
+        self.llm = LLM(model_name=model_name, api_key=api_key, port=port, base_url=base_url)
 
         # Load prompts
         prompt_dir = os.path.join(project_path, "Prompts", "Agent")
@@ -598,6 +598,15 @@ class TwinAgent(BaseAgent):
         # Apply serve mask if needed
         if launch and shot_type not in [1, 10]:
             shot_type = 1 if np.random.rand() < 0.5 else 10
+
+        # Update the last trajectory state with the actual player_type and landing/moving
+        # This ensures the next iteration will show the correct shot info in history
+        if self.trajectory:
+            self.trajectory[-1]['player_type'] = int(shot_type)
+            self.trajectory[-1]['landing_x'] = float(landing_x)
+            self.trajectory[-1]['landing_y'] = float(landing_y)
+            self.trajectory[-1]['moving_x'] = float(moving_x)
+            self.trajectory[-1]['moving_y'] = float(moving_y)
 
         # Build action (normalized coordinates)
         hit = state[-1] if len(state) > 0 else None

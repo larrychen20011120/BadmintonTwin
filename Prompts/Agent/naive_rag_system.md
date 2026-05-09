@@ -48,18 +48,7 @@ The badminton court is divided into 33 semantic areas:
 
 ## Shot Types
 
-Use these exact shot type names:
-- Serve short (1): short serve to front service court
-- Serve long (10): long serve to back service court
-- Clear (2): high deep shot to back court
-- Push Shot (3): fast flat shot to mid court
-- Smash (4): powerful steep downward shot
-- Smash Defence (5): defensive block/lift against smash
-- Drive (6): fast flat horizontal shot
-- Net Shot (7): soft touch near the net
-- Lob (8): high arcing shot from front to back
-- Drop (9): soft shot from rear to front court
-- Missed shot (11): error / unable to reach shuttle
+Serve short (1), Serve long (10), Clear (2), Push Shot (3), Smash (4), Smash Defence (5), Drive (6), Net Shot (7), Lob (8), Drop (9), Missed shot (11)
 
 # Response Format
 

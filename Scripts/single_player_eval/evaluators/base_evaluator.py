@@ -31,6 +31,7 @@ class BaseEvaluator(ABC):
         self.skip_first_n = skip_first_n
         self.teacher_forcing = teacher_forcing
         self.save_trajectories = save_trajectories
+        self.trajectory_output_path = None
         
         # 載入config
         self.config = self._load_config()
@@ -94,7 +95,7 @@ class BaseEvaluator(ABC):
 
         safe_name = self.player_name.replace(' ', '_')
         algo = self.get_algorithm_name()
-        output_path = os.path.join(
+        output_path = self.trajectory_output_path or os.path.join(
             'Experiments', algo, 'trajectories',
             f"{safe_name}_{self.experiment}.pkl"
         )

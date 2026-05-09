@@ -50,6 +50,7 @@ class TimeRAGEvaluator(BaseEvaluator):
         self.top_k = top_k
         self.window_size = window_size
         self.enable_tracing = enable_tracing
+        self.database_dir = self.config['paths']['timerag']['data'][experiment]
 
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
@@ -63,40 +64,46 @@ class TimeRAGEvaluator(BaseEvaluator):
         target_cols = state_col + action_col
         self.df = self.df.dropna(subset=target_cols).reset_index(drop=True)
 
-        self.agent = self._create_agent()
+        self.agents = {}
+        self.agent = self._get_agent(self.player_name)
 
-    def _create_agent(self):
+    def _create_agent(self, player_name, player_id):
         """建立 TimeRAG Agent"""
-
-        with open(self.train_split_path, 'r') as f:
-            train_split = json.load(f)
-
-        train_matches = train_split.get('train', {}).get(self.player_name, [])
-
-        if not train_matches:
-            raise ValueError(f"No training matches found for player '{self.player_name}'")
-
-        train_df = self.df[self.df['match_id'].isin(train_matches)].copy()
-
-        if len(train_df) == 0:
-            raise ValueError(f"No training data found for player '{self.player_name}'")
-
-        database = TimeRAGDatabase(train_df, self.player_name, self.player_id,
-                                   window_size=self.window_size)
+        db_path = self._database_path(player_name)
+        print(f"[TimeRAG] Loading database for {player_name}: {db_path}")
+        database = TimeRAGDatabase.load(db_path)
+        print(f"[TimeRAG] Database ready for {player_name}: {len(database.windows)} windows")
 
         timerag_config = self.config.get('timerag', {})
 
         agent = TimeRAGAgent(
-            player_name=self.player_name,
+            player_name=player_name,
             database=database,
             model_name=timerag_config.get('model_name', 'Qwen/Qwen2.5-7B-Instruct'),
             api_key=timerag_config.get('api_key', 'EMPTY'),
             port=timerag_config.get('port', 16000),
+            base_url=timerag_config.get('base_url'),
             top_k=self.top_k,
             enable_tracing=self.enable_tracing,
         )
+        print(f"[TimeRAG] Agent created for {player_name}")
 
         return agent
+
+    def _database_path(self, player_name):
+        safe_name = player_name.replace(" ", "_").replace(".", "")
+        return os.path.join(self.database_dir, f"{safe_name}_db.pkl")
+
+    def _get_agent(self, player_name):
+        """取得指定選手的 Agent；target/opponent 必須使用各自的 player_name。"""
+        if player_name not in self.player2index:
+            raise ValueError(f"Player '{player_name}' not found in player map")
+
+        if player_name not in self.agents:
+            player_id = self.player2index[player_name]
+            self.agents[player_name] = self._create_agent(player_name, player_id)
+
+        return self.agents[player_name]
 
     def get_algorithm_name(self):
         return "timerag"
@@ -142,6 +149,7 @@ class TimeRAGEvaluator(BaseEvaluator):
                 continue
 
             opponent_player_id = self.player2index[opponent_name]
+            opponent_agent = self._get_agent(opponent_name)
 
             rallies = match_df.groupby(['set', 'rally'])
 
@@ -152,6 +160,7 @@ class TimeRAGEvaluator(BaseEvaluator):
                     continue
                 
                 self.agent.reset_history()
+                opponent_agent.reset_history()
 
                 # 收集完整GT（雙方玩家，不受simulation影響）
                 rally_gt_full_seq = []
@@ -191,12 +200,14 @@ class TimeRAGEvaluator(BaseEvaluator):
                         current_state[17] = current_player_id
                         state_for_pred = current_state
 
+                    info['round'] = [row['ball_round']]
                     info['score'] = [row['player_score'], row['opponent_score']]
 
                     launch = (state_for_pred[1].item() == 1)
 
                     env_state = self._state_to_env_format(state_for_pred)
-                    action, reason = self.agent.predict(env_state, info, launch)
+                    current_agent = self.agent if is_target_turn else opponent_agent
+                    action, reason = current_agent.predict(env_state, info, launch)
 
                     if action is None:
                         simulation_ended_early = True

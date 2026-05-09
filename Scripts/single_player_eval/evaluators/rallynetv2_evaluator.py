@@ -196,6 +196,9 @@ class RallyNetV2Evaluator(BaseEvaluator):
                         ht[shot_idx, :, :] = current_state
                     
                     with torch.no_grad():
+                        
+                        # Use model.sample to get predictions with SDE sampling
+                        # Pass ht[:seq_len] which has shape [seq_len, 1, 18]
                         _xs, inv_action, inv_shot_logit, mlp_action, mlp_shot_logit = self.model.sample(
                             ht=ht,
                             ts=self.ts,
@@ -203,22 +206,26 @@ class RallyNetV2Evaluator(BaseEvaluator):
                             player_ids_len=self.hyperparameters['player_ids_len'],
                             shot_type_len=self.hyperparameters['shot_type_len']
                         )
-                        
-                        # 使用inverse model的輸出
-                        land_logit = inv_action[0:2].unsqueeze(0)
-                        shot_type = inv_action[2].long().unsqueeze(0)
-                        move_logit = inv_action[3:5].unsqueeze(0)
+                        # Extract predictions from mlp_action (shape: [5])
+                        land_logit = mlp_action[0:2].unsqueeze(0)  # [1, 2]
+                        shot_type = mlp_action[2].long().unsqueeze(0)  # [1]
+                        move_logit = mlp_action[3:5].unsqueeze(0)  # [1, 2]
+                        # land_logit = inv_action[0:2].unsqueeze(0)  # [1, 2]
+                        # shot_type = inv_action[2].long().unsqueeze(0)  # [1]
+                        # move_logit = inv_action[3:5].unsqueeze(0)  # [1, 2]
                         shot_logit = mlp_shot_logit
                     
-                    # Apply mask
+                    # Apply mask for valid shot types
                     if launch:
                         mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
                     else:
                         mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(device)
                     
-                    shot_probs_masked = shot_logit * mask.float()
-                    shot_probs_masked = shot_probs_masked / (shot_probs_masked.sum() + 1e-8)
-                    shot_type_masked = torch.argmax(shot_probs_masked).unsqueeze(0)
+                    # Re-apply mask to shot_probs and resample if needed
+                    masked_logits = shot_logit.masked_fill(mask == 0, -1e9)
+                    probs = torch.softmax(masked_logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs=probs)
+                    shot_type_masked = dist.sample()
                     
                     # 收集預測（雙方玩家）
                     land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]

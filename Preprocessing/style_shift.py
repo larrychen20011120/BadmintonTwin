@@ -77,6 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("--outlier_thres", type=int, default=2, help="Number of features are outliers!")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--api_key", type=str, default="EMPTY")
+    parser.add_argument("--base_url", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -94,7 +95,7 @@ if __name__ == "__main__":
     with open(shcema_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
 
-    llm = LLM(model_name=args.model_name, api_key=args.api_key)
+    llm = LLM(model_name=args.model_name, api_key=args.api_key, base_url=args.base_url)
 
     player_counts = match_df['player'].value_counts()
     opponent_counts = match_df['opponent'].value_counts()

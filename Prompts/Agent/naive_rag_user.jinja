@@ -1,14 +1,7 @@
 ## Current Match Situation
 
-Match: Rally {{ rally|int }}, Shot {{ ball_round|int }}{% if player_score is defined and opponent_score is defined %}, Score {{ player_score|int }}-{{ opponent_score|int }}{% if player_score > opponent_score %} (leading by {{ (player_score - opponent_score)|int }}){% elif player_score < opponent_score %} (trailing by {{ (opponent_score - player_score)|int }}){% else %} (tied){% endif %}{% endif %}{% if set_number is defined %}, Set {{ set_number|int }}{% endif %}
-
-{% if launch %}
-Now it's my turn to serve.
-
-Context: I am at {{ player_location_area }}{% if player_location_area in ['Rear Center', 'Rear Right Side', 'Rear Right Side Line'] %} (right service court){% elif player_location_area in ['Rear Left Side', 'Rear Left Side Line'] %} (left service court){% endif %}, opponent at {{ opponent_location_area }} receiving. Score {{ player_score|int }}-{{ opponent_score|int }}.
-Available serves: Short Serve to Front Right or Front Left, or Long Serve to Rear Right or Rear Left.
-{% else %}
-Context: I am at {{ player_location_area }}, opponent at {{ opponent_location_area }} played a {{ opponent_type_name }} to {{ hit_position_area }}.
+{% if trajectory_text %}
+{{ trajectory_text }}
 {% endif %}
 
 ---
@@ -16,12 +9,10 @@ Context: I am at {{ player_location_area }}, opponent at {{ opponent_location_ar
 ## Retrieved Similar Cases ({{ top_k|int }} total)
 
 {% for case in cases %}
-Case {{ loop.index }} (similarity={{ "%.3f"|format(case.similarity) }}):
-Context: {{ case.context }}
-Action: {{ case.action }}
-Action: (shot_type={{ case.shot_type }}, landing_x={{ "%.3f"|format(case.landing_x) }}, landing_y={{ "%.3f"|format(case.landing_y) }}, moving_x={{ "%.3f"|format(case.moving_x) }}, moving_y={{ "%.3f"|format(case.moving_y) }})
+Case {{ loop.index }} (similarity={{ "%.3f"|format(case.distance) }}):
+{{ case.description }}{% if not loop.last %}
 
-{% endfor %}
+{% endif %}{% endfor %}
 ---
 
 ## Step-by-Step Reasoning

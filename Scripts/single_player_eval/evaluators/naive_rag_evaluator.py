@@ -24,7 +24,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
                  train_split_path=None, top_k=5, enable_tracing=True,
-                 
+                  
                  teacher_forcing=False, save_trajectories=False):
         """
         Args:
@@ -49,6 +49,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
         
         self.top_k = top_k
         self.enable_tracing = enable_tracing
+        self.database_dir = self.config['paths']['naive_rag']['data'][experiment]
         
         # 載入player2index
         with open(self.player_map_path, 'r') as f:
@@ -64,46 +65,49 @@ class NaiveRAGEvaluator(BaseEvaluator):
         target_cols = state_col + action_col
         self.df = self.df.dropna(subset=target_cols).reset_index(drop=True)
         
-        # 建立Agent
-        self.agent = self._create_agent()
+        # 建立/快取每位選手各自的 Agent
+        self.agents = {}
+        self.agent = self._get_agent(self.player_name)
     
-    def _create_agent(self):
+    def _create_agent(self, player_name, player_id):
         """建立NaiveRAG Agent"""
-        
-        # 載入train split以建立database
-        with open(self.train_split_path, 'r') as f:
-            train_split = json.load(f)
-        
-        # 取得選手的train matches
-        train_matches = train_split.get('train', {}).get(self.player_name, [])
-        
-        if not train_matches:
-            raise ValueError(f"No training matches found for player '{self.player_name}'")
-        
-        # 篩選train data
-        train_df = self.df[self.df['match_id'].isin(train_matches)].copy()
-        
-        if len(train_df) == 0:
-            raise ValueError(f"No training data found for player '{self.player_name}'")
-        
-        # 建立database
-        database = NaiveRAGDatabase(train_df, self.player_name, self.player_id)
+        db_path = self._database_path(player_name)
+        print(f"[NaiveRAG] Loading database for {player_name}: {db_path}")
+        database = NaiveRAGDatabase.load(db_path)
+        print(f"[NaiveRAG] Database ready for {player_name}: {len(database.data)} entries")
         
         # 建立LLM client
         llm_config = self.config['naive_rag']
         
         # 建立agent
         agent = NaiveRAGAgent(
-            player_name=self.player_name,
+            player_name=player_name,
             database=database,
             model_name=llm_config['model_name'],
             api_key=llm_config['api_key'],
             port=llm_config['port'],
+            base_url=llm_config.get('base_url'),
             top_k=self.top_k,
             enable_tracing=self.enable_tracing,
         )
+        print(f"[NaiveRAG] Agent created for {player_name}")
         
         return agent
+
+    def _database_path(self, player_name):
+        safe_name = player_name.replace(" ", "_").replace(".", "")
+        return os.path.join(self.database_dir, f"{safe_name}_db.pkl")
+
+    def _get_agent(self, player_name):
+        """取得指定選手的 Agent；target/opponent 必須使用各自的 player_name。"""
+        if player_name not in self.player2index:
+            raise ValueError(f"Player '{player_name}' not found in player map")
+
+        if player_name not in self.agents:
+            player_id = self.player2index[player_name]
+            self.agents[player_name] = self._create_agent(player_name, player_id)
+
+        return self.agents[player_name]
     
     def get_algorithm_name(self):
         return "naive_rag"
@@ -151,6 +155,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
                 continue
             
             opponent_player_id = self.player2index[opponent_name]
+            opponent_agent = self._get_agent(opponent_name)
             
             # 分組rallies
             rallies = match_df.groupby(['set', 'rally'])
@@ -162,6 +167,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
                     continue
                 
                 self.agent.reset_history()
+                opponent_agent.reset_history()
                 
                 # 收集完整GT（雙方玩家，不受simulation影響）
                 rally_gt_full_seq = []
@@ -206,13 +212,15 @@ class NaiveRAGEvaluator(BaseEvaluator):
                         state_for_pred = current_state
                     
                     # 更新info
+                    info['round'] = [row['ball_round']]
                     info['score'] = [row['player_score'], row['opponent_score']]
                     
                     launch = (state_for_pred[1].item() == 1)
                     
                     # Agent預測
                     env_state = self._state_to_env_format(state_for_pred)
-                    action, reason = self.agent.predict(env_state, info, launch)
+                    current_agent = self.agent if is_target_turn else opponent_agent
+                    action, reason = current_agent.predict(env_state, info, launch)
                     
                     if action is None:
                         simulation_ended_early = True

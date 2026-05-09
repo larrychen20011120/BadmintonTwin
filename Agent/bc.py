@@ -9,7 +9,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch.nn.functional as F
-from torch.distributions import Categorical, Normal
+from torch.distributions import Categorical
 from torch.nn import CTCLoss
 from tqdm import tqdm
 from dtaidistance import dtw_ndim
@@ -23,10 +23,15 @@ from Utils.helper import *
 
 class BC(nn.Module):
     
-    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len, player_id):
+    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len, player_id,
+                 distribution='deterministic'):
         super(BC, self).__init__()
+        if distribution not in ('deterministic', 'gaussian'):
+            raise ValueError('distribution must be deterministic or gaussian')
+
         self.fc = nn.Linear(input_size, hidden_size)
         self.relu = nn.ReLU()
+        self.distribution = distribution
         
         self.player_id = player_id
         # Embeddings for categorical features within the state
@@ -34,9 +39,21 @@ class BC(nn.Module):
         self.player_embedding = nn.Embedding(player_id_len, 8)
         
         # Output layers for different components of the action
-        self.predict_land_area = nn.Linear(hidden_size, 2, bias=False)
+        # Deterministic and gaussian both predict mean (mu_x, mu_y)
+        # Gaussian variance is provided by input-agnostic learnable log_std
+        land_output_size = 2
+        move_output_size = 2
+
+        self.predict_land_area = nn.Linear(hidden_size, land_output_size, bias=(distribution == 'gaussian'))
         self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
-        self.predict_move_area = nn.Linear(hidden_size, 2, bias=False)
+        self.predict_move_area = nn.Linear(hidden_size, move_output_size, bias=(distribution == 'gaussian'))
+
+        if distribution == 'gaussian':
+            # Input-agnostic learnable std (diagonal Gaussian for landing/move)
+            self.land_log_sigma_x = nn.Parameter(torch.zeros(1))
+            self.land_log_sigma_y = nn.Parameter(torch.zeros(1))
+            self.move_log_sigma_x = nn.Parameter(torch.zeros(1))
+            self.move_log_sigma_y = nn.Parameter(torch.zeros(1))
 
     def embed_and_transform(self, state):
         # Assuming state[:, 12] is shot_type and state[:, 17] is player_id
@@ -56,8 +73,9 @@ class BC(nn.Module):
         out = self.fc(embedded)                 # Shape: [batch_size, hidden_size]
         out = self.relu(out)
 
-        land_logit = self.predict_land_area(out)    # Shape: [batch_size, 2]
-        move_logit = self.predict_move_area(out)    # Shape: [batch_size, 2]
+        # For gaussian mode: outputs are mu only; variance is global learnable log_std
+        land_logit = self.predict_land_area(out)    # [batch_size, 2]
+        move_logit = self.predict_move_area(out)    # [batch_size, 2]
         shot_logit = self.predict_shot_type(out)    # Shape: [batch_size, shot_type_len]
 
         return land_logit, shot_logit, move_logit
@@ -111,37 +129,127 @@ class BC(nn.Module):
         
         
 
+def gaussian_nll_loss(pred_params, target, log_sigma_x, log_sigma_y):
+    """
+    Compute Negative Log-Likelihood for simple independent 2D Gaussian.
+
+    Args:
+        pred_params: [batch, 2] containing [mu_x, mu_y]
+        target: [batch, 2] containing [target_x, target_y]
+        log_sigma_x: log standard deviation for x
+        log_sigma_y: log standard deviation for y
+
+    Returns:
+        loss: scalar NLL loss
+    """
+    if pred_params.shape[1] < 2:
+        raise ValueError('Gaussian prediction must have at least 2 channels [mu_x, mu_y]')
+
+    mu_x = pred_params[:, 0]
+    mu_y = pred_params[:, 1]
+    log_sigma_x = torch.clamp(log_sigma_x, min=-8.0, max=8.0)
+    log_sigma_y = torch.clamp(log_sigma_y, min=-8.0, max=8.0)
+
+    sigma_x = torch.exp(log_sigma_x)
+    sigma_y = torch.exp(log_sigma_y)
+
+    dx = target[:, 0] - mu_x
+    dy = target[:, 1] - mu_y
+
+    nll = torch.log(2 * np.pi * sigma_x * sigma_y) + 0.5 * (
+        (dx / sigma_x) ** 2 + (dy / sigma_y) ** 2
+    )
+
+    return nll.mean()
+
+
+def sample_from_gaussian(pred_params, log_sigma_x, log_sigma_y):
+    """
+    Sample from simple independent 2D Gaussian.
+
+    Args:
+        pred_params: [batch, 2] containing [mu_x, mu_y]
+        log_sigma_x: log standard deviation for x
+        log_sigma_y: log standard deviation for y
+
+    Returns:
+        samples: [batch, 2] containing sampled [x, y]
+    """
+    if pred_params.shape[1] < 2:
+        raise ValueError('Gaussian prediction must have at least 2 channels [mu_x, mu_y]')
+
+    mu_x = pred_params[:, 0]
+    mu_y = pred_params[:, 1]
+    log_sigma_x = torch.clamp(log_sigma_x, min=-8.0, max=8.0)
+    log_sigma_y = torch.clamp(log_sigma_y, min=-8.0, max=8.0)
+
+    sigma_x = torch.exp(log_sigma_x)
+    sigma_y = torch.exp(log_sigma_y)
+
+    eps_x = torch.randn_like(mu_x)
+    eps_y = torch.randn_like(mu_y)
+    sample = torch.stack([mu_x + eps_x * sigma_x, mu_y + eps_y * sigma_y], dim=1)
+    return torch.clamp(sample, -1.0, 1.0)
+
+
 class BC_Agent(BaseAgent):
 
-    def __init__(self, player_name, model_path, player_id):
+    def __init__(self, player_name, model_path, player_id, distribution='deterministic', device='cuda'):
         super().__init__(player_name)
-        self.model = BC(input_size=18, hidden_size=128, player_id_len=39, shot_type_len=12, player_id=player_id)
-        self.model.load_state_dict(torch.load(model_path))
+        self.distribution = distribution
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = device
+        self.model = BC(
+            input_size=18,
+            hidden_size=128,
+            player_id_len=39,
+            shot_type_len=12,
+            player_id=player_id,
+            distribution=distribution
+        )
+        self.model.load_state_dict(torch.load(model_path, map_location=device))
+        self.model.to(device)
         self.model.eval()
 
     def predict(self, state, info, launch):
         # encode the state
         normalized_state = self.encode_state(state)
-        bc_state = self.model.translation(normalized_state, info)
-        bc_land, bc_shot_logit, bc_move = self.forward(bc_state.unsqueeze(0))
-        bc_shot_type_probs = F.softmax(bc_shot_logit, dim=-1)
-        
+        bc_state = self.model.translation(normalized_state, info).to(self.device)
 
-        if launch == True:
-            mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool)
+        with torch.no_grad():
+            bc_land_pred, bc_shot_logit, bc_move_pred = self.model(bc_state.unsqueeze(0))
+
+        bc_shot_type_probs = F.softmax(bc_shot_logit, dim=-1)
+
+        if launch:
+            mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool, device=self.device)
         else:
-            mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(self.device)
+            mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool, device=self.device)
 
         masked_probs = bc_shot_type_probs.masked_fill(~mask, 0.0)
         sum_probs = masked_probs.sum(dim=-1, keepdim=True)
         bc_shot_type_probs = torch.where(sum_probs > 0, masked_probs / sum_probs, mask.float() / mask.sum())
-        
+
         bc_shot_type_dist = Categorical(bc_shot_type_probs)
         bc_shot_type = bc_shot_type_dist.sample()
         output_shot = bc_shot_type.unsqueeze(1).item()
         output_shot_dist = bc_shot_type_probs.tolist()[0]
-        output_land = bc_land.tolist()[0]
-        output_move = bc_move.tolist()[0]
+
+        if self.distribution == 'gaussian':
+            output_land = sample_from_gaussian(
+                bc_land_pred,
+                self.model.land_log_sigma_x,
+                self.model.land_log_sigma_y
+            ).tolist()[0]
+            output_move = sample_from_gaussian(
+                bc_move_pred,
+                self.model.move_log_sigma_x,
+                self.model.move_log_sigma_y
+            ).tolist()[0]
+        else:
+            output_land = bc_land_pred.tolist()[0]
+            output_move = bc_move_pred.tolist()[0]
 
         if output_shot == 11:
             return None
@@ -192,7 +300,7 @@ def build_action_tensor_from_row(row):
 
 
 def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path, 
-                        model_path, device='cuda', skip_first_n=0):
+                        model_path, distribution='deterministic', device='cuda', skip_first_n=0):
     """
     Evaluate BC model on test set using state_col/action_col approach.
     """
@@ -208,7 +316,14 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
     
     results = {}
     
-    model = BC(input_size=32, hidden_size=128, player_id_len=43, shot_type_len=12, player_id=0).to(device)
+    model = BC(
+        input_size=32,
+        hidden_size=128,
+        player_id_len=43,
+        shot_type_len=12,
+        player_id=0,
+        distribution=distribution
+    ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     
@@ -283,7 +398,26 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     launch = (current_state[1].item() == 1)
                     
                     with torch.no_grad():
-                        bc_land, bc_shot_logit, bc_move = model(current_state.unsqueeze(0))
+                        bc_land_params, bc_shot_logit, bc_move_params = model(current_state.unsqueeze(0))
+
+                    bc_land = (
+                        sample_from_gaussian(
+                            bc_land_params,
+                            model.land_log_sigma_x,
+                            model.land_log_sigma_y
+                        )
+                        if distribution == 'gaussian'
+                        else bc_land_params
+                    )
+                    bc_move = (
+                        sample_from_gaussian(
+                            bc_move_params,
+                            model.move_log_sigma_x,
+                            model.move_log_sigma_y
+                        )
+                        if distribution == 'gaussian'
+                        else bc_move_params
+                    )
                     
                     if launch:
                         mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
@@ -422,6 +556,7 @@ def print_results(results):
 def train_model(args):
     """Train BC model"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    distribution = getattr(args, 'distribution', 'deterministic')
 
     # Load preprocessed data from baseline_prepare.py
     print("Loading preprocessed data...")
@@ -454,7 +589,14 @@ def train_model(args):
     player_id_len = 43
     shot_type_len = 12
 
-    model = BC(input_dim, hidden_dim, player_id_len, shot_type_len, player_id=0).to(device)
+    model = BC(
+        input_dim,
+        hidden_dim,
+        player_id_len,
+        shot_type_len,
+        player_id=0,
+        distribution=args.distribution
+    ).to(device)
 
     class_weights = compute_shot_type_weights(method='uniform').to(device)
     ce_loss = nn.CrossEntropyLoss(weight=class_weights)
@@ -463,17 +605,35 @@ def train_model(args):
 
     for epoch in range(args.epochs):
         total_loss = 0
+        total_land_loss = 0
+        total_move_loss = 0
+        total_shot_loss = 0
         
         for state, land_gt, shot_gt, move_gt in loader:
-            state = state.cuda()
-            land_gt = land_gt.cuda()
-            shot_gt = shot_gt.cuda()
-            move_gt = move_gt.cuda()
+            state = state.to(device)
+            land_gt = land_gt.to(device)
+            shot_gt = shot_gt.to(device)
+            move_gt = move_gt.to(device)
             
             land_pred, shot_pred, move_pred = model(state)
-            
-            loss_land = mse_loss(land_pred, land_gt)
-            loss_move = mse_loss(move_pred, move_gt)
+
+            if distribution == 'gaussian':
+                loss_land = gaussian_nll_loss(
+                    land_pred,
+                    land_gt,
+                    model.land_log_sigma_x,
+                    model.land_log_sigma_y
+                )
+                loss_move = gaussian_nll_loss(
+                    move_pred,
+                    move_gt,
+                    model.move_log_sigma_x,
+                    model.move_log_sigma_y
+                )
+            else:
+                loss_land = mse_loss(land_pred, land_gt)
+                loss_move = mse_loss(move_pred, move_gt)
+
             loss_shot = ce_loss(shot_pred, shot_gt)
             
             loss = loss_land + loss_move + loss_shot
@@ -484,8 +644,20 @@ def train_model(args):
             optimizer.step()
             
             total_loss += loss.item()
+            total_land_loss += loss_land.item()
+            total_move_loss += loss_move.item()
+            total_shot_loss += loss_shot.item()
         
-        print(f"Epoch {epoch}: Loss = {total_loss:.4f}")
+        if distribution == 'gaussian':
+            print(
+                f"Epoch {epoch}: Total={total_loss:.4f} LandNLL={total_land_loss:.4f} "
+                f"MoveNLL={total_move_loss:.4f} ShotCE={total_shot_loss:.4f}"
+            )
+        else:
+            print(
+                f"Epoch {epoch}: Total={total_loss:.4f} LandMSE={total_land_loss:.4f} "
+                f"MoveMSE={total_move_loss:.4f} ShotCE={total_shot_loss:.4f}"
+            )
     
     torch.save(model.state_dict(), args.output)
     print(f"Model saved to {args.output}")
@@ -494,6 +666,7 @@ def train_model(args):
 def eval_model(args):
     """Evaluate BC model"""
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    distribution = getattr(args, 'distribution', 'deterministic')
     print(f"Using device: {device}")
     
     if args.skip_first_n > 0:
@@ -504,6 +677,7 @@ def eval_model(args):
         args.merged_csv,
         args.player_map,
         args.model_path,
+        distribution,
         device,
         args.skip_first_n
     )
@@ -549,6 +723,8 @@ if __name__ == "__main__":
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--eval_output', type=str, default='Experiments/bc/results/bc_eval_results.json',
                         help='Output JSON file for evaluation results')
+    parser.add_argument('--distribution', type=str, choices=['deterministic', 'gaussian'], default='deterministic',
+                        help='Action output mode: deterministic or gaussian (default: deterministic)')
     parser.add_argument('--skip_first_n', type=int, default=0,
                         help='Number of initial shots to skip in evaluation (default: 0)')
     

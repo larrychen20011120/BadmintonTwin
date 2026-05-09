@@ -1,28 +1,16 @@
 ## Current Match Situation
 
-Match: Rally {{ rally|int }}, Shot {{ ball_round|int }}{% if player_score is defined and opponent_score is defined %}, Score {{ player_score|int }}-{{ opponent_score|int }}{% if player_score > opponent_score %} (leading by {{ (player_score - opponent_score)|int }}){% elif player_score < opponent_score %} (trailing by {{ (opponent_score - player_score)|int }}){% else %} (tied){% endif %}{% endif %}
-
-{% if launch %}
-Now it's my turn to serve.
-
-Current Rally Trajectory:
-Shot {{ ball_round|int }}: I am at {{ player_location_area }} serving.
-        I serve and move to prepare for the return.
-{% else %}
-Current Rally Trajectory:
+{% if trajectory_text %}
 {{ trajectory_text }}
-
-Shot {{ ball_round|int }}: I am at {{ player_location_area }}, opponent at {{ opponent_location_area }} played a {{ opponent_type_name }} to {{ hit_position_area }}.
-        I respond and recover.
 {% endif %}
 
 ---
 
-## Retrieved Trajectory Segments ({{ top_k|int }} segments, multi-scale)
+## Retrieved Similar Cases ({{ top_k|int }} cases)
 
-{% for segment in segments %}
-Segment {{ segment.index }} ({{ segment.scale_label }}, scale={{ segment.scale }}, distance={{ "%.3f"|format(segment.distance) }}, {{ segment.num_shots }} shots):
-{{ segment.description }}
+{% for case in cases %}
+Case {{ case.index }} ({{ case.scale_label }}, distance={{ "%.3f"|format(case.distance) }}):
+{{ case.description }}
 
 {% endfor %}
 ---
