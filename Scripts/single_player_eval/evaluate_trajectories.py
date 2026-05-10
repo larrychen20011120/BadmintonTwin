@@ -507,27 +507,53 @@ def print_table(title: str, rows: List[Dict], columns: List[str], max_rows: int 
         print(f'... showing {max_rows} of {len(rows)} rows')
 
 
-def print_player_metric_table(title: str,
+def format_fixed_table_value(value: Any) -> str:
+    if isinstance(value, (float, np.floating)):
+        if math.isnan(value):
+            return 'nan'
+        if math.isinf(value):
+            return 'inf'
+        return f'{value:.4f}'
+    if isinstance(value, np.integer):
+        return str(int(value))
+    return str(value)
+
+
+def build_player_metric_table(title: str,
                               player_rows: List[Dict],
                               metric_specs: List[Tuple[str, str, str]],
                               summary_rows: List[Dict],
-                              max_rows: int = 50):
-    """Print player rows with experiment averages appended below a rule.
+                              max_rows: int = 50) -> str:
+    """Build a fixed-width player metric table with averages below a rule.
 
     metric_specs entries are (display_column, player_row_key, summary_row_key).
     """
-    base_columns = [
-        'target_player', 'generation', 'num_matches', 'num_rallies',
-        'num_gt_shots', 'num_pred_shots', 'early_end_rate',
+    base_specs = [
+        ('Player', 'target_player', 24),
+        ('Gen', 'generation', 4),
+        ('M', 'num_matches', 4),
+        ('R', 'num_rallies', 6),
+        ('GT', 'num_gt_shots', 6),
+        ('Pred', 'num_pred_shots', 6),
     ]
-    metric_columns = [display for display, _, _ in metric_specs]
-    columns = base_columns + metric_columns
+    metric_display_specs = [
+        (display, display, max(7, len(display)))
+        for display, _, _ in metric_specs
+    ]
+    display_specs = base_specs + metric_display_specs
 
     rows_to_print = player_rows if max_rows <= 0 else player_rows[:max_rows]
     display_rows = []
 
     for row in rows_to_print:
-        display_row = {column: row.get(column, '') for column in base_columns}
+        display_row = {
+            'target_player': row.get('target_player', ''),
+            'generation': row.get('generation', ''),
+            'num_matches': row.get('num_matches', ''),
+            'num_rallies': row.get('num_rallies', ''),
+            'num_gt_shots': row.get('num_gt_shots', ''),
+            'num_pred_shots': row.get('num_pred_shots', ''),
+        }
         for display, player_key, _ in metric_specs:
             display_row[display] = row.get(player_key, '')
         display_rows.append(display_row)
@@ -541,40 +567,57 @@ def print_player_metric_table(title: str,
             'num_rallies': row.get('num_rallies', ''),
             'num_gt_shots': row.get('num_gt_shots', ''),
             'num_pred_shots': row.get('num_pred_shots', ''),
-            'early_end_rate': '',
         }
         for display, _, summary_key in metric_specs:
             display_row[display] = row.get(summary_key, '')
         summary_display_rows.append(display_row)
 
-    all_rows = display_rows + summary_display_rows
-    print()
-    print(title)
-    print('=' * len(title))
-    if not all_rows:
-        print('(no rows)')
-        return
+    def format_row(row: Dict) -> str:
+        cells = []
+        for label, key, width in display_specs:
+            value = format_fixed_table_value(row.get(key, ''))
+            if key == 'target_player':
+                value = value[:width]
+            cells.append(value.ljust(width))
+        return ' '.join(cells)
 
-    formatted_rows = [
-        {column: format_table_value(row.get(column, '')) for column in columns}
-        for row in all_rows
+    header = ' '.join(label.ljust(width) for label, _, width in display_specs)
+    table_width = len(header)
+    lines = [
+        '',
+        '=' * table_width,
+        title,
+        '=' * table_width,
+        header,
+        '-' * table_width,
     ]
-    widths = {
-        column: max(len(column), *(len(row[column]) for row in formatted_rows))
-        for column in columns
-    }
-    header = ' | '.join(column.ljust(widths[column]) for column in columns)
-    separator = '-+-'.join('-' * widths[column] for column in columns)
 
-    print(header)
-    print(separator)
-    for idx, row in enumerate(formatted_rows):
-        if idx == len(display_rows) and summary_display_rows:
-            print(separator)
-        print(' | '.join(row[column].ljust(widths[column]) for column in columns))
+    if not display_rows and not summary_display_rows:
+        lines.append('(no rows)')
+        lines.append('=' * table_width)
+        return '\n'.join(lines)
+
+    for row in display_rows:
+        lines.append(format_row(row))
+
+    if summary_display_rows:
+        lines.append('-' * table_width)
+        for row in summary_display_rows:
+            lines.append(format_row(row))
 
     if max_rows > 0 and len(player_rows) > max_rows:
-        print(f'... showing {max_rows} of {len(player_rows)} player rows')
+        lines.append(f'... showing {max_rows} of {len(player_rows)} player rows')
+
+    lines.append('=' * table_width)
+    return '\n'.join(lines)
+
+
+def print_player_metric_table(title: str,
+                              player_rows: List[Dict],
+                              metric_specs: List[Tuple[str, str, str]],
+                              summary_rows: List[Dict],
+                              max_rows: int = 50):
+    print(build_player_metric_table(title, player_rows, metric_specs, summary_rows, max_rows))
 
 
 def write_csv_rows(path: str, rows: List[Dict], columns: List[str]):
@@ -584,6 +627,26 @@ def write_csv_rows(path: str, rows: List[Dict], columns: List[str]):
         writer.writeheader()
         for row in rows:
             writer.writerow({column: row.get(column, '') for column in columns})
+
+
+def infer_agent_label_from_path(path: str) -> str:
+    """Infer a readable agent label from common Experiments/<agent>/... paths."""
+    parts = os.path.normpath(path).split(os.sep)
+    label_map = {
+        'bc': 'BC',
+        'naive_rag': 'NaiveRAG',
+        'timerag': 'TimeRAG',
+        'twin': 'Twin',
+        'rallynetv2': 'RallyNetV2',
+        'random': 'Random',
+    }
+
+    if 'Experiments' in parts:
+        idx = parts.index('Experiments')
+        if idx + 1 < len(parts):
+            return label_map.get(parts[idx + 1], parts[idx + 1])
+
+    return 'Agent'
 
 
 def sequence_metrics_for_trajectories(trajectories: List[Dict], target_player_only: bool) -> Dict[str, float]:
@@ -821,7 +884,7 @@ class ConditionalMetrics:
             mask_pred = shot_pred == shot
             mask_gt = shot_gt == shot
             
-            if np.sum(mask_gt) == 0:
+            if np.sum(mask_gt) == 0 or np.sum(mask_pred) == 0:
                 continue
             
             pred_dist = float(np.mean(np.linalg.norm(land_pred[mask_pred] - center, axis=1)))
@@ -840,7 +903,7 @@ class ConditionalMetrics:
             }
         
         return {
-            'weighted_average': float(weighted_ratio / max(total_weight, 1e-8)),
+            'weighted_average': float(weighted_ratio / total_weight) if total_weight > 0 else float('nan'),
             'per_shot': per_shot,
         }
     
@@ -2352,11 +2415,53 @@ def evaluate_trajectory_directory(trajectory_dir: str,
     rally_csv = os.path.join(output_dir, 'rally_level_metrics.csv')
     match_csv = os.path.join(output_dir, 'match_level_metrics.csv')
     summary_csv = os.path.join(output_dir, 'experiment_summary.csv')
+    rally_table_path = os.path.join(output_dir, 'rally_level_metrics_table.txt')
+    match_table_path = os.path.join(output_dir, 'match_level_metrics_table.txt')
     json_path = os.path.join(output_dir, 'experiment_metrics.json')
 
     write_csv_rows(rally_csv, player_rally_rows, RALLY_LEVEL_COLUMNS)
     write_csv_rows(match_csv, player_match_rows, MATCH_LEVEL_COLUMNS)
     write_csv_rows(summary_csv, summary_rows, EXPERIMENT_SUMMARY_COLUMNS)
+
+    rally_metric_specs = [
+        ('Land', 'mean_land_dtw', 'mean_land_dtw'),
+        ('Move', 'mean_move_dtw', 'mean_move_dtw'),
+        ('CTC', 'mean_shot_ctc', 'mean_shot_ctc'),
+        ('Edit', 'mean_edit_distance', 'mean_edit_distance'),
+    ]
+    match_metric_specs = [
+        ('LandJS', 'match_avg_landing_area_js', 'mean_landing_area_js'),
+        ('MoveJS', 'match_avg_move_area_js', 'mean_move_area_js'),
+        ('ShotJS', 'match_avg_shot_distribution_js', 'mean_shot_distribution_js'),
+        ('LandW', 'match_avg_landing_mean_wasserstein', 'mean_landing_mean_wasserstein'),
+        ('MoveW', 'match_avg_move_mean_wasserstein', 'mean_move_mean_wasserstein'),
+        ('PSLand', 'match_avg_per_shot_landing_js', 'mean_per_shot_landing_js'),
+        ('PSMove', 'match_avg_per_shot_move_js', 'mean_per_shot_move_js'),
+        ('Trans', 'match_avg_per_prev_shot_transition_js', 'mean_per_prev_shot_transition_js'),
+        ('Joint', 'match_avg_joint_area_shot_js', 'mean_joint_area_shot_js'),
+        ('MDC', 'match_avg_mdc_ratio', 'mean_mdc_ratio'),
+    ]
+
+    agent_label = infer_agent_label_from_path(trajectory_dir)
+    rally_table = build_player_metric_table(
+        f'{agent_label} Agent Rally-Level Metrics By Player (sequence)',
+        player_rally_rows,
+        rally_metric_specs,
+        summary_rows,
+        max_rows=print_max_rows,
+    )
+    match_table = build_player_metric_table(
+        f'{agent_label} Agent Match-Level Metrics By Player (distribution)',
+        player_match_rows,
+        match_metric_specs,
+        summary_rows,
+        max_rows=print_max_rows,
+    )
+
+    with open(rally_table_path, 'w') as f:
+        f.write(rally_table + '\n')
+    with open(match_table_path, 'w') as f:
+        f.write(match_table + '\n')
 
     results = {
         'trajectory_dir': trajectory_dir,
@@ -2366,48 +2471,21 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         'rally_level_metrics': player_rally_rows,
         'match_level_metrics': player_match_rows,
         'experiment_summary': summary_rows,
+        'rally_level_table': rally_table_path,
+        'match_level_table': match_table_path,
     }
     with open(json_path, 'w') as f:
         json.dump(results, f, indent=2, default=str)
 
-    rally_metric_specs = [
-        ('land_dtw', 'mean_land_dtw', 'mean_land_dtw'),
-        ('move_dtw', 'mean_move_dtw', 'mean_move_dtw'),
-        ('shot_ctc', 'mean_shot_ctc', 'mean_shot_ctc'),
-        ('edit_distance', 'mean_edit_distance', 'mean_edit_distance'),
-    ]
-    match_metric_specs = [
-        ('landing_area_js', 'match_avg_landing_area_js', 'mean_landing_area_js'),
-        ('move_area_js', 'match_avg_move_area_js', 'mean_move_area_js'),
-        ('shot_distribution_js', 'match_avg_shot_distribution_js', 'mean_shot_distribution_js'),
-        ('landing_wasserstein', 'match_avg_landing_mean_wasserstein', 'mean_landing_mean_wasserstein'),
-        ('move_wasserstein', 'match_avg_move_mean_wasserstein', 'mean_move_mean_wasserstein'),
-        ('per_shot_landing_js', 'match_avg_per_shot_landing_js', 'mean_per_shot_landing_js'),
-        ('per_shot_move_js', 'match_avg_per_shot_move_js', 'mean_per_shot_move_js'),
-        ('transition_js', 'match_avg_per_prev_shot_transition_js', 'mean_per_prev_shot_transition_js'),
-        ('joint_area_shot_js', 'match_avg_joint_area_shot_js', 'mean_joint_area_shot_js'),
-        ('mdc_ratio', 'match_avg_mdc_ratio', 'mean_mdc_ratio'),
-    ]
-
-    print_player_metric_table(
-        'Rally-Level Metrics By Player (sequence)',
-        player_rally_rows,
-        rally_metric_specs,
-        summary_rows,
-        max_rows=print_max_rows,
-    )
-    print_player_metric_table(
-        'Match-Level Metrics By Player (distribution)',
-        player_match_rows,
-        match_metric_specs,
-        summary_rows,
-        max_rows=print_max_rows,
-    )
+    print(rally_table)
+    print(match_table)
 
     print()
     print(f'Rally-level CSV: {rally_csv}')
     print(f'Match-level CSV: {match_csv}')
     print(f'Experiment summary CSV: {summary_csv}')
+    print(f'Rally-level table: {rally_table_path}')
+    print(f'Match-level table: {match_table_path}')
     print(f'Experiment metrics JSON: {json_path}')
     print('=' * 80)
     print('Experiment Evaluation Complete!')

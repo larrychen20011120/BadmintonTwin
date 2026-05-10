@@ -1,0 +1,38 @@
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Style-Shift Instruction
+
+{% if style_shift_instruction %}
+{{ style_shift_instruction }}
+{% else %}
+No explicit style-shift instruction is available for this match. Use the current rally context and retrieved multi-scale segments normally.
+{% endif %}
+
+---
+
+## Retrieved Similar Cases ({{ top_k|int }} cases)
+
+{% for case in cases %}
+Case {{ case.index }} ({{ case.scale_label }}, distance={{ "%.3f"|format(case.distance) }}):
+{{ case.description }}
+
+{% endfor %}
+---
+
+## Step-by-Step Reasoning
+
+Provide your reasoning, then output the JSON:
+
+[1] Trajectory Analysis:
+[2] Multi-Scale Review:
+[3] Cross-Scale Consistency:
+[4] Shot Decision: Use the style-shift instruction as a tactical prior when choosing the shot type, while still respecting the current rally and multi-scale evidence.
+[5] Landing & Recovery: Use the style-shift instruction to adjust landing placement and recovery position when it is tactically reasonable.
+
+{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}

@@ -118,6 +118,15 @@ def list_available_algorithms():
     print()
 
 
+def output_experiment_label(experiment, style_shift_instruction_mode):
+    """Return the storage label; split/data selection still uses experiment."""
+    if experiment != 'shifted':
+        return experiment
+    if style_shift_instruction_mode == 'auto':
+        return 'shifted_with_instruction'
+    return 'shifted_without_instruction'
+
+
 def create_evaluator(algorithm, player_name, experiment='norm', device='cuda', 
                      skip_first_n=0, **kwargs):
     """
@@ -361,6 +370,20 @@ def main():
         default=10,
         help='I-MSDP最大suffix長度（僅適用於twin，預設: 10）'
     )
+
+    parser.add_argument(
+        '--style-shift-instruction',
+        type=str,
+        default='auto',
+        choices=['auto', 'off'],
+        help='Style-shift instruction 注入模式（僅適用於 shifted 的 naive_rag/timerag/twin）：auto 或 off'
+    )
+
+    parser.add_argument(
+        '--verbose-style-shift',
+        action='store_true',
+        help='印出 style-shift instruction 是否套用、套用到哪位選手與內容'
+    )
     
     args = parser.parse_args()
     
@@ -392,8 +415,16 @@ def main():
         kwargs['seed'] = args.seed
     if args.top_k != 5:
         kwargs['top_k'] = args.top_k
+    if args.algorithm == 'timerag':
+        kwargs['window_size'] = args.window_size
+    if args.algorithm == 'twin':
+        kwargs['max_scale'] = args.max_scale
     if args.save_trajectories:
         kwargs['save_trajectories'] = True
+    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
+        kwargs['style_shift_instruction_mode'] = args.style_shift_instruction
+        kwargs['verbose_style_shift'] = args.verbose_style_shift
+        kwargs['output_experiment'] = output_experiment_label(args.experiment, args.style_shift_instruction)
     
     # 執行評估
     results = evaluate_single_player(

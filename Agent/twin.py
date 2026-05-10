@@ -415,7 +415,7 @@ class TwinAgent(BaseAgent):
 
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
                  api_key="EMPTY", port=16000, base_url=None, top_k=5, max_scale=10,
-                 enable_tracing=True):
+                 enable_tracing=True, prompt_variant="norm"):
         """
         Initialize TwinAgent.
 
@@ -434,6 +434,7 @@ class TwinAgent(BaseAgent):
         self.database = database
         self.top_k = top_k
         self.max_scale = max_scale
+        self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("twin", player_name, enable_tracing)
 
         # Initialize verbalizer
@@ -444,11 +445,20 @@ class TwinAgent(BaseAgent):
 
         # Load prompts
         prompt_dir = os.path.join(project_path, "Prompts", "Agent")
-        with open(os.path.join(prompt_dir, "twin_system.md"), "r") as f:
+        if prompt_variant == "shifted":
+            system_prompt_name = "twin_shifted_system.md"
+            user_template_name = "twin_shifted_user.jinja"
+        elif prompt_variant == "norm":
+            system_prompt_name = "twin_system.md"
+            user_template_name = "twin_user.jinja"
+        else:
+            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
+
+        with open(os.path.join(prompt_dir, system_prompt_name), "r") as f:
             self.system_prompt = f.read()
 
         # Load user template
-        with open(os.path.join(prompt_dir, "twin_user.jinja"), "r") as f:
+        with open(os.path.join(prompt_dir, user_template_name), "r") as f:
             self.user_template = Template(f.read())
 
         # Load schema
@@ -556,6 +566,7 @@ class TwinAgent(BaseAgent):
         # Build context for LLM using verbalizer
         state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
         context = self.verbalizer.build_prompt_context_nl(state_dict, segments, launch=launch, state_history=state_history)
+        context['style_shift_instruction'] = info.get('style_shift_instruction', '')
 
         # Render user prompt
         user_prompt = self.user_template.render(**context)

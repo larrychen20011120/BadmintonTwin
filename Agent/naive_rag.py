@@ -245,8 +245,9 @@ class NaiveRAGAgent(BaseAgent):
     Supports verbalization to convert state and experiences to natural language.
     """
     
-    def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct", 
-                 api_key="EMPTY", port=16000, base_url=None, top_k=5, enable_tracing=True):
+    def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
+                 api_key="EMPTY", port=16000, base_url=None, top_k=5, enable_tracing=True,
+                 prompt_variant="norm"):
         """
         Initialize NaiveRAG Agent.
         
@@ -263,6 +264,7 @@ class NaiveRAGAgent(BaseAgent):
         
         self.database = database
         self.top_k = top_k
+        self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("naive_rag", player_name, enable_tracing)
         
         # Trajectory tracking for current rally
@@ -277,11 +279,20 @@ class NaiveRAGAgent(BaseAgent):
         
         # Load prompts
         prompt_dir = os.path.join(project_path, "Prompts", "Agent")
-        with open(os.path.join(prompt_dir, "naive_rag_system.md"), "r") as f:
+        if prompt_variant == "shifted":
+            system_prompt_name = "naive_rag_shifted_system.md"
+            user_template_name = "naive_rag_shifted_user.jinja"
+        elif prompt_variant == "norm":
+            system_prompt_name = "naive_rag_system.md"
+            user_template_name = "naive_rag_user.jinja"
+        else:
+            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
+
+        with open(os.path.join(prompt_dir, system_prompt_name), "r") as f:
             self.system_prompt = f.read()
         
         # Load user template
-        with open(os.path.join(prompt_dir, "naive_rag_user.jinja"), "r") as f:
+        with open(os.path.join(prompt_dir, user_template_name), "r") as f:
             self.user_template = Template(f.read())
         
         # Load schema
@@ -368,6 +379,7 @@ class NaiveRAGAgent(BaseAgent):
         # Build context for LLM using verbalizer
         state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
         context = self.verbalizer.build_prompt_context_nl(state_dict, experiences, launch=launch, state_history=state_history)
+        context['style_shift_instruction'] = info.get('style_shift_instruction', '')
 
         # Render user prompt
         user_prompt = self.user_template.render(**context)
@@ -540,5 +552,3 @@ class NaiveRAGAgent(BaseAgent):
             cases_str = str(experiences)
         
         return state_str, cases_str, experiences
-
-

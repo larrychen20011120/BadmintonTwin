@@ -24,8 +24,10 @@ class TimeRAGEvaluator(BaseEvaluator):
 
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
                  train_split_path=None, top_k=5, window_size=3, enable_tracing=True,
-                 
-                 teacher_forcing=False, save_trajectories=False):
+
+                 teacher_forcing=False, save_trajectories=False,
+                 style_shift_instruction_mode='auto', verbose_style_shift=False,
+                 output_experiment=None):
         """
         Args:
             player_name: 選手名稱
@@ -40,7 +42,10 @@ class TimeRAGEvaluator(BaseEvaluator):
         """
         super().__init__(player_name, experiment, device, skip_first_n,
                          teacher_forcing=teacher_forcing,
-                         save_trajectories=save_trajectories)
+                         save_trajectories=save_trajectories,
+                         style_shift_instruction_mode=style_shift_instruction_mode,
+                         verbose_style_shift=verbose_style_shift,
+                         output_experiment=output_experiment)
 
         if train_split_path is None:
             self.train_split_path = self.config['paths'][f'{experiment}_split']
@@ -85,6 +90,7 @@ class TimeRAGEvaluator(BaseEvaluator):
             base_url=timerag_config.get('base_url'),
             top_k=self.top_k,
             enable_tracing=self.enable_tracing,
+            prompt_variant='shifted' if self.experiment == 'shifted' else 'norm',
         )
         print(f"[TimeRAG] Agent created for {player_name}")
 
@@ -119,6 +125,7 @@ class TimeRAGEvaluator(BaseEvaluator):
     def _build_info(self, row):
         """Build info dict from row"""
         return {
+            'match_id': row['match_id'],
             'rally': row['rally'],
             'round': [row['ball_round']],
             'score': [row['player_score'], row['opponent_score']],
@@ -200,6 +207,8 @@ class TimeRAGEvaluator(BaseEvaluator):
                         current_state[17] = current_player_id
                         state_for_pred = current_state
 
+                    info['match_id'] = row['match_id']
+                    info['rally'] = row['rally']
                     info['round'] = [row['ball_round']]
                     info['score'] = [row['player_score'], row['opponent_score']]
 
@@ -207,6 +216,7 @@ class TimeRAGEvaluator(BaseEvaluator):
 
                     env_state = self._state_to_env_format(state_for_pred)
                     current_agent = self.agent if is_target_turn else opponent_agent
+                    self.attach_style_shift_instruction(info, ground_truth_player, row)
                     action, reason = current_agent.predict(env_state, info, launch)
 
                     if action is None:

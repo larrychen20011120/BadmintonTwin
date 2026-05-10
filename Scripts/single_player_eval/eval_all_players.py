@@ -51,6 +51,15 @@ def default_output_dir(algorithm, experiment):
     return os.path.join('Experiments', algorithm, 'trajectories', experiment)
 
 
+def output_experiment_label(experiment, style_shift_instruction_mode):
+    """Return the storage label; split/data selection still uses experiment."""
+    if experiment != 'shifted':
+        return experiment
+    if style_shift_instruction_mode == 'auto':
+        return 'shifted_with_instruction'
+    return 'shifted_without_instruction'
+
+
 def trajectory_base_name(player_name, experiment):
     return f"{safe_player_name(player_name)}_{experiment}"
 
@@ -104,6 +113,9 @@ def build_evaluator_kwargs(args, task_index):
     if args.algorithm in ('naive_rag', 'timerag', 'twin'):
         kwargs['top_k'] = args.top_k
         kwargs['enable_tracing'] = args.enable_tracing
+        kwargs['style_shift_instruction_mode'] = args.style_shift_instruction
+        kwargs['verbose_style_shift'] = args.verbose_style_shift
+        kwargs['output_experiment'] = args.output_experiment
 
     if args.algorithm == 'timerag':
         kwargs['window_size'] = args.window_size
@@ -259,6 +271,17 @@ def parse_args():
         action='store_true',
         help='Enable tracing for LLM/RAG evaluators.'
     )
+    parser.add_argument(
+        '--style-shift-instruction',
+        default='auto',
+        choices=['auto', 'off'],
+        help='Style-shift instruction injection mode for naive_rag/timerag/twin.'
+    )
+    parser.add_argument(
+        '--verbose-style-shift',
+        action='store_true',
+        help='Print style-shift instruction lookup and application details.'
+    )
 
     return parser.parse_args()
 
@@ -282,21 +305,23 @@ def main():
     if not players:
         raise ValueError('No players selected for evaluation')
 
-    output_dir = args.output_dir or default_output_dir(args.algorithm, args.experiment)
+    args.output_experiment = output_experiment_label(args.experiment, args.style_shift_instruction)
+    output_dir = args.output_dir or default_output_dir(args.algorithm, args.output_experiment)
     os.makedirs(output_dir, exist_ok=True)
 
     tasks = []
     for index, player in enumerate(players, start=1):
-        generation = next_generation(output_dir, player, args.experiment)
+        generation = next_generation(output_dir, player, args.output_experiment)
         tasks.append({
             'index': index,
             'player': player,
             'generation': generation,
             'algorithm': args.algorithm,
             'experiment': args.experiment,
+            'output_experiment': args.output_experiment,
             'device': args.device,
             'skip_first_n': args.skip_first_n,
-            'output_path': build_output_path(output_dir, player, args.experiment, generation),
+            'output_path': build_output_path(output_dir, player, args.output_experiment, generation),
             'evaluator_kwargs': build_evaluator_kwargs(args, index),
         })
 
@@ -305,6 +330,8 @@ def main():
     print('=' * 80)
     print(f"Algorithm: {args.algorithm}")
     print(f"Experiment: {args.experiment}")
+    print(f"Output experiment: {args.output_experiment}")
+    print(f"Style-shift instruction: {args.style_shift_instruction}")
     print(f"Players: {len(tasks)}")
     print(f"Workers: {args.workers}")
     print(f"Output dir: {output_dir}")
@@ -358,6 +385,9 @@ def main():
     summary = {
         'algorithm': args.algorithm,
         'experiment': args.experiment,
+        'output_experiment': args.output_experiment,
+        'style_shift_instruction_mode': args.style_shift_instruction,
+        'verbose_style_shift': args.verbose_style_shift,
         'workers': args.workers,
         'device': args.device,
         'output_dir': output_dir,

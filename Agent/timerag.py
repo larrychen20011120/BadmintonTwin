@@ -352,7 +352,8 @@ class TimeRAGAgent(BaseAgent):
     """
     
     def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
-                 api_key="EMPTY", port=16000, base_url=None, top_k=5, enable_tracing=True):
+                 api_key="EMPTY", port=16000, base_url=None, top_k=5, enable_tracing=True,
+                 prompt_variant="norm"):
         """
         Initialize TimeRAG Agent.
         
@@ -370,6 +371,7 @@ class TimeRAGAgent(BaseAgent):
         self.database = database
         self.window_size = database.window_size
         self.top_k = top_k
+        self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("timerag", player_name, enable_tracing)
         
         # Trajectory tracking for current rally (full state_dicts)
@@ -384,11 +386,20 @@ class TimeRAGAgent(BaseAgent):
         
         # Load prompts
         prompt_dir = os.path.join(project_path, "Prompts", "Agent")
-        with open(os.path.join(prompt_dir, "timerag_system.md"), "r") as f:
+        if prompt_variant == "shifted":
+            system_prompt_name = "timerag_shifted_system.md"
+            user_template_name = "timerag_shifted_user.jinja"
+        elif prompt_variant == "norm":
+            system_prompt_name = "timerag_system.md"
+            user_template_name = "timerag_user.jinja"
+        else:
+            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
+
+        with open(os.path.join(prompt_dir, system_prompt_name), "r") as f:
             self.system_prompt = f.read()
         
         # Load user template
-        with open(os.path.join(prompt_dir, "timerag_user.jinja"), "r") as f:
+        with open(os.path.join(prompt_dir, user_template_name), "r") as f:
             self.user_template = Template(f.read())
         
         # Load schema
@@ -520,6 +531,7 @@ class TimeRAGAgent(BaseAgent):
         # Build context for LLM using verbalizer
         state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
         context = self.verbalizer.build_prompt_context_nl(state_dict, retrieved_windows, launch=launch, window_size=self.window_size, state_history=state_history)
+        context['style_shift_instruction'] = info.get('style_shift_instruction', '')
         
         # Render user prompt
         user_prompt = self.user_template.render(**context)
