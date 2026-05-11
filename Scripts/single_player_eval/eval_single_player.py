@@ -334,8 +334,13 @@ def main():
         '--distribution',
         type=str,
         default='deterministic',
-        choices=['deterministic', 'gaussian'],
-        help='BC輸出模式（僅適用於bc）：deterministic 或 gaussian（預設: deterministic）'
+        choices=['deterministic', 'gaussian', 'gmm'],
+        help='BC輸出模式（僅適用於bc）：deterministic、gaussian 或 gmm（預設: deterministic）'
+    )
+    parser.add_argument(
+        '--gmm-num',
+        type=int,
+        help='GMM component 數量（僅適用於 bc gmm，預設讀取 config）'
     )
     
     parser.add_argument(
@@ -409,6 +414,8 @@ def main():
         kwargs['model_path'] = args.model_path
     if args.algorithm == 'bc' and args.distribution:
         kwargs['distribution'] = args.distribution
+    if args.algorithm == 'bc' and args.gmm_num:
+        kwargs['gmm_num'] = args.gmm_num
     if args.hyperparameters_path:
         kwargs['hyperparameters_path'] = args.hyperparameters_path
     if args.seed is not None:

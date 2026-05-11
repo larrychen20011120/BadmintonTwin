@@ -89,7 +89,9 @@ class RallyNetV2Evaluator(BaseEvaluator):
             context_size=hyperparameters['context_size'],
             hidden_size=hyperparameters['hidden_size'],
             player_ids_len=hyperparameters['player_ids_len'],
-            shot_type_len=hyperparameters['shot_type_len']
+            shot_type_len=hyperparameters['shot_type_len'],
+            gmm_num=hyperparameters.get('gmm_num', 5),
+            min_sigma=hyperparameters.get('min_sigma', 1e-3)
         ).to(device)
         
         model.load_state_dict(torch.load(self.model_path, map_location=device, weights_only=True))
@@ -112,6 +114,8 @@ class RallyNetV2Evaluator(BaseEvaluator):
     def simulate(self):
         """執行RallyNetV2模擬，收集trajectory"""
         device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
+        launch_mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool, device=device)
+        rally_mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool, device=device)
         
         # 取得選手的測試比賽
         test_match_ids = self.get_player_test_matches()
@@ -195,7 +199,7 @@ class RallyNetV2Evaluator(BaseEvaluator):
                         # Update ht with current (potentially rolled-out) state
                         ht[shot_idx, :, :] = current_state
                     
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         
                         # Use model.sample to get predictions with SDE sampling
                         # Pass ht[:seq_len] which has shape [seq_len, 1, 18]
@@ -217,9 +221,9 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     
                     # Apply mask for valid shot types
                     if launch:
-                        mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
+                        mask = launch_mask
                     else:
-                        mask = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1], dtype=torch.bool).to(device)
+                        mask = rally_mask
                     
                     # Re-apply mask to shot_probs and resample if needed
                     masked_logits = shot_logit.masked_fill(mask == 0, -1e9)

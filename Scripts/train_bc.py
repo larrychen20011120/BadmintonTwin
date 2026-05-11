@@ -27,7 +27,8 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name=None):
+def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name=None,
+             distribution='deterministic', gmm_num=None):
     """
     訓練 BC 模型
     
@@ -61,11 +62,19 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     # 確保輸出目錄存在
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
+    # 設定輸出分布
+    distribution = distribution or config['bc_training'].get('distribution', 'deterministic')
+    if distribution not in ('deterministic', 'gaussian', 'gmm'):
+        print(f"❌ 不支援的 distribution: {distribution}")
+        print("   支援的類型: deterministic, gaussian, gmm")
+        return False
+
     # 取得訓練參數
     bc_config = config['bc_training']
     epochs = epochs or bc_config['epochs']
     batch_size = batch_size or bc_config['batch_size']
     lr = lr or bc_config['learning_rate']
+    gmm_num = gmm_num or bc_config.get('gmm_num', 5)
     
     # 檢查資料是否存在
     state_path = os.path.join(data_dir, 'train_state.pkl')
@@ -85,6 +94,9 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     print(f"  - Epochs:     {epochs}")
     print(f"  - Batch Size: {batch_size}")
     print(f"  - Learning Rate: {lr}")
+    print(f"  - Distribution: {distribution}")
+    if distribution == 'gmm':
+        print(f"  - GMM Components: {gmm_num}")
     print("="*70)
     
     # 執行訓練
@@ -97,7 +109,9 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
         '--epochs', str(epochs),
         '--batch_size', str(batch_size),
         '--lr', str(lr),
-        '--output', output_path
+        '--output', output_path,
+        '--distribution', distribution,
+        '--gmm_num', str(gmm_num)
     ]
     
     print(f"\n執行命令:\n{' '.join(cmd)}\n")
@@ -209,6 +223,17 @@ def main():
         help='自訂輸出檔名（預設: norm_model.pth 或 shifted_model.pth）'
     )
     parser.add_argument(
+        '--distribution',
+        type=str,
+        choices=['deterministic', 'gaussian', 'gmm'],
+        help='動作輸出模式: deterministic、gaussian 或 gmm（預設讀取 config）'
+    )
+    parser.add_argument(
+        '--gmm-num',
+        type=int,
+        help='GMM component 數量（僅 distribution=gmm，預設讀取 config）'
+    )
+    parser.add_argument(
         '--list-data',
         action='store_true',
         help='列出可用的訓練資料'
@@ -220,6 +245,7 @@ def main():
     )
     
     args = parser.parse_args()
+    config = load_config()
     
     # 如果只列出資訊
     if args.list_data:
@@ -242,7 +268,9 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        output_name=args.output_name
+        output_name=args.output_name,
+        distribution=args.distribution or config['bc_training'].get('distribution', 'deterministic'),
+        gmm_num=args.gmm_num or config['bc_training'].get('gmm_num', 5)
     )
     
     return 0 if success else 1

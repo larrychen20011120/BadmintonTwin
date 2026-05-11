@@ -72,32 +72,87 @@ class Encoder(nn.Module):
         return out
 
 class MLP(nn.Module):
-    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len):
+    def __init__(self, input_size, hidden_size, player_id_len, shot_type_len, gmm_num=5):
         super(MLP, self).__init__()
         self.fc = nn.Linear(input_size, hidden_size)
         self.relu = nn.ReLU()
-        self.predict_land_area = nn.Linear(hidden_size, 2, bias=False)
+        self.gmm_num = gmm_num
+        self.predict_land_area = nn.Linear(hidden_size, gmm_num * 5)
         self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
-        self.predict_move_area = nn.Linear(hidden_size, 2, bias=False)
+        self.predict_move_area = nn.Linear(hidden_size, gmm_num * 5)
 
     def forward(self, x):
         x = x.float()
         out = self.fc(x)                 # Shape: [batch_size, hidden_size]
         out = self.relu(out)
-        land_logit = self.predict_land_area(out)    # Shape: [batch_size, 2]
-        move_logit = self.predict_move_area(out)    # Shape: [batch_size, 2]
+        land_logit = self.predict_land_area(out)    # Shape: [..., gmm_num * 5]
+        move_logit = self.predict_move_area(out)    # Shape: [..., gmm_num * 5]
         shot_logit = self.predict_shot_type(out)    # Shape: [batch_size, shot_type_len]
         return land_logit, shot_logit, move_logit
+
+
+def split_gmm_params(pred_params, gmm_num, min_sigma=1e-3):
+    """
+    Split raw GMM output into mixture logits, 2D means, and positive stds.
+
+    Layout follows Agent/bc.py: [pi_logits(K), mu(K*2), raw_sigma(K*2)].
+    """
+    expected_dim = gmm_num * 5
+    if pred_params.shape[-1] != expected_dim:
+        raise ValueError(f'GMM prediction must have {expected_dim} channels for {gmm_num} components')
+
+    pred_params = pred_params.reshape(-1, expected_dim)
+    pi_logits = pred_params[:, :gmm_num]
+    mus = pred_params[:, gmm_num:gmm_num * 3].reshape(-1, gmm_num, 2)
+    raw_sigmas = pred_params[:, gmm_num * 3:gmm_num * 5].reshape(-1, gmm_num, 2)
+    sigmas = F.softplus(raw_sigmas) + min_sigma
+    return pi_logits, mus, sigmas
+
+
+def gmm_nll_loss(pred_params, target, gmm_num, min_sigma=1e-3, reduction='mean'):
+    """Compute diagonal 2D GMM NLL, matching BC's GMM objective."""
+    pi_logits, mus, sigmas = split_gmm_params(pred_params, gmm_num, min_sigma)
+    target = target.reshape(-1, 2).unsqueeze(1)
+
+    log_pi = F.log_softmax(pi_logits, dim=-1)
+    log_two_pi = torch.log(target.new_tensor(2 * torch.pi))
+    log_component_prob = -0.5 * (
+        ((target - mus) / sigmas) ** 2 + 2 * torch.log(sigmas) + log_two_pi
+    ).sum(dim=-1)
+    nll = -torch.logsumexp(log_pi + log_component_prob, dim=-1)
+
+    if reduction == 'none':
+        return nll
+    if reduction == 'sum':
+        return nll.sum()
+    if reduction == 'mean':
+        return nll.mean()
+    raise ValueError('reduction must be none, sum, or mean')
+
+
+def sample_from_gmm(pred_params, gmm_num, min_sigma=1e-3):
+    """Sample a 2D point from a diagonal Gaussian mixture."""
+    original_shape = pred_params.shape[:-1]
+    pi_logits, mus, sigmas = split_gmm_params(pred_params, gmm_num, min_sigma)
+    component = Categorical(logits=pi_logits).sample()
+    gather_index = component.view(-1, 1, 1).expand(-1, 1, 2)
+    selected_mu = mus.gather(1, gather_index).squeeze(1)
+    selected_sigma = sigmas.gather(1, gather_index).squeeze(1)
+    sample = selected_mu + torch.randn_like(selected_mu) * selected_sigma
+    return torch.clamp(sample, -1.0, 1.0).reshape(*original_shape, 2)
 
 class LatentSDE(nn.Module):
     sde_type = "ito"
     noise_type = "diagonal"
 
-    def __init__(self, data_size, latent_size, context_size, hidden_size, player_ids_len, shot_type_len, match_state_dim=5, condition_size=16):
+    def __init__(self, data_size, latent_size, context_size, hidden_size, player_ids_len, shot_type_len,
+                 match_state_dim=5, condition_size=16, gmm_num=5, min_sigma=1e-3):
         super(LatentSDE, self).__init__()
         self.action_dim = 5
         self.match_state_dim = match_state_dim
         self.condition_size = condition_size
+        self.gmm_num = gmm_num
+        self.min_sigma = min_sigma
         self.state_dim = data_size - self.action_dim
         self.remaining_state_dim = self.state_dim - self.match_state_dim  # State without match_state
         self.log_softmax = nn.LogSoftmax(dim=-1)
@@ -109,10 +164,9 @@ class LatentSDE(nn.Module):
         self.player_embedding = nn.Embedding(player_ids_len, 8)
 
         # ================= #
-        self.action_model = MLP(latent_size + condition_size, 128, player_ids_len, shot_type_len).cuda(0)
-        class_weights = compute_shot_type_weights(method='sqrt_inverse').cuda(0)
-        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=0)
-        self.mse = nn.MSELoss()
+        self.action_model = MLP(latent_size + condition_size, 128, player_ids_len, shot_type_len, gmm_num=gmm_num).cuda(0)
+        class_weights = compute_shot_type_weights(method='uniform').cuda(0)
+        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=0, reduction='none')
         # ================= #
 
         # Match State Encoder (condition encoder).
@@ -159,9 +213,6 @@ class LatentSDE(nn.Module):
         self.pz0_logstd = nn.Parameter(torch.zeros(1, latent_size))
         self._ctx = None
         self._condition = None
-        self.log_var_pxs = nn.Parameter(torch.tensor(0.0))
-        self.log_var_kl = nn.Parameter(torch.tensor(0.0))
-        self.log_var_action = nn.Parameter(torch.tensor(0.0))
 
     def SDE_embed_and_transform(self, tensor_data):
         max_length, batch_size, _ = tensor_data.shape
@@ -267,9 +318,21 @@ class LatentSDE(nn.Module):
         # Action model with condition
         land, shot, move = self.action_model(zs_conditioned)
 
-        land_loss = self.mse(land.view(-1, 2), true_land)
+        land_loss = gmm_nll_loss(
+            land.view(-1, self.gmm_num * 5),
+            true_land,
+            self.gmm_num,
+            self.min_sigma,
+            reduction='none'
+        )
         shot_loss = self.ce(shot.view(-1, self.shot_type_len), true_shot)
-        move_loss = self.mse(move.view(-1, 2), true_move)
+        move_loss = gmm_nll_loss(
+            move.view(-1, self.gmm_num * 5),
+            true_move,
+            self.gmm_num,
+            self.min_sigma,
+            reduction='none'
+        )
 
         # Apply mask to losses
         if masks is not None:
@@ -278,6 +341,10 @@ class LatentSDE(nn.Module):
             land_loss = (land_loss * mask_flat).sum() / valid_count
             shot_loss = (shot_loss * mask_flat).sum() / valid_count
             move_loss = (move_loss * mask_flat).sum() / valid_count
+        else:
+            land_loss = land_loss.mean()
+            shot_loss = shot_loss.mean()
+            move_loss = move_loss.mean()
         """ MLP training end """
 
         # Only compute reconstruction loss for remaining_state (not match_state)
@@ -323,7 +390,7 @@ class LatentSDE(nn.Module):
         # actions.append(torch.tensor([[[0, 1, 0, 0, 0]]], dtype=torch.float32).cuda(0))
         return torch.cat(actions, dim=0), type_porb
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def sample(self, ht, ts, step, player_ids_len, shot_type_len, bm=None):
         global SEQ_LEN
         
@@ -344,11 +411,9 @@ class LatentSDE(nn.Module):
         
         qz0_mean, qz0_logstd = self.qz0_net(ctx[step]).chunk(chunks=2, dim=1)
         z0 = qz0_mean + qz0_logstd.exp() * torch.randn_like(qz0_mean)
-        zs = torchsde.sdeint(self, z0, ts[step:], names={'drift': 'h'}, dt=2/SEQ_LEN, bm=bm)
         
-        # Decode with condition
-        condition_expanded = condition[0].unsqueeze(0).expand(zs.size(0), -1, -1)
-        zs_conditioned = torch.cat((zs, condition_expanded), dim=-1)
+        # Evaluation only consumes the current action, so skip future SDE rollout.
+        zs_conditioned = torch.cat((z0, condition[0]), dim=-1)
         # _remaining_state = self.projector(zs_conditioned)
         
         # Reconstruct full state for predict_actions (need to reconstruct match_state from input)
@@ -356,11 +421,13 @@ class LatentSDE(nn.Module):
         
         # action, shot_logit = self.predict_actions(self.inverse_model, _xs)
 
-        land, shot, move = self.action_model(zs_conditioned)
-        shot_probs = torch.softmax(shot, dim=-1)  # [61, 1, 12]
-        shot_sample = torch.multinomial(shot_probs.view(-1, 12), num_samples=1).view(-1, 1, 1)  # [61, 1, 1]
-        mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [61, 1, 5]
-        return None, None, None, mlp_action[0,:,:].squeeze(0), shot[0,:,:]
+        land_params, shot, move_params = self.action_model(zs_conditioned)
+        land = sample_from_gmm(land_params, self.gmm_num, self.min_sigma)
+        move = sample_from_gmm(move_params, self.gmm_num, self.min_sigma)
+        shot_probs = torch.softmax(shot, dim=-1)  # [batch_size, shot_type_len]
+        shot_sample = torch.multinomial(shot_probs, num_samples=1).float()
+        mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [batch_size, 5]
+        return None, None, None, mlp_action.squeeze(0), shot
     
     @torch.no_grad()
     def sample_batch(self, ht_batch, ts, steps, player_ids_len, shot_type_len, bm=None):
@@ -428,7 +495,9 @@ class LatentSDE(nn.Module):
             _remaining_state = self.projector(zs_conditioned)
             
             # Get first prediction
-            land, shot, move = self.action_model(zs_conditioned[:1])  # Only take first timestep
+            land_params, shot, move_params = self.action_model(zs_conditioned[:1])  # Only take first timestep
+            land = sample_from_gmm(land_params, self.gmm_num, self.min_sigma)
+            move = sample_from_gmm(move_params, self.gmm_num, self.min_sigma)
             shot_probs = torch.softmax(shot, dim=-1)  # [1, 1, shot_type_len]
             shot_sample = torch.multinomial(shot_probs.view(-1, shot_type_len), num_samples=1).view(-1, 1, 1)
             mlp_action = torch.cat([land, shot_sample.float(), move], dim=-1)  # [1, 1, 5]
@@ -522,7 +591,9 @@ def main(
         eval = False, 
         load = False,
         load_step = 0,
-        split_ratio = 0.8
+        split_ratio = 0.8,
+        gmm_num=5,
+        min_sigma=1e-3
 ):
     create_folder_if_not_exists(train_dir)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -535,7 +606,9 @@ def main(
         context_size=context_size,
         hidden_size=hidden_size,
         player_ids_len = player_ids_len,
-        shot_type_len = shot_type_len
+        shot_type_len = shot_type_len,
+        gmm_num=gmm_num,
+        min_sigma=min_sigma
     ).to(device)
 
     hyperparameters = {
@@ -545,6 +618,8 @@ def main(
         "hidden_size": hidden_size,
         "player_ids_len": player_ids_len,
         "shot_type_len": shot_type_len,
+        "gmm_num": gmm_num,
+        "min_sigma": min_sigma,
         "ts": ts,
         "xs": xs,
         # "target_players": target_players,
@@ -578,12 +653,7 @@ def main(
             masks = masks[:, shuffled_indices, :]
             index = 0
 
-        # loss = -log_pxs + (kl * kl_scheduler.val) + action_loss
-        loss = (
-            torch.exp(-latent_sde.log_var_pxs) * (-log_pxs) + latent_sde.log_var_pxs +
-            torch.exp(-latent_sde.log_var_kl) * (kl * kl_scheduler.val) + latent_sde.log_var_kl +
-            torch.exp(-latent_sde.log_var_action) * action_loss + latent_sde.log_var_action
-        )
+        loss = -log_pxs + (kl * kl_scheduler.val) + action_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(latent_sde.parameters(), max_norm=1.0)
         optimizer.step()
@@ -603,7 +673,6 @@ def main(
                 f'Step: {global_step:06d} | '
                 f'Total Loss: {loss.item():.4f}\n'
                 f'  [Losses] NLL: {(-log_pxs).item():.3f}, KL: {kl.item():.3f}, Action: {action_loss.item():.3f}\n'
-                f'  [Weights] NLL: {torch.exp(-latent_sde.log_var_pxs).item():.4f}, KL: {torch.exp(-latent_sde.log_var_kl).item():.4f}, Action: {torch.exp(-latent_sde.log_var_action).item():.4f}\n'
                 f'  [Status] KL_Coeff: {kl_scheduler.val:.4f}'
             )
 

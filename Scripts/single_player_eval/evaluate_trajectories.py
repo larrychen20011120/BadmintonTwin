@@ -4,7 +4,7 @@ Standalone Trajectory Evaluation Script
 
 Evaluates saved trajectories without re-running agent simulation.
 Computes comprehensive metrics including:
-- Sequence-level: DTW, CTC, Edit Distance
+- Sequence-level: DTW, CTC, Edit Distance, LCS Ratio
 - Distribution: JS divergence, Wasserstein distance
 - Conditional distributions: per-shot-type analysis
 
@@ -281,11 +281,11 @@ def extract_sequences(trajectories: List[Dict], target_player_only: bool = False
 
 
 # =============================================================================
-# Sequence Metrics (DTW, CTC, Edit Distance)
+# Sequence Metrics (DTW, CTC, Edit Distance, LCS Ratio)
 # =============================================================================
 
 class SequenceMetrics:
-    """Computes sequence-level metrics: DTW, CTC, Edit Distance."""
+    """Computes sequence-level metrics: DTW, CTC, Edit Distance, LCS Ratio."""
     
     @staticmethod
     def compute_dtw(land_pred_seqs: List[np.ndarray], land_gt_seqs: List[np.ndarray],
@@ -391,6 +391,44 @@ class SequenceMetrics:
             'edit_distance': float(np.mean(edit_dist_list)) if edit_dist_list else float('inf'),
             'edit_distance_std': float(np.std(edit_dist_list)) if edit_dist_list else 0.0,
             'num_valid_rallies': len(edit_dist_list),
+        }
+
+    @staticmethod
+    def _lcs_length(seq_pred: List[int], seq_gt: List[int]) -> int:
+        """Compute longest common subsequence length for two shot sequences."""
+        if len(seq_pred) < len(seq_gt):
+            shorter, longer = seq_pred, seq_gt
+        else:
+            shorter, longer = seq_gt, seq_pred
+
+        prev = [0] * (len(shorter) + 1)
+        for token in longer:
+            curr = [0] * (len(shorter) + 1)
+            for j, other_token in enumerate(shorter, start=1):
+                if token == other_token:
+                    curr[j] = prev[j - 1] + 1
+                else:
+                    curr[j] = max(prev[j], curr[j - 1])
+            prev = curr
+        return prev[-1]
+
+    @classmethod
+    def compute_lcs_ratio(cls, shot_pred_seqs: List[List[int]], shot_gt_seqs: List[List[int]]) -> Dict:
+        """Compute symmetric LCS ratio for shot sequences, normalized by max length."""
+        lcs_ratio_list = []
+
+        for shot_pred, shot_gt in zip(shot_pred_seqs, shot_gt_seqs):
+            max_len = max(len(shot_pred), len(shot_gt))
+            if max_len == 0:
+                continue
+
+            lcs_len = cls._lcs_length(shot_pred, shot_gt)
+            lcs_ratio_list.append(lcs_len / max_len)
+
+        return {
+            'lcs_ratio': float(np.mean(lcs_ratio_list)) if lcs_ratio_list else float('inf'),
+            'lcs_ratio_std': float(np.std(lcs_ratio_list)) if lcs_ratio_list else 0.0,
+            'num_valid_rallies': len(lcs_ratio_list),
         }
 
 
@@ -658,12 +696,14 @@ def sequence_metrics_for_trajectories(trajectories: List[Dict], target_player_on
     )
     ctc = seq_metrics.compute_ctc(data['shot_pred_seqs'], data['shot_gt_seqs'])
     edit = seq_metrics.compute_edit_distance(data['shot_pred_seqs'], data['shot_gt_seqs'])
+    lcs = seq_metrics.compute_lcs_ratio(data['shot_pred_seqs'], data['shot_gt_seqs'])
 
     return {
         'land_dtw': dtw.get('land_dtw', float('nan')),
         'move_dtw': dtw.get('move_dtw', float('nan')),
         'shot_ctc': ctc.get('shot_ctc', float('nan')),
         'edit_distance': edit.get('edit_distance', float('nan')),
+        'lcs_ratio': lcs.get('lcs_ratio', float('nan')),
     }
 
 
@@ -694,6 +734,7 @@ def distribution_metrics_for_trajectories(trajectories: List[Dict], target_playe
         'landing_area_js': dist_metrics.area_distribution_js(data['all_land_pred'], data['all_land_gt']),
         'move_area_js': dist_metrics.area_distribution_js(data['all_move_pred'], data['all_move_gt']),
         'shot_distribution_js': dist_metrics.shot_distribution_js(data['all_shot_pred'], data['all_shot_gt']),
+        'shot_distribution_tv': dist_metrics.shot_distribution_tv(data['all_shot_pred'], data['all_shot_gt']),
         'landing_x_wasserstein': landing_wasserstein.get('x_wasserstein', float('nan')),
         'landing_y_wasserstein': landing_wasserstein.get('y_wasserstein', float('nan')),
         'landing_mean_wasserstein': landing_wasserstein.get('mean_wasserstein', float('nan')),
@@ -742,6 +783,17 @@ class DistributionMetrics:
         q = histogram(shot_gt, bins=12, range_min=0, range_max=12)
         
         return js_divergence(p, q)
+
+    @staticmethod
+    def shot_distribution_tv(shot_pred: np.ndarray, shot_gt: np.ndarray) -> float:
+        """Total variation distance between predicted and GT shot type distributions."""
+        if len(shot_pred) == 0 or len(shot_gt) == 0:
+            return float('nan')
+
+        p = histogram(shot_pred, bins=12, range_min=0, range_max=12)
+        q = histogram(shot_gt, bins=12, range_min=0, range_max=12)
+
+        return float(0.5 * np.sum(np.abs(p - q)))
     
     @staticmethod
     def wasserstein_1d(land_pred: np.ndarray, land_gt: np.ndarray) -> Dict:
@@ -1892,7 +1944,7 @@ def evaluate_trajectories(trajectory_file: str,
     # =========================================================================
     # Sequence Metrics
     # =========================================================================
-    if compute_all or any(m in ['dtw', 'sequence'] for m in metrics_to_compute):
+    if compute_all or any(m in ['dtw', 'ctc', 'edit_distance', 'lcs_ratio', 'sequence'] for m in metrics_to_compute):
         print("Computing Sequence Metrics...")
         seq_metrics = SequenceMetrics()
         
@@ -1926,6 +1978,15 @@ def evaluate_trajectories(trajectory_file: str,
             )
             results['sequence_metrics']['edit_distance'] = edit_results
             print(f"    Edit Distance: {edit_results['edit_distance']:.4f}")
+
+        # LCS Ratio
+        if compute_all or 'lcs_ratio' in metrics_to_compute:
+            print("  - LCS Ratio...")
+            lcs_results = seq_metrics.compute_lcs_ratio(
+                data['shot_pred_seqs'], data['shot_gt_seqs']
+            )
+            results['sequence_metrics']['lcs_ratio'] = lcs_results
+            print(f"    LCS Ratio: {lcs_results['lcs_ratio']:.4f}")
         
         print()
     
@@ -1944,6 +2005,9 @@ def evaluate_trajectories(trajectory_file: str,
                 data['all_move_pred'], data['all_move_gt']
             ),
             'shot_distribution_js': dist_metrics.shot_distribution_js(
+                data['all_shot_pred'], data['all_shot_gt']
+            ),
+            'shot_distribution_tv': dist_metrics.shot_distribution_tv(
                 data['all_shot_pred'], data['all_shot_gt']
             ),
             'landing_wasserstein': dist_metrics.wasserstein_1d(
@@ -2163,12 +2227,17 @@ def evaluate_trajectories(trajectory_file: str,
         if 'edit_distance' in results['sequence_metrics']:
             summary_data['metric'].append('edit_distance')
             summary_data['value'].append(results['sequence_metrics']['edit_distance']['edit_distance'])
+        if 'lcs_ratio' in results['sequence_metrics']:
+            summary_data['metric'].append('lcs_ratio')
+            summary_data['value'].append(results['sequence_metrics']['lcs_ratio']['lcs_ratio'])
     
     if 'distribution_metrics' in results:
         summary_data['metric'].append('landing_area_js')
         summary_data['value'].append(results['distribution_metrics']['landing_area_js'])
         summary_data['metric'].append('shot_distribution_js')
         summary_data['value'].append(results['distribution_metrics']['shot_distribution_js'])
+        summary_data['metric'].append('shot_distribution_tv')
+        summary_data['value'].append(results['distribution_metrics']['shot_distribution_tv'])
     
     if 'conditional_metrics' in results:
         summary_data['metric'].append('per_shot_landing_js')
@@ -2198,11 +2267,11 @@ def evaluate_trajectories(trajectory_file: str,
 RALLY_LEVEL_COLUMNS = [
     'trajectory_file', 'target_player', 'generation', 'num_matches', 'num_rallies',
     'num_gt_shots', 'num_pred_shots', 'early_end_rate',
-    'mean_land_dtw', 'mean_move_dtw', 'mean_shot_ctc', 'mean_edit_distance',
+    'mean_land_dtw', 'mean_move_dtw', 'mean_shot_ctc', 'mean_edit_distance', 'mean_lcs_ratio',
 ]
 
 DISTRIBUTION_METRIC_COLUMNS = [
-    'landing_area_js', 'move_area_js', 'shot_distribution_js',
+    'landing_area_js', 'move_area_js', 'shot_distribution_js', 'shot_distribution_tv',
     'landing_mean_wasserstein', 'move_mean_wasserstein',
     'per_shot_landing_js', 'per_shot_move_js', 'per_prev_shot_transition_js',
     'joint_area_shot_js', 'mdc_ratio',
@@ -2216,8 +2285,8 @@ MATCH_LEVEL_COLUMNS = [
 ]
 
 SUMMARY_METRIC_COLUMNS = [
-    'land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance',
-    'landing_area_js', 'move_area_js', 'shot_distribution_js',
+    'land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance', 'lcs_ratio',
+    'landing_area_js', 'move_area_js', 'shot_distribution_js', 'shot_distribution_tv',
     'landing_mean_wasserstein', 'move_mean_wasserstein',
     'per_shot_landing_js', 'per_shot_move_js', 'per_prev_shot_transition_js',
     'joint_area_shot_js', 'mdc_ratio',
@@ -2281,7 +2350,7 @@ def evaluate_trajectory_directory(trajectory_dir: str,
                 **sequence_values,
             }
             rally_rows.append(row)
-            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance', 'lcs_ratio']:
                 match_sequence_values[key][metric_name].append(row[metric_name])
 
     match_rows = []
@@ -2342,6 +2411,7 @@ def evaluate_trajectory_directory(trajectory_dir: str,
             'mean_move_dtw': finite_mean([row.get('move_dtw') for row in rows]),
             'mean_shot_ctc': finite_mean([row.get('shot_ctc') for row in rows]),
             'mean_edit_distance': finite_mean([row.get('edit_distance') for row in rows]),
+            'mean_lcs_ratio': finite_mean([row.get('lcs_ratio') for row in rows]),
         })
 
     player_match_rows = []
@@ -2380,7 +2450,7 @@ def evaluate_trajectory_directory(trajectory_dir: str,
             finite_mean(match_sequence_values[key][metric_name])
             for key in sorted(match_groups.keys())
         ]
-        for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']
+        for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance', 'lcs_ratio']
     }
     match_weights = [row['num_rallies'] for row in match_rows]
 
@@ -2396,14 +2466,14 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         }
 
         if average_type == 'match_average':
-            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance', 'lcs_ratio']:
                 row[f'mean_{metric_name}'] = finite_mean(sequence_match_means[metric_name])
-            for metric_name in SUMMARY_METRIC_COLUMNS[4:]:
+            for metric_name in SUMMARY_METRIC_COLUMNS[5:]:
                 row[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in match_rows])
         else:
-            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance']:
+            for metric_name in ['land_dtw', 'move_dtw', 'shot_ctc', 'edit_distance', 'lcs_ratio']:
                 row[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in rally_rows])
-            for metric_name in SUMMARY_METRIC_COLUMNS[4:]:
+            for metric_name in SUMMARY_METRIC_COLUMNS[5:]:
                 row[f'mean_{metric_name}'] = finite_mean(
                     [match_row.get(metric_name) for match_row in match_rows],
                     weights=match_weights,
@@ -2428,11 +2498,13 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         ('Move', 'mean_move_dtw', 'mean_move_dtw'),
         ('CTC', 'mean_shot_ctc', 'mean_shot_ctc'),
         ('Edit', 'mean_edit_distance', 'mean_edit_distance'),
+        ('LCS', 'mean_lcs_ratio', 'mean_lcs_ratio'),
     ]
     match_metric_specs = [
         ('LandJS', 'match_avg_landing_area_js', 'mean_landing_area_js'),
         ('MoveJS', 'match_avg_move_area_js', 'mean_move_area_js'),
         ('ShotJS', 'match_avg_shot_distribution_js', 'mean_shot_distribution_js'),
+        ('ShotTV', 'match_avg_shot_distribution_tv', 'mean_shot_distribution_tv'),
         ('LandW', 'match_avg_landing_mean_wasserstein', 'mean_landing_mean_wasserstein'),
         ('MoveW', 'match_avg_move_mean_wasserstein', 'mean_move_mean_wasserstein'),
         ('PSLand', 'match_avg_per_shot_landing_js', 'mean_per_shot_landing_js'),
@@ -2510,7 +2582,7 @@ Examples:
     # Compute only sequence metrics
     python Scripts/single_player_eval/evaluate_trajectories.py \\
         --trajectory-file Experiments/bc/trajectories/Viktor_AXELSEN_norm.pkl \\
-        --metrics dtw ctc edit_distance
+        --metrics dtw ctc edit_distance lcs_ratio
 
     # Evaluate only conditional distributions (key feature)
     python Scripts/single_player_eval/evaluate_trajectories.py \\
@@ -2535,6 +2607,7 @@ Supported Metrics:
     dtw              - Dynamic Time Warping for landing/move positions
     ctc              - Connectionist Temporal Classification for shot sequences
     edit_distance    - Levenshtein edit distance for shot sequences
+    lcs_ratio        - Longest common subsequence ratio for shot sequences
     distribution     - JS divergence, Wasserstein distance
     conditional      - Per-shot-type conditional distributions (KEY FEATURE)
         """
@@ -2547,7 +2620,7 @@ Supported Metrics:
     parser.add_argument('--output-dir', type=str, default='./evaluation_results',
                         help='Output directory for results and visualizations')
     parser.add_argument('--metrics', nargs='+', 
-                        choices=['all', 'dtw', 'ctc', 'edit_distance', 'distribution', 'conditional'],
+                        choices=['all', 'dtw', 'ctc', 'edit_distance', 'lcs_ratio', 'distribution', 'conditional'],
                         default=['all'],
                         help='Metrics to compute (default: all)')
     parser.add_argument('--visualize', action='store_true', default=True,

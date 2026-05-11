@@ -24,29 +24,30 @@ from Utils.helper import *
 class BC(nn.Module):
     
     def __init__(self, input_size, hidden_size, player_id_len, shot_type_len, player_id,
-                 distribution='deterministic'):
+                 distribution='deterministic', gmm_num=5, min_sigma=1e-3):
         super(BC, self).__init__()
-        if distribution not in ('deterministic', 'gaussian'):
-            raise ValueError('distribution must be deterministic or gaussian')
+        if distribution not in ('deterministic', 'gaussian', 'gmm'):
+            raise ValueError('distribution must be deterministic, gaussian, or gmm')
 
         self.fc = nn.Linear(input_size, hidden_size)
         self.relu = nn.ReLU()
         self.distribution = distribution
+        self.gmm_num = gmm_num
+        self.min_sigma = min_sigma
         
         self.player_id = player_id
         # Embeddings for categorical features within the state
         self.shot_embedding = nn.Embedding(shot_type_len, 8)
         self.player_embedding = nn.Embedding(player_id_len, 8)
         
-        # Output layers for different components of the action
-        # Deterministic and gaussian both predict mean (mu_x, mu_y)
-        # Gaussian variance is provided by input-agnostic learnable log_std
-        land_output_size = 2
-        move_output_size = 2
+        # Output layers for different components of the action.
+        # deterministic/gaussian predict one point; gmm predicts [pi, mu, sigma] for K components.
+        land_output_size = gmm_num * 5 if distribution == 'gmm' else 2
+        move_output_size = gmm_num * 5 if distribution == 'gmm' else 2
 
-        self.predict_land_area = nn.Linear(hidden_size, land_output_size, bias=(distribution == 'gaussian'))
+        self.predict_land_area = nn.Linear(hidden_size, land_output_size, bias=(distribution != 'deterministic'))
         self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
-        self.predict_move_area = nn.Linear(hidden_size, move_output_size, bias=(distribution == 'gaussian'))
+        self.predict_move_area = nn.Linear(hidden_size, move_output_size, bias=(distribution != 'deterministic'))
 
         if distribution == 'gaussian':
             # Input-agnostic learnable std (diagonal Gaussian for landing/move)
@@ -73,7 +74,8 @@ class BC(nn.Module):
         out = self.fc(embedded)                 # Shape: [batch_size, hidden_size]
         out = self.relu(out)
 
-        # For gaussian mode: outputs are mu only; variance is global learnable log_std
+        # For gaussian mode: outputs are mu only; variance is global learnable log_std.
+        # For gmm mode: outputs are raw mixture params [pi_logits, mu_flat, raw_sigma_flat].
         land_logit = self.predict_land_area(out)    # [batch_size, 2]
         move_logit = self.predict_move_area(out)    # [batch_size, 2]
         shot_logit = self.predict_shot_type(out)    # Shape: [batch_size, shot_type_len]
@@ -192,21 +194,64 @@ def sample_from_gaussian(pred_params, log_sigma_x, log_sigma_y):
     return torch.clamp(sample, -1.0, 1.0)
 
 
+def split_gmm_params(pred_params, gmm_num, min_sigma=1e-3):
+    """
+    Split raw GMM head output into mixture logits, means, and positive stds.
+
+    Layout follows RallyNet's compact format:
+    [pi_logits(K), mu_x/mu_y(K*2), raw_sigma_x/raw_sigma_y(K*2)].
+    """
+    expected_dim = gmm_num * 5
+    if pred_params.shape[1] != expected_dim:
+        raise ValueError(f'GMM prediction must have {expected_dim} channels for {gmm_num} components')
+
+    pi_logits = pred_params[:, :gmm_num]
+    mus = pred_params[:, gmm_num:gmm_num * 3].reshape(-1, gmm_num, 2)
+    raw_sigmas = pred_params[:, gmm_num * 3:gmm_num * 5].reshape(-1, gmm_num, 2)
+    sigmas = F.softplus(raw_sigmas) + min_sigma
+    return pi_logits, mus, sigmas
+
+
+def gmm_nll_loss(pred_params, target, gmm_num, min_sigma=1e-3):
+    """Compute NLL for a diagonal 2D Gaussian mixture."""
+    pi_logits, mus, sigmas = split_gmm_params(pred_params, gmm_num, min_sigma)
+    target = target.unsqueeze(1)
+
+    log_pi = F.log_softmax(pi_logits, dim=-1)
+    log_component_prob = -0.5 * (
+        ((target - mus) / sigmas) ** 2 + 2 * torch.log(sigmas) + np.log(2 * np.pi)
+    ).sum(dim=-1)
+    log_prob = torch.logsumexp(log_pi + log_component_prob, dim=-1)
+    return -log_prob.mean()
+
+
+def sample_from_gmm(pred_params, gmm_num, min_sigma=1e-3):
+    """Sample a 2D point from a diagonal Gaussian mixture."""
+    pi_logits, mus, sigmas = split_gmm_params(pred_params, gmm_num, min_sigma)
+    component = Categorical(logits=pi_logits).sample()
+    gather_index = component.view(-1, 1, 1).expand(-1, 1, 2)
+    selected_mu = mus.gather(1, gather_index).squeeze(1)
+    selected_sigma = sigmas.gather(1, gather_index).squeeze(1)
+    sample = selected_mu + torch.randn_like(selected_mu) * selected_sigma
+    return torch.clamp(sample, -1.0, 1.0)
+
+
 class BC_Agent(BaseAgent):
 
-    def __init__(self, player_name, model_path, player_id, distribution='deterministic', device='cuda'):
+    def __init__(self, player_name, model_path, player_id, distribution='deterministic', device='cuda', gmm_num=5):
         super().__init__(player_name)
         self.distribution = distribution
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = device
         self.model = BC(
-            input_size=18,
+            input_size=32,
             hidden_size=128,
-            player_id_len=39,
+            player_id_len=43,
             shot_type_len=12,
             player_id=player_id,
-            distribution=distribution
+            distribution=distribution,
+            gmm_num=gmm_num
         )
         self.model.load_state_dict(torch.load(model_path, map_location=device))
         self.model.to(device)
@@ -236,7 +281,18 @@ class BC_Agent(BaseAgent):
         output_shot = bc_shot_type.unsqueeze(1).item()
         output_shot_dist = bc_shot_type_probs.tolist()[0]
 
-        if self.distribution == 'gaussian':
+        if self.distribution == 'gmm':
+            output_land = sample_from_gmm(
+                bc_land_pred,
+                self.model.gmm_num,
+                self.model.min_sigma
+            ).tolist()[0]
+            output_move = sample_from_gmm(
+                bc_move_pred,
+                self.model.gmm_num,
+                self.model.min_sigma
+            ).tolist()[0]
+        elif self.distribution == 'gaussian':
             output_land = sample_from_gaussian(
                 bc_land_pred,
                 self.model.land_log_sigma_x,
@@ -300,7 +356,7 @@ def build_action_tensor_from_row(row):
 
 
 def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path, 
-                        model_path, distribution='deterministic', device='cuda', skip_first_n=0):
+                        model_path, distribution='deterministic', device='cuda', skip_first_n=0, gmm_num=5):
     """
     Evaluate BC model on test set using state_col/action_col approach.
     """
@@ -322,7 +378,8 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
         player_id_len=43,
         shot_type_len=12,
         player_id=0,
-        distribution=distribution
+        distribution=distribution,
+        gmm_num=gmm_num
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
@@ -400,24 +457,31 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                     with torch.no_grad():
                         bc_land_params, bc_shot_logit, bc_move_params = model(current_state.unsqueeze(0))
 
-                    bc_land = (
-                        sample_from_gaussian(
+                    if distribution == 'gmm':
+                        bc_land = sample_from_gmm(
+                            bc_land_params,
+                            model.gmm_num,
+                            model.min_sigma
+                        )
+                        bc_move = sample_from_gmm(
+                            bc_move_params,
+                            model.gmm_num,
+                            model.min_sigma
+                        )
+                    elif distribution == 'gaussian':
+                        bc_land = sample_from_gaussian(
                             bc_land_params,
                             model.land_log_sigma_x,
                             model.land_log_sigma_y
                         )
-                        if distribution == 'gaussian'
-                        else bc_land_params
-                    )
-                    bc_move = (
-                        sample_from_gaussian(
+                        bc_move = sample_from_gaussian(
                             bc_move_params,
                             model.move_log_sigma_x,
                             model.move_log_sigma_y
                         )
-                        if distribution == 'gaussian'
-                        else bc_move_params
-                    )
+                    else:
+                        bc_land = bc_land_params
+                        bc_move = bc_move_params
                     
                     if launch:
                         mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
@@ -595,7 +659,8 @@ def train_model(args):
         player_id_len,
         shot_type_len,
         player_id=0,
-        distribution=args.distribution
+        distribution=args.distribution,
+        gmm_num=args.gmm_num
     ).to(device)
 
     class_weights = compute_shot_type_weights(method='uniform').to(device)
@@ -617,7 +682,20 @@ def train_model(args):
             
             land_pred, shot_pred, move_pred = model(state)
 
-            if distribution == 'gaussian':
+            if distribution == 'gmm':
+                loss_land = gmm_nll_loss(
+                    land_pred,
+                    land_gt,
+                    model.gmm_num,
+                    model.min_sigma
+                )
+                loss_move = gmm_nll_loss(
+                    move_pred,
+                    move_gt,
+                    model.gmm_num,
+                    model.min_sigma
+                )
+            elif distribution == 'gaussian':
                 loss_land = gaussian_nll_loss(
                     land_pred,
                     land_gt,
@@ -648,10 +726,12 @@ def train_model(args):
             total_move_loss += loss_move.item()
             total_shot_loss += loss_shot.item()
         
-        if distribution == 'gaussian':
+        if distribution in ('gaussian', 'gmm'):
+            land_name = 'LandGMMNLL' if distribution == 'gmm' else 'LandNLL'
+            move_name = 'MoveGMMNLL' if distribution == 'gmm' else 'MoveNLL'
             print(
-                f"Epoch {epoch}: Total={total_loss:.4f} LandNLL={total_land_loss:.4f} "
-                f"MoveNLL={total_move_loss:.4f} ShotCE={total_shot_loss:.4f}"
+                f"Epoch {epoch}: Total={total_loss:.4f} {land_name}={total_land_loss:.4f} "
+                f"{move_name}={total_move_loss:.4f} ShotCE={total_shot_loss:.4f}"
             )
         else:
             print(
@@ -679,7 +759,8 @@ def eval_model(args):
         args.model_path,
         distribution,
         device,
-        args.skip_first_n
+        args.skip_first_n,
+        args.gmm_num
     )
     
     print_results(results)
@@ -723,8 +804,10 @@ if __name__ == "__main__":
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--eval_output', type=str, default='Experiments/bc/results/bc_eval_results.json',
                         help='Output JSON file for evaluation results')
-    parser.add_argument('--distribution', type=str, choices=['deterministic', 'gaussian'], default='deterministic',
-                        help='Action output mode: deterministic or gaussian (default: deterministic)')
+    parser.add_argument('--distribution', type=str, choices=['deterministic', 'gaussian', 'gmm'], default='deterministic',
+                        help='Action output mode: deterministic, gaussian, or gmm (default: deterministic)')
+    parser.add_argument('--gmm_num', type=int, default=5,
+                        help='Number of GMM components when distribution=gmm (default: 5)')
     parser.add_argument('--skip_first_n', type=int, default=0,
                         help='Number of initial shots to skip in evaluation (default: 0)')
     

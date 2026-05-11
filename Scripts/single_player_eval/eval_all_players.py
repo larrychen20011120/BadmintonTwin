@@ -103,6 +103,8 @@ def build_evaluator_kwargs(args, task_index):
 
     if args.algorithm == 'bc':
         kwargs['distribution'] = args.distribution
+        if args.gmm_num:
+            kwargs['gmm_num'] = args.gmm_num
 
     if args.hyperparameters_path and args.algorithm == 'rallynetv2':
         kwargs['hyperparameters_path'] = args.hyperparameters_path
@@ -236,8 +238,13 @@ def parse_args():
     parser.add_argument(
         '--distribution',
         default='deterministic',
-        choices=['deterministic', 'gaussian'],
+        choices=['deterministic', 'gaussian', 'gmm'],
         help='BC output distribution.'
+    )
+    parser.add_argument(
+        '--gmm-num',
+        type=int,
+        help='Number of GMM components for BC gmm.'
     )
     parser.add_argument(
         '--hyperparameters-path',
