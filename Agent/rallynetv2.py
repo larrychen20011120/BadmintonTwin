@@ -574,7 +574,7 @@ def make_dataset(testing, device, split_ratio=0.8, data_dir="Experiments/rallyne
     total_rallies = xs.shape[1]
     split_index = int(total_rallies * split_ratio)
 
-    return xs, masks, ts, len(player2index), len(set(shot_type_set))
+    return xs, masks_3d, ts, len(player2index), len(set(shot_type_set))
 
 
 def main(
