@@ -515,16 +515,21 @@ class LatentSDE(nn.Module):
         
         return None, dummy_actions, dummy_shot_logits, mlp_actions, shot_probs
 
-def make_dataset(testing, device, split_ratio=0.8):
+def make_dataset(testing, device, split_ratio=0.8, data_dir="Experiments/rallynetv2/data/norm"):
     global SEQ_LEN
 
-    with open("Experiments/rallynetv2/data/norm/train_player_traj.pkl", 'rb') as f:
+    player_traj_path = os.path.join(data_dir, "train_player_traj.pkl")
+    opponent_traj_path = os.path.join(data_dir, "train_opponent_traj.pkl")
+    player_mask_path = os.path.join(data_dir, "train_player_mask.pkl")
+    opponent_mask_path = os.path.join(data_dir, "train_opponent_mask.pkl")
+
+    with open(player_traj_path, 'rb') as f:
         player_data = pickle.load(f)
-    with open("Experiments/rallynetv2/data/norm/train_opponent_traj.pkl", 'rb') as f:
+    with open(opponent_traj_path, 'rb') as f:
         opponent_data = pickle.load(f)
-    with open("Experiments/rallynetv2/data/norm/train_player_mask.pkl", 'rb') as f:
+    with open(player_mask_path, 'rb') as f:
         player_masks = pickle.load(f)
-    with open("Experiments/rallynetv2/data/norm/train_opponent_mask.pkl", 'rb') as f:
+    with open(opponent_mask_path, 'rb') as f:
         opponent_masks = pickle.load(f)
 
     merged_data = []
@@ -551,8 +556,8 @@ def make_dataset(testing, device, split_ratio=0.8):
             merged_masks.append(merged_mask_rally)
 
     max_length = max(len(rally) for rally in merged_data)
-    xs = pad_and_convert_to_tensor(merged_data, max_length).cuda(0)
-    masks = pad_and_convert_to_tensor(merged_masks, max_length).cuda(0)
+    xs = pad_and_convert_to_tensor(merged_data, max_length).to(device)
+    masks = pad_and_convert_to_tensor(merged_masks, max_length).to(device)
     ts = torch.linspace(0, xs.shape[0], steps=xs.shape[0], device=device)
 
     SEQ_LEN = xs.shape[0]
@@ -593,12 +598,19 @@ def main(
         load_step = 0,
         split_ratio = 0.8,
         gmm_num=5,
-        min_sigma=1e-3
+        min_sigma=1e-3,
+        data_dir="Experiments/rallynetv2/data/norm",
+        hyperparameters_output="Experiments/rallynetv2/hyperparameters.pkl"
 ):
     create_folder_if_not_exists(train_dir)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    xs, masks, ts, player_ids_len, shot_type_len = make_dataset(False, device=device, split_ratio=split_ratio)
+    xs, masks, ts, player_ids_len, shot_type_len = make_dataset(
+        False,
+        device=device,
+        split_ratio=split_ratio,
+        data_dir=data_dir,
+    )
 
     latent_sde = LatentSDE(
         data_size = 37, # 16 + 8 + 8 + (5)
@@ -624,11 +636,14 @@ def main(
         "xs": xs,
         # "target_players": target_players,
     }
-    with open('hyperparameters.pkl', 'wb') as f:
+    hyperparameters_dir = os.path.dirname(hyperparameters_output)
+    if hyperparameters_dir:
+        os.makedirs(hyperparameters_dir, exist_ok=True)
+    with open(hyperparameters_output, 'wb') as f:
         pickle.dump(hyperparameters, f)
 
     if load == True:
-        latent_sde.load_state_dict(torch.load(train_dir+"gen_e_"+str(load_step) +".trc", map_location = device))
+        latent_sde.load_state_dict(torch.load(os.path.join(train_dir, "gen_e_" + str(load_step) + ".trc"), map_location = device))
 
     optimizer = optim.Adam(params=latent_sde.parameters(), lr=lr_init)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_gamma)
@@ -636,7 +651,7 @@ def main(
 
     index = 0
 
-    torch.save(latent_sde.state_dict(), train_dir+'gen_e_0.trc')
+    torch.save(latent_sde.state_dict(), os.path.join(train_dir, 'gen_e_0.trc'))
 
     for global_step in tqdm(range(1, num_iters + 1)):
         latent_sde.zero_grad()
@@ -665,9 +680,9 @@ def main(
 
         if (global_step % pause_every == 0) or global_step == 1:
             if load == True:
-                torch.save(latent_sde.state_dict(), train_dir+'gen_e_{}.trc'.format(str(load_step + global_step)))
+                torch.save(latent_sde.state_dict(), os.path.join(train_dir, 'gen_e_{}.trc'.format(str(load_step + global_step))))
             else:
-                torch.save(latent_sde.state_dict(), train_dir+'gen_e_{}.trc'.format(str(global_step)))
+                torch.save(latent_sde.state_dict(), os.path.join(train_dir, 'gen_e_{}.trc'.format(str(global_step))))
             
             logging.warning(
                 f'Step: {global_step:06d} | '
