@@ -6,15 +6,15 @@
 
 - `Agent/naive_rag.py` - NaiveRAG Agent 實現
 - `Agent/eval_naive_rag.py` - 評估腳本
-- `Experiments/naive_rag/data/` - 訓練資料庫（由 `baseline_prepare.py` 生成）
+- `Experiments/naive_rag/data/` - 訓練資料庫（由統一資料準備入口生成）
 - `Experiments/naive_rag/results/` - 評估結果輸出目錄
 
 ## 準備工作
 
-首先，確保已經運行了 `baseline_prepare.py` 來生成 NaiveRAG 資料庫：
+首先，使用統一資料準備入口生成 NaiveRAG 資料庫：
 
 ```bash
-python Preprocessing/baseline_prepare.py --naive-rag
+python Scripts/prepare_all_data.py --naive-rag
 ```
 
 這會在 `Experiments/naive_rag/data/` 目錄下生成每個選手的資料庫檔案（`*_db.pkl`）。

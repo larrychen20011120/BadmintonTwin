@@ -23,9 +23,8 @@ class TimeRAGEvaluator(BaseEvaluator):
     """TimeRAG 單一選手評估器"""
 
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
-                 train_split_path=None, top_k=5, window_size=3, enable_tracing=True,
-
-                 teacher_forcing=False, save_trajectories=False,
+                 train_split_path=None, top_k=None, window_size=None, enable_tracing=True,
+                 save_trajectories=False,
                  style_shift_instruction_mode='auto', verbose_style_shift=False,
                  output_experiment=None):
         """
@@ -38,10 +37,8 @@ class TimeRAGEvaluator(BaseEvaluator):
             top_k: RAG 檢索數量
             window_size: 時間窗口大小
             enable_tracing: 是否啟用 Langfuse 追蹤
-            teacher_forcing: 是否使用 teacher forcing 模式
         """
         super().__init__(player_name, experiment, device, skip_first_n,
-                         teacher_forcing=teacher_forcing,
                          save_trajectories=save_trajectories,
                          style_shift_instruction_mode=style_shift_instruction_mode,
                          verbose_style_shift=verbose_style_shift,
@@ -52,8 +49,13 @@ class TimeRAGEvaluator(BaseEvaluator):
         else:
             self.train_split_path = train_split_path
 
-        self.top_k = top_k
-        self.window_size = window_size
+        timerag_config = self.config.get('timerag', {})
+        retrieval_config = self.config.get('retrieval', {})
+        self.retrieval_mode = retrieval_config.get('mode', 'classic')
+        self.top_k = top_k if top_k is not None else retrieval_config.get('classic_top_k', retrieval_config.get('top_k', timerag_config.get('top_k', 5)))
+        self.normal_top_k = retrieval_config.get('normal_top_k', self.top_k)
+        self.miss_top_k = retrieval_config.get('miss_top_k', max(1, min(5, self.top_k)))
+        self.window_size = window_size if window_size is not None else timerag_config.get('window_size', 3)
         self.enable_tracing = enable_tracing
         self.database_dir = self.config['paths']['timerag']['data'][experiment]
 
@@ -72,6 +74,20 @@ class TimeRAGEvaluator(BaseEvaluator):
         self.agents = {}
         self.agent = self._get_agent(self.player_name)
 
+        self.print_runtime_parameters(
+            "timerag",
+            top_k=self.top_k,
+            normal_top_k=self.normal_top_k,
+            miss_top_k=self.miss_top_k,
+            retrieval_mode=self.retrieval_mode,
+            window_size=self.window_size,
+            include_llm=True,
+            extra_rows=[
+                ("database_dir", self.database_dir),
+                ("prompt_variant", self.prompt_variant),
+            ],
+        )
+
     def _create_agent(self, player_name, player_id):
         """建立 TimeRAG Agent"""
         db_path = self._database_path(player_name)
@@ -84,13 +100,18 @@ class TimeRAGEvaluator(BaseEvaluator):
         agent = TimeRAGAgent(
             player_name=player_name,
             database=database,
-            model_name=timerag_config.get('model_name', 'Qwen/Qwen2.5-7B-Instruct'),
-            api_key=timerag_config.get('api_key', 'EMPTY'),
-            port=timerag_config.get('port', 16000),
+            model_name=timerag_config.get('model_name'),
+            api_key=timerag_config.get('api_key'),
+            host=timerag_config.get('host'),
+            port=timerag_config.get('port'),
             base_url=timerag_config.get('base_url'),
+            host_url=timerag_config.get('host_url'),
             top_k=self.top_k,
+            normal_top_k=self.normal_top_k,
+            miss_top_k=self.miss_top_k,
+            retrieval_mode=self.retrieval_mode,
             enable_tracing=self.enable_tracing,
-            prompt_variant='shifted' if self.experiment == 'shifted' else 'norm',
+            prompt_variant=self.prompt_variant,
         )
         print(f"[TimeRAG] Agent created for {player_name}")
 
@@ -132,11 +153,43 @@ class TimeRAGEvaluator(BaseEvaluator):
             'action': [None]
         }
 
+    def _build_history_stroke(self, state_for_pred, player_name, action):
+        """Build a completed stroke record for TimeRAG's full-rally history."""
+        output_shot, _, output_land, output_move, _ = action
+        return {
+            'player': player_name,
+            'rally': int(state_for_pred[0].item()),
+            'ball_round': int(state_for_pred[1].item()),
+            'player_score': int(state_for_pred[2].item()),
+            'opponent_score': int(state_for_pred[3].item()),
+            'score_status': int(state_for_pred[4].item()),
+            'player_location_x': float(state_for_pred[5].item()),
+            'player_location_y': float(state_for_pred[6].item()),
+            'ball_distance': float(state_for_pred[7].item()),
+            'ball_distance_x': float(state_for_pred[8].item()),
+            'ball_distance_y': float(state_for_pred[9].item()),
+            'hit_x': float(state_for_pred[10].item()),
+            'hit_y': float(state_for_pred[11].item()),
+            'opponent_type': int(state_for_pred[12].item()),
+            'opponent_location_x': float(state_for_pred[13].item()),
+            'opponent_location_y': float(state_for_pred[14].item()),
+            'opponent_move_x': float(state_for_pred[15].item()),
+            'opponent_move_y': float(state_for_pred[16].item()),
+            'landing_x': float(output_land[0]),
+            'landing_y': float(output_land[1]),
+            'player_type': int(output_shot),
+            'moving_x': float(output_move[0]),
+            'moving_y': float(output_move[1]),
+        }
+
     def simulate(self):
         """執行 TimeRAG 模擬，收集trajectory"""
         device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
 
         test_match_ids = self.get_player_test_matches()
+        target_max_len = self.get_player_max_sequence_length(self.player_name)
+        if target_max_len == 0:
+            return []
 
         rally_trajectories = []
 
@@ -176,6 +229,7 @@ class TimeRAGEvaluator(BaseEvaluator):
                 
                 # 收集預測（雙方玩家）
                 rally_pred_full_seq = []
+                rally_history = []
 
                 target_player_won = None
 
@@ -188,35 +242,28 @@ class TimeRAGEvaluator(BaseEvaluator):
                 state_values[-1] = current_player_id
                 current_state = torch.tensor(state_values, dtype=torch.float32)
 
-                info = self._build_info(first_row)
-
                 simulation_ended_early = False
+                target_pred_count = 0
+                last_action = None
 
-                for shot_idx in range(len(rally_df)):
-                    row = rally_df.iloc[shot_idx]
-                    ground_truth_player = row['player']
-                    is_target_turn = (ground_truth_player == self.player_name)
-
+                while target_pred_count < target_max_len:
+                    current_player_id = int(current_state[17].item())
+                    is_target_turn = current_player_id == self.player_id
+                    current_player_name = self.player_name if is_target_turn else opponent_name
                     current_player_id = self.player_id if is_target_turn else opponent_player_id
-
-                    if self.teacher_forcing:
-                        tf_values = [row[col] for col in state_col]
-                        tf_values[-1] = current_player_id
-                        state_for_pred = torch.tensor(tf_values, dtype=torch.float32)
-                    else:
-                        current_state[17] = current_player_id
-                        state_for_pred = current_state
-
-                    info['match_id'] = row['match_id']
-                    info['rally'] = row['rally']
-                    info['round'] = [row['ball_round']]
-                    info['score'] = [row['player_score'], row['opponent_score']]
+                    current_state[17] = current_player_id
+                    state_for_pred = current_state
+                    info = self.build_rollout_info(match_id, rally_num, state_for_pred, last_action)
+                    ball_round = int(state_for_pred[1].item())
 
                     launch = (state_for_pred[1].item() == 1)
 
                     env_state = self._state_to_env_format(state_for_pred)
                     current_agent = self.agent if is_target_turn else opponent_agent
-                    self.attach_style_shift_instruction(info, ground_truth_player, row)
+                    info['current_player_name'] = current_player_name
+                    info['opponent_player_name'] = opponent_name if is_target_turn else self.player_name
+                    info['rally_history'] = list(rally_history)
+                    self.attach_style_shift_instruction_for_rollout(info, current_player_name, match_id, rally_num)
                     action, reason = current_agent.predict(env_state, info, launch)
 
                     if action is None:
@@ -232,10 +279,10 @@ class TimeRAGEvaluator(BaseEvaluator):
                     land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]
                     move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
                     rally_pred_full_seq.append(build_pred_shot(
-                        ground_truth_player, int(output_shot), land_2d, move_2d, int(row['ball_round'])))
-
-                    if self.teacher_forcing:
-                        continue
+                        current_player_name, int(output_shot), land_2d, move_2d, ball_round))
+                    rally_history.append(self._build_history_stroke(state_for_pred, current_player_name, action))
+                    if is_target_turn:
+                        target_pred_count += 1
 
                     action_tensor = torch.tensor([
                         land_logit[0, 0].item(), land_logit[0, 1].item(),
@@ -251,7 +298,7 @@ class TimeRAGEvaluator(BaseEvaluator):
                         break
 
                     current_state = next_state
-                    info['action'] = [action]
+                    last_action = action
 
                 # Save rally trajectory (包含雙方玩家，GT完整長度)
                 if self.save_trajectories:

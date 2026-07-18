@@ -1,24 +1,15 @@
 {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "StyleShiftExplanation",
-    "type": "object",
-    "required": [
-      "dimension_level_shifts",
-      "overall_style_shift_summary"
-    ],
-    "properties": {
-      "dimension_level_shifts": {
-        "type": "object",
-        "required": ["physical_summary", "tactical_summary", "spatial_summary"],
-        "properties": {
-          "physical_summary": { "type": "string" },
-          "tactical_summary": { "type": "string" },
-          "spatial_summary": { "type": "string" }
-        }
-      },
-      "overall_style_shift_summary": {
-        "type": "string"
-      }
-    },
-    "additionalProperties": false
-}  
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "StyleShiftDescription",
+  "type": "object",
+  "required": [
+    "style_shift_description"
+  ],
+  "properties": {
+    "style_shift_description": {
+      "type": "string",
+      "description": "A concise English description of how the player differed from their usual style, limited to feature-level differences, direction, and difference strength. Do not infer causes, intent, mentality, strategy, fatigue, injury, confidence, physical condition, or execution problems. Do not mention statistics, IQR, thresholds, scores, feature names, profiles, baselines, exact values, numerical descriptions, supporting signals, or match results."
+    }
+  },
+  "additionalProperties": false
+}

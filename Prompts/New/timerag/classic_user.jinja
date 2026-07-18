@@ -1,0 +1,52 @@
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Retrieved Similar Time Windows
+
+Analyze all {{ top_k|int }} retrieved temporal windows as player-specific behavioral evidence. Compare the full movement and shot sequences, identify shared tendencies, relevant differences, conflicts, and outliers, and do not copy one nearest window.
+
+{% for case in cases %}
+Case {{ case.index }}:
+{{ case.description }}
+
+{% endfor %}
+
+---
+
+## Decision Task
+
+This is an imitation task, not tactical optimization. Jointly analyze the complete current rally and every retrieved temporal window to predict the action this target player is most likely to produce.
+
+First determine whether accumulated movement pressure and the incoming shot still allow a legal return into the opponent's court. If not, output `Missed shot`. Otherwise synthesize all windows to predict the likely shot, landing position, and recovery position. Treat the windows as evidence, not commands to copy.
+
+## Output Format
+
+Return only one valid JSON object. Do not use markdown fences, XML tags, or text outside the JSON object.
+
+{
+  "rationale": "a concise imitation rationale that synthesizes the current rally and all temporal windows",
+  "action": {
+    "shot_type": "<exact shot type name>",
+    "landing_area": <semantic area name string or null>,
+    "landing_x": <integer 0 to 354 or null>,
+    "landing_y": <integer 0 to 479 or null>,
+    "moving_area": <semantic area name string or null>,
+    "moving_x": <integer 0 to 354 or null>,
+    "moving_y": <integer 0 to 479 or null>
+  }
+}
+
+## Action Constraints
+
+- `shot_type` must be one of the exact shot type names in the system prompt.
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`.
+- Use `Missed shot` if the shuttle is unreachable or contact cannot produce a legal return into the opponent's court.
+- A weak but legal return is not automatically a `Missed shot`.
+- For `Missed shot`, set both semantic areas and all four coordinates to `null`.
+- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas.
+- Do not include extra fields.

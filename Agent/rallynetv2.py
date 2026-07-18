@@ -20,6 +20,7 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Utils.helper import *
+from Utils.runtime_report import print_runtime_box
 
 
 os.environ['CUDA_LAUNCH_BLOCKING']='1'
@@ -602,6 +603,31 @@ def main(
         data_dir="Experiments/rallynetv2/data/norm",
         hyperparameters_output="Experiments/rallynetv2/hyperparameters.pkl"
 ):
+    print_runtime_box(
+        "Runtime Parameters: Agent/rallynetv2.py",
+        [
+            ("batch_size", batch_size),
+            ("latent_size", latent_size),
+            ("context_size", context_size),
+            ("hidden_size", hidden_size),
+            ("lr_init", lr_init),
+            ("lr_gamma", lr_gamma),
+            ("num_iters", num_iters),
+            ("kl_anneal_iters", kl_anneal_iters),
+            ("pause_every", pause_every),
+            ("noise_std", noise_std),
+            ("adjoint", adjoint),
+            ("train_dir", train_dir),
+            ("method", method),
+            ("load", load),
+            ("load_step", load_step),
+            ("split_ratio", split_ratio),
+            ("gmm_num", gmm_num),
+            ("min_sigma", min_sigma),
+            ("data_dir", data_dir),
+            ("hyperparameters_output", hyperparameters_output),
+        ],
+    )
     create_folder_if_not_exists(train_dir)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 

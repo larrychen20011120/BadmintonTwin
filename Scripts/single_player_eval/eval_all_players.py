@@ -4,6 +4,18 @@ Run single-player evaluators over every player in the test split.
 
 Each player trajectory is saved with a per-player generation index, so rerunning
 the same player produces Player_norm_gen002.pkl, Player_norm_gen003.pkl, etc.
+
+Examples:
+    python Scripts/single_player_eval/eval_all_players.py \
+        --algorithm pure_llm \
+        --experiment norm \
+        --workers 1
+
+    python Scripts/single_player_eval/eval_all_players.py \
+        --algorithm pure_llm \
+        --experiment shifted \
+        --style-shift-instruction auto \
+        --workers 1
 """
 
 import argparse
@@ -20,6 +32,13 @@ import traceback
 PROJECT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if PROJECT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_PATH)
+
+
+RAG_ALGORITHMS = ('naive_rag', 'timerag', 'twin')
+LLM_ALGORITHMS = ('pure_llm', 'naive_rag', 'timerag', 'twin')
+
+from Utils.llm import LLM
+from Utils.runtime_report import algorithm_runtime_rows, llm_rows, print_runtime_box
 
 
 def load_config():
@@ -95,14 +114,14 @@ def build_evaluator_kwargs(args, task_index):
     """Build kwargs accepted by the selected evaluator."""
     kwargs = {
         'save_trajectories': True,
-        'teacher_forcing': args.teacher_forcing,
     }
 
-    if args.model_path and args.algorithm in ('bc', 'rallynetv2'):
+    if args.model_path and args.algorithm in ('bc', 'rallynetv2', 'shuttlenet'):
         kwargs['model_path'] = args.model_path
 
     if args.algorithm == 'bc':
-        kwargs['distribution'] = args.distribution
+        if args.distribution:
+            kwargs['distribution'] = args.distribution
         if args.gmm_num:
             kwargs['gmm_num'] = args.gmm_num
 
@@ -112,8 +131,10 @@ def build_evaluator_kwargs(args, task_index):
     if args.algorithm == 'random' and args.seed is not None:
         kwargs['seed'] = args.seed + task_index - 1
 
-    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
+    if args.algorithm in RAG_ALGORITHMS:
         kwargs['top_k'] = args.top_k
+
+    if args.algorithm in LLM_ALGORITHMS:
         kwargs['enable_tracing'] = args.enable_tracing
         kwargs['style_shift_instruction_mode'] = args.style_shift_instruction
         kwargs['verbose_style_shift'] = args.verbose_style_shift
@@ -123,7 +144,7 @@ def build_evaluator_kwargs(args, task_index):
         kwargs['window_size'] = args.window_size
 
     if args.algorithm == 'twin':
-        kwargs['max_scale'] = args.max_scale
+        kwargs['lambda_weight'] = args.lambda_weight
 
     return kwargs
 
@@ -178,7 +199,7 @@ def parse_args():
     parser.add_argument(
         '--algorithm',
         required=True,
-        choices=['bc', 'rallynetv2', 'naive_rag', 'timerag', 'twin', 'random'],
+        choices=['bc', 'rallynetv2', 'naive_rag', 'pure_llm', 'timerag', 'twin', 'random', 'shuttlenet'],
         help='Evaluator algorithm to run.'
     )
     parser.add_argument(
@@ -195,15 +216,15 @@ def parse_args():
     )
     parser.add_argument(
         '--device',
-        default='cuda',
+        default=None,
         choices=['cuda', 'cpu'],
-        help='Device passed to each evaluator.'
+        help='Device passed to each evaluator. Defaults to config evaluation.device.'
     )
     parser.add_argument(
         '--skip-first-n',
         type=int,
-        default=0,
-        help='Passed through to the evaluator.'
+        default=None,
+        help='Passed through to the evaluator. Defaults to config.'
     )
     parser.add_argument(
         '--output-dir',
@@ -226,20 +247,14 @@ def parse_args():
         help='Multiprocessing start method used when workers > 1.'
     )
     parser.add_argument(
-        '--teacher-forcing',
-        action='store_true',
-        help='Use ground-truth states for prediction.'
-    )
-
-    parser.add_argument(
         '--model-path',
-        help='Custom model path for bc/rallynetv2.'
+        help='Custom model path for bc/rallynetv2/shuttlenet.'
     )
     parser.add_argument(
         '--distribution',
-        default='deterministic',
+        default=None,
         choices=['deterministic', 'gaussian', 'gmm'],
-        help='BC output distribution.'
+        help='BC output distribution. Defaults to config bc_training.distribution.'
     )
     parser.add_argument(
         '--gmm-num',
@@ -258,20 +273,26 @@ def parse_args():
     parser.add_argument(
         '--top-k',
         type=int,
-        default=5,
-        help='RAG retrieval top-k for naive_rag/timerag/twin.'
+        default=None,
+        help='Classic RAG retrieval top-k for naive_rag/timerag/twin. Ignored by pure_llm. Defaults to config retrieval.classic_top_k.'
     )
     parser.add_argument(
         '--window-size',
         type=int,
-        default=3,
-        help='TimeRAG window size.'
+        default=None,
+        help='TimeRAG window size. Defaults to config timerag.window_size.'
     )
     parser.add_argument(
         '--max-scale',
         type=int,
-        default=10,
-        help='Twin I-MSDP max suffix length.'
+        default=None,
+        help='Deprecated; Twin now uses --lambda-weight.'
+    )
+    parser.add_argument(
+        '--lambda-weight',
+        type=float,
+        default=None,
+        help='Twin numeric/semantic retrieval mixing weight. Defaults to config twin.lambda_weight.'
     )
     parser.add_argument(
         '--enable-tracing',
@@ -282,7 +303,9 @@ def parse_args():
         '--style-shift-instruction',
         default='auto',
         choices=['auto', 'off'],
-        help='Style-shift instruction injection mode for naive_rag/timerag/twin.'
+        help=('Style-shift instruction mode for pure_llm/naive_rag/timerag/twin: '
+              'auto uses the shifted prompt and injects instructions; '
+              'off uses the normal prompt without instructions.')
     )
     parser.add_argument(
         '--verbose-style-shift',
@@ -297,6 +320,50 @@ def main():
     args = parse_args()
     if args.workers < 1:
         raise ValueError('--workers must be >= 1')
+
+    config = load_config()
+    eval_config = config.get('evaluation', {})
+    algorithm_config = config.get(args.algorithm, {})
+    retrieval_config = config.get('retrieval', {})
+    args.device = args.device or eval_config.get('device', 'cuda')
+    args.skip_first_n = (
+        args.skip_first_n
+        if args.skip_first_n is not None
+        else algorithm_config.get('skip_first_n', eval_config.get('skip_first_n', 0))
+    )
+    if args.algorithm == 'bc':
+        args.distribution = args.distribution or config.get('bc_training', {}).get('distribution')
+    if args.algorithm in RAG_ALGORITHMS:
+        args.top_k = args.top_k if args.top_k is not None else retrieval_config.get('classic_top_k', retrieval_config.get('top_k', algorithm_config.get('top_k')))
+    elif args.top_k is not None:
+        print(f"Warning: --top-k is ignored for algorithm '{args.algorithm}'")
+    if args.algorithm == 'timerag':
+        args.window_size = args.window_size if args.window_size is not None else algorithm_config.get('window_size')
+    if args.algorithm == 'twin':
+        if args.max_scale is not None:
+            print("Warning: --max-scale is deprecated and ignored for Twin; use --lambda-weight.")
+        args.lambda_weight = args.lambda_weight if args.lambda_weight is not None else algorithm_config.get('lambda_weight')
+
+    rows = algorithm_runtime_rows(
+        config,
+        args.algorithm,
+        experiment=args.experiment,
+        device=args.device,
+        skip_first_n=args.skip_first_n,
+        top_k=args.top_k,
+        retrieval_mode=retrieval_config.get('mode'),
+        normal_top_k=retrieval_config.get('normal_top_k'),
+        miss_top_k=retrieval_config.get('miss_top_k'),
+        window_size=args.window_size,
+        lambda_weight=args.lambda_weight,
+    ) + [
+        ("workers", args.workers),
+        ("limit", args.limit),
+        ("style_shift_instruction", args.style_shift_instruction),
+    ]
+    if args.algorithm in LLM_ALGORITHMS:
+        rows.extend(llm_rows(LLM.resolve_effective_settings()))
+    print_runtime_box(f"Runtime Parameters: eval_all_players/{args.algorithm}", rows)
 
     players = load_test_players(args.experiment)
     if args.players:

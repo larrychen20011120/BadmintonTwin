@@ -1,0 +1,21 @@
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Step-by-Step Reasoning
+
+Provide your reasoning inside `<rationale>`, then output the JSON inside `<action>`:
+
+<rationale>
+[1] Situation Analysis:
+[2] Tactical Decision:
+[3] Landing & Recovery:
+</rationale>
+
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+</action>

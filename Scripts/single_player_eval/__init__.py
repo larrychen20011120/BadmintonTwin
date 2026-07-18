@@ -2,7 +2,7 @@
 Single Player Evaluation Module
 
 這個模組提供針對單一選手的快速評估功能，
-支援多種演算法：bc, rallynet, rallynetv2, naive_rag, random, timerag, twin
+支援多種演算法：bc, rallynet, rallynetv2, naive_rag, pure_llm, random, timerag, twin, twin2
 
 主要功能：
 1. 模擬與Trajectory收集: eval_single_player.py, evaluators/
@@ -42,9 +42,9 @@ except ImportError as e:
 try:
     from .evaluators.base_evaluator import BaseEvaluator
     from .evaluators.bc_evaluator import BCEvaluator
-    from .evaluators.rallynet_evaluator import RallyNetEvaluator
     from .evaluators.rallynetv2_evaluator import RallyNetV2Evaluator
     from .evaluators.naive_rag_evaluator import NaiveRAGEvaluator
+    from .evaluators.pure_llm_evaluator import PureLLMEvaluator
     from .evaluators.random_evaluator import RandomEvaluator
     from .evaluators.timerag_evaluator import TimeRAGEvaluator
     from .evaluators.twin_evaluator import TwinEvaluator
@@ -73,7 +73,9 @@ if _evaluators_available:
         'RallyNetEvaluator',
         'RallyNetV2Evaluator',
         'NaiveRAGEvaluator',
+        'PureLLMEvaluator',
         'RandomEvaluator',
         'TimeRAGEvaluator',
         'TwinEvaluator',
+        'Twin2Evaluator',
     ])

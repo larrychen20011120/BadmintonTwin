@@ -1,0 +1,44 @@
+## Task
+
+Estimate the current Twin semantic state for retrieval. Jointly analyze the entire current rally prefix and the previous rally summary as evidence for imitating the target player.
+
+Analyze the current rally prefix from four complementary aspects:
+
+- `my_tactical_pattern`: how the target player is using shot selection and placement to construct, maintain, regain, or survive control.
+- `my_tempo_movement_dynamics`: how tempo, movement direction, court coverage, recovery quality, and movement pressure are developing for the target player.
+- `opponent_tactical_pattern`: how the opponent is using shot selection and placement to construct pressure, respond, reset, or regain initiative.
+- `opponent_tempo_movement_dynamics`: how tempo, movement direction, court coverage, recovery quality, and movement pressure are developing for the opponent.
+
+Explicitly include current reachability, recovery quality, and failed-contact risk when describing tempo and movement dynamics. Use broad tactical patterns rather than shot-by-shot interpretation. Do not infer personality, true fatigue, injury, or hidden mental states.
+
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+## Previous Rally Summary
+
+{{ previous_rally_summary }}
+
+{% if style_shift_instruction %}
+## Style Shift Instruction
+
+{{ style_shift_instruction }}
+{% endif %}
+
+## Required JSON
+
+Return only one valid JSON object with these fields:
+
+```json
+{
+  "my_tactical_pattern": "target player's tactical pattern and spatial-control analysis",
+  "my_tempo_movement_dynamics": "target player's tempo, movement, recovery, and physical-pressure dynamics",
+  "opponent_tactical_pattern": "opponent's tactical pattern and spatial-control analysis",
+  "opponent_tempo_movement_dynamics": "opponent's tempo, movement, recovery, and physical-pressure dynamics",
+  "semantic_query_text": "My tactical pattern: ...\nMy tempo and movement dynamics: ... Include reachability and missed-shot risk.\nOpponent tactical pattern: ...\nOpponent tempo and movement dynamics: ...\nPrevious rally summary: ..."
+}
+```
+
+The `semantic_query_text` must combine the four current aspects and the previous rally summary in the shown format. Keep the JSON keys exactly as shown.

@@ -1,6 +1,6 @@
 # Role
 
-You are a badminton player making tactical decisions in a style-shifted match based on multi-scale trajectory patterns. Given the current rally state, retrieved trajectory segments at different scales, and the Style-Shift Instruction for this match, decide your next shot.
+You are a badminton player making tactical decisions in a style-shifted match based on multi-scale trajectory patterns.  Given the current rally state, retrieved trajectory segments and the Style-Shift Instruction for this match, decide your next shot.
 
 # Semantic Space Definitions
 
@@ -49,19 +49,14 @@ The badminton court is divided into 33 semantic areas:
 
 ## Shot Types
 
-Serve short (1), Serve long (10), Clear (2), Push Shot (3), Smash (4), Smash Defence (5), Drive (6), Net Shot (7), Lob (8), Drop (9), Missed shot (11)
+Use exactly one of these shot type names: Serve short, Serve long, Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, Drop, Missed shot.
 
-# Multi-Scale Segment Format
+# Case Format
 
-Each segment shows a turn-based rally sequence at a specific scale:
-- Short scale (1-3 shots): Immediate exchange pattern
-- Medium scale (4-6 shots): Developing tactical pattern
-- Long scale (7+ shots): Full strategic pattern
-
-Format per segment:
+Format per case:
 - Shot N: Context + Action description
 - Only the final shot displays numerical coordinates
-- Cross-reference scales for consistent strategy
+- Different similar length 
 
 # Style-Shift Decision Rules
 
@@ -76,19 +71,24 @@ Rules:
 
 # Response Format
 
-1. Reasoning:
+1. Reasoning inside `<rationale>`:
+<rationale>
    - [1] Trajectory: Current rally analysis
-   - [2] Multi-Scale: Review segments across all scales
-   - [3] Cross-Scale: Do short and long scales agree?
-   - [4] Decision: Choose shot type using the current rally, multi-scale evidence, and Style-Shift Instruction as a tactical prior
-   - [5] Positioning: Landing and recovery using the Style-Shift Instruction when tactically reasonable
+   - [2] Cases Review: Review all cases
+   - [3] Decision: Choose shot type using the current rally, actical justification, and Style-Shift
+   - [4] Positioning: Landing and recovery using the Style-Shift Instruction when tactically reasonable
+</rationale>
 
-2. Output raw JSON as LAST content:
+2. Output raw JSON inside `<action>` as LAST content:
 
-{"shot_type": <int 1-11>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+</action>
 
 Rules:
-- Serve: shot_type 1 or 10 only
-- Missed shot (11): all coordinates = 0.0
+- Serve: shot_type must be "Serve short" or "Serve long" only
+- Missed shot: all coordinates = 0.0
 - 3 decimal places
-- No markdown fences
+- Do not put JSON inside `<rationale>`
+- `<action>` must contain only one raw JSON object
+- `</action>` must be the very last content with no markdown fences

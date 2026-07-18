@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import time
 import pickle
 import numpy as np
@@ -12,11 +11,382 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Agent.base_agent import BaseAgent
-from Agent.naive_rag_verbalizer import NaiveRAGVerbalizer, create_naive_rag_verbalizer
 from Utils.llm import LLM
 from Utils.helper import state_col, action_col, coord2area
 from Utils.badminton_config import LANG_AREA_MAPPING, INDEX2EN_SHOT
 from Utils.langfuse_tracing import BadmintonTracer
+
+
+class NaiveRAGVerbalizer:
+    """Verbalizer for NaiveRAG with natural turn-based format."""
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def _get_area_name(x, y):
+        if x is None or y is None or pd.isna(x) or pd.isna(y):
+            return "Unknown"
+        area_id = coord2area(float(x), float(y))
+        return LANG_AREA_MAPPING.get(area_id, f"Unknown({area_id})")
+
+    @staticmethod
+    def _shot_name(shot_type):
+        return INDEX2EN_SHOT.get(int(shot_type), f"Unknown({shot_type})")
+
+    @staticmethod
+    def _build_context_header(state_dict):
+        """Build score/context header from a state snapshot."""
+        ps = int(state_dict.get('player_score', 0))
+        os = int(state_dict.get('opponent_score', 0))
+        rally = int(state_dict.get('rally', 0))
+        br = int(state_dict.get('ball_round', 1))
+
+        score_diff = ps - os
+        if score_diff > 0:
+            score_text = f"I lead by {score_diff} points."
+        elif score_diff < 0:
+            score_text = f"I trail by {abs(score_diff)} points."
+        else:
+            score_text = "The score is tied."
+
+        shots_played = max(br - 1, 0)
+        if shots_played == 0:
+            context_text = "This is the first shot of the rally."
+        else:
+            context_text = f"{shots_played} shots have been played in this rally."
+
+        return [
+            f"Current score: {ps}-{os}. {score_text}",
+            f"Match Context: Rally {rally}, currently at Shot {br}. {context_text}"
+        ]
+
+    def build_case_verbalization(self, exp):
+        """Build the rank-independent text stored with one database row."""
+        pt = int(exp.get('player_type', 0))
+        pn = self._shot_name(pt)
+        px, py = exp.get('player_location_x', 0), exp.get('player_location_y', 0)
+        hx, hy = exp.get('hit_x', 0), exp.get('hit_y', 0)
+        lx, ly = exp.get('landing_x', 0), exp.get('landing_y', 0)
+        mx, my = exp.get('moving_x', 0), exp.get('moving_y', 0)
+        ox, oy = exp.get('opponent_location_x', 0), exp.get('opponent_location_y', 0)
+        ps = int(exp.get('player_score', 0))
+        os = int(exp.get('opponent_score', 0))
+        rally = int(exp.get('rally', 0))
+        ball_round = int(exp.get('ball_round', 1))
+        ot = int(exp.get('opponent_type', 0))
+        on = self._shot_name(ot)
+
+        player_area = self._get_area_name(px, py)
+        hit_area = self._get_area_name(hx, hy)
+        land_area = self._get_area_name(lx, ly)
+        move_area = self._get_area_name(mx, my)
+        opp_area = self._get_area_name(ox, oy)
+
+        score_diff = ps - os
+        if score_diff > 0:
+            score_text = f"I lead by {score_diff} points."
+        elif score_diff < 0:
+            score_text = f"I trail by {abs(score_diff)} points."
+        else:
+            score_text = "The score is tied."
+
+        shots_played = ball_round - 1
+        if shots_played == 0:
+            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {ball_round}. This is the first shot of the rally."
+        else:
+            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {ball_round}. {shots_played} shots have been played in this rally."
+
+        lines = [header, ""]
+        if ball_round == 1:
+            lines.append(f"It is my turn to serve. I am at {player_area}, opponent at {opp_area}.")
+            if pt == 11:
+                lines.append("MISSED SHOT - fault serve.")
+            elif pt > 0:
+                lines.append(f"I serve a {pn} to {land_area}, then move to {move_area}.")
+            else:
+                lines.append(f"I serve to {land_area}, then move to {move_area}.")
+        else:
+            lines.append(f"It is my turn. I am at {player_area}, opponent at {opp_area}.")
+            if ot > 0:
+                lines.append(f"Opponent's {on} is arriving at {hit_area}.")
+            else:
+                lines.append(f"Ball is arriving at {hit_area}.")
+
+            if pt == 11:
+                lines.append("MISSED SHOT - could not reach the shuttle.")
+            elif pt > 0:
+                lines.append(f"I move to {hit_area} and hit a {pn} to {land_area}, then move to {move_area}.")
+            else:
+                lines.append(f"I move to {hit_area} and hit to {land_area}, then move to {move_area}.")
+
+        if pt > 0:
+            prompt_action = BaseAgent.build_prompt_action(pt, lx, ly, mx, my)
+            lines.append(BaseAgent.format_prompt_action(prompt_action))
+
+        return {
+            'num_shots': 1,
+            'description': "\n".join(lines)
+        }
+
+    def format_case_turn_based(self, exp, idx, is_serve=False):
+        """Attach the runtime retrieval rank to a precomputed case."""
+        verbalization = exp.get('case_verbalization')
+        if verbalization is None:
+            verbalization = self.build_case_verbalization(exp)
+        return {
+            'index': idx,
+            'num_shots': verbalization['num_shots'],
+            'description': verbalization['description'],
+        }
+
+    def build_cases_list(self, experiences, is_serve=False):
+        """Build a list of formatted cases in turn-based format."""
+        cases = []
+        for i, exp in enumerate(experiences, 1):
+            cases.append(self.format_case_turn_based(exp, i, is_serve=is_serve))
+        return cases
+
+    def _format_stroke_lines(self, sd, is_current=False):
+        """Format one completed or current stroke from the active agent's viewpoint."""
+        br = int(sd.get('ball_round', 0))
+        is_target_turn = bool(sd.get('is_target_turn', True))
+        pt = int(sd.get('player_type', 0))
+        pn = self._shot_name(pt)
+        ot = int(sd.get('opponent_type', 0))
+        on = self._shot_name(ot)
+
+        px, py = sd.get('player_location_x', 0), sd.get('player_location_y', 0)
+        hx, hy = sd.get('hit_x', 0), sd.get('hit_y', 0)
+        lx, ly = sd.get('landing_x', 0), sd.get('landing_y', 0)
+        mx, my = sd.get('moving_x', 0), sd.get('moving_y', 0)
+        ox, oy = sd.get('opponent_location_x', 0), sd.get('opponent_location_y', 0)
+
+        hitter_area = self._get_area_name(px, py)
+        receiver_area = self._get_area_name(ox, oy)
+        hit_area = self._get_area_name(hx, hy)
+        land_area = self._get_area_name(lx, ly)
+        move_area = self._get_area_name(mx, my)
+
+        lines = [f"Shot {br}:"]
+        if is_target_turn:
+            lines.append(f"It is my turn. I am at {hitter_area}, opponent at {receiver_area}.")
+            if br == 1:
+                if pt == 0 and is_current:
+                    lines.append("[Next shot to be decided]")
+                elif pt == 11:
+                    lines.append("MISSED SHOT - fault serve.")
+                elif pt > 0:
+                    lines.append(f"I serve a {pn} to {land_area}, then move to {move_area}.")
+                else:
+                    lines.append(f"I serve to {land_area}, then move to {move_area}.")
+            else:
+                if ot > 0:
+                    lines.append(f"Opponent's {on} is arriving at {hit_area}.")
+                else:
+                    lines.append(f"Ball is arriving at {hit_area}.")
+
+                if pt == 0 and is_current:
+                    lines.append("[Next shot to be decided]")
+                elif pt == 11:
+                    lines.append("MISSED SHOT - could not reach the shuttle.")
+                elif pt > 0:
+                    lines.append(f"I move to {hit_area} and hit a {pn} to {land_area}, then move to {move_area}.")
+                else:
+                    lines.append(f"I move to {hit_area} and hit to {land_area}, then move to {move_area}.")
+        else:
+            lines.append(f"It is opponent's turn. I am at {receiver_area}, opponent at {hitter_area}.")
+            if br == 1:
+                if pt == 11:
+                    lines.append("Opponent MISSED SHOT - fault serve.")
+                elif pt > 0:
+                    lines.append(f"Opponent serves a {pn} to {land_area}, then moves to {move_area}.")
+                else:
+                    lines.append(f"Opponent serves to {land_area}, then moves to {move_area}.")
+            else:
+                if ot > 0:
+                    lines.append(f"My {on} is arriving at {hit_area}.")
+                else:
+                    lines.append(f"Ball is arriving at {hit_area}.")
+
+                if pt == 11:
+                    lines.append("Opponent MISSED SHOT - could not reach the shuttle.")
+                elif pt > 0:
+                    lines.append(f"Opponent moves to {hit_area} and hits a {pn} to {land_area}, then moves to {move_area}.")
+                else:
+                    lines.append(f"Opponent moves to {hit_area} and hits to {land_area}, then moves to {move_area}.")
+
+        return lines
+
+    def _build_full_trajectory_text(self, state_history, current_state):
+        lines = list(self._build_context_header(current_state))
+        lines.append("")
+
+        seen_ball_rounds = set()
+        current_br = int(current_state.get('ball_round', 0))
+        for sd in state_history:
+            br = int(sd.get('ball_round', 0))
+            if br <= 0 or br in seen_ball_rounds:
+                continue
+            seen_ball_rounds.add(br)
+            is_current = br == current_br and int(sd.get('player_type', 0)) == 0
+            lines.extend(self._format_stroke_lines(sd, is_current=is_current))
+
+        return "\n".join(lines)
+
+    def build_trajectory_text(self, state_history, current_state):
+        """Build natural turn-based trajectory text for current rally."""
+        if not state_history:
+            return "\n".join(self._build_context_header(current_state))
+
+        if any('is_target_turn' in sd for sd in state_history):
+            return self._build_full_trajectory_text(state_history, current_state)
+
+        lines = list(self._build_context_header(current_state))
+        lines.append("")
+        last_opponent_shot_name = None
+
+        first_br = int(state_history[0].get('ball_round', 1))
+        if first_br == 2:
+            first_sd = state_history[0]
+            ot = int(first_sd.get('opponent_type', 0))
+            on = self._shot_name(ot)
+            ox, oy = first_sd.get('opponent_location_x', 0), first_sd.get('opponent_location_y', 0)
+            hx, hy = first_sd.get('hit_x', 0), first_sd.get('hit_y', 0)
+            opp_area = self._get_area_name(ox, oy)
+            hit_area = self._get_area_name(hx, hy)
+
+            lines.append("Shot 1:")
+            lines.append(f"It is opponent's turn to serve. I am at {opp_area}, opponent at {opp_area}.")
+            if ot > 0:
+                lines.append(f"Opponent serves a {on} to {hit_area}.")
+            else:
+                lines.append(f"Opponent serves to {hit_area}.")
+
+        for i, sd in enumerate(state_history):
+            br = int(sd.get('ball_round', i * 2 + 1))
+            pt = int(sd.get('player_type', 0))
+            pn = self._shot_name(pt)
+            px, py = sd.get('player_location_x', 0), sd.get('player_location_y', 0)
+            hx, hy = sd.get('hit_x', 0), sd.get('hit_y', 0)
+            lx, ly = sd.get('landing_x', 0), sd.get('landing_y', 0)
+            mx, my = sd.get('moving_x', 0), sd.get('moving_y', 0)
+            ox, oy = sd.get('opponent_location_x', 0), sd.get('opponent_location_y', 0)
+
+            player_area = self._get_area_name(px, py)
+            hit_area = self._get_area_name(hx, hy)
+            land_area = self._get_area_name(lx, ly)
+            move_area = self._get_area_name(mx, my)
+            opp_area = self._get_area_name(ox, oy)
+
+            lines.append(f"Shot {br}:")
+            if br == 1:
+                lines.append(f"It is my turn to serve. I am at {player_area}, opponent at {opp_area}.")
+                if pt == 11:
+                    lines.append("MISSED SHOT - fault serve.")
+                elif pt == 0:
+                    lines.append("[Next shot to be decided]")
+                else:
+                    lines.append(f"I serve a {pn} to {land_area}, then move to {move_area}.")
+            else:
+                lines.append(f"It is my turn. I am at {player_area}, opponent at {opp_area}.")
+                if last_opponent_shot_name and last_opponent_shot_name != "Unknown":
+                    lines.append(f"Opponent's {last_opponent_shot_name} is arriving at {hit_area}.")
+                else:
+                    current_ot = int(sd.get('opponent_type', 0))
+                    if current_ot > 0:
+                        current_on = self._shot_name(current_ot)
+                        lines.append(f"Opponent's {current_on} is arriving at {hit_area}.")
+                    else:
+                        prev_sd = state_history[i - 1] if i > 0 else None
+                        if prev_sd:
+                            prev_ot = int(prev_sd.get('opponent_type', 0))
+                            prev_on = self._shot_name(prev_ot)
+                            if prev_ot > 0:
+                                lines.append(f"Opponent's {prev_on} is arriving at {hit_area}.")
+                            else:
+                                lines.append(f"Ball is arriving at {hit_area}.")
+                        else:
+                            lines.append(f"Ball is arriving at {hit_area}.")
+
+                if pt == 11:
+                    lines.append("MISSED SHOT - could not reach the shuttle.")
+                elif pt == 0:
+                    lines.append("[Next shot to be decided]")
+                else:
+                    lines.append(f"I move to {hit_area} and hit a {pn} to {land_area}, then move to {move_area}.")
+
+            if i + 1 < len(state_history):
+                next_sd = state_history[i + 1]
+                next_br = br + 1
+                next_ot = int(next_sd.get('opponent_type', 0))
+                next_on = self._shot_name(next_ot)
+                next_ox, next_oy = next_sd.get('opponent_location_x', 0), next_sd.get('opponent_location_y', 0)
+                next_hx, next_hy = next_sd.get('hit_x', 0), next_sd.get('hit_y', 0)
+
+                next_opp_area = self._get_area_name(next_ox, next_oy)
+                next_hit_area = self._get_area_name(next_hx, next_hy)
+                last_opponent_shot_name = next_on if next_ot > 0 else None
+
+                lines.append(f"Shot {next_br}:")
+                lines.append(f"It is opponent's turn. I am at {move_area}, opponent at {opp_area}.")
+                lines.append(f"My {pn} is arriving at {land_area}.")
+                lines.append(f"Opponent moves to {land_area} and hits a {next_on} to {next_hit_area}, then moves to {next_opp_area}.")
+
+        return "\n".join(lines)
+
+    def build_prompt_context_nl(self, state_dict, experiences, launch=False, state_history=None):
+        """Build full prompt context dict for Jinja2."""
+        is_serve = launch or int(state_dict.get('ball_round', 1)) == 1
+        cases = self.build_cases_list(experiences, is_serve=is_serve)
+
+        if state_history and len(state_history) > 0:
+            full_history = state_history + [state_dict]
+            trajectory_text = self.build_trajectory_text(full_history, state_dict)
+        else:
+            trajectory_text = self.build_trajectory_text([state_dict], state_dict)
+
+        px = state_dict.get('player_location_x', 0)
+        py = state_dict.get('player_location_y', 0)
+        ox = state_dict.get('opponent_location_x', 0)
+        oy = state_dict.get('opponent_location_y', 0)
+        hx = state_dict.get('hit_x', 0)
+        hy = state_dict.get('hit_y', 0)
+        ot = state_dict.get('opponent_type', 0)
+
+        return {
+            'cases': cases,
+            'trajectory_text': trajectory_text,
+            'launch': launch,
+            'top_k': len(experiences) if experiences else 0,
+            'player_location_area': self._get_area_name(px, py),
+            'opponent_location_area': self._get_area_name(ox, oy),
+            'hit_position_area': self._get_area_name(hx, hy),
+            'opponent_type_name': self._shot_name(ot),
+            **state_dict
+        }
+
+    def build_dual_prompt_context_nl(self, state_dict, retrieval_result, launch=False, state_history=None):
+        """Build prompt context with separate normal and missed-shot evidence."""
+        normal_cases_raw = retrieval_result.get('normal_cases', []) if isinstance(retrieval_result, dict) else []
+        miss_cases_raw = retrieval_result.get('miss_cases', []) if isinstance(retrieval_result, dict) else []
+        context = self.build_prompt_context_nl(
+            state_dict,
+            normal_cases_raw,
+            launch=launch,
+            state_history=state_history,
+        )
+        context.update({
+            'normal_cases': self.build_cases_list(normal_cases_raw, is_serve=launch),
+            'miss_cases': self.build_cases_list(miss_cases_raw, is_serve=launch),
+            'normal_top_k': len(normal_cases_raw),
+            'miss_top_k': len(miss_cases_raw),
+        })
+        return context
+
+
+def create_naive_rag_verbalizer():
+    return NaiveRAGVerbalizer()
 
 
 class NaiveRAGDatabase:
@@ -28,6 +398,9 @@ class NaiveRAGDatabase:
     - opponent_type
     - opponent_location_x, opponent_location_y
     """
+    schema_version = 5
+    verbalization_schema_version = 2
+    missed_coordinate_keys = ('landing_x', 'landing_y', 'moving_x', 'moving_y')
     
     def __init__(self, df, player_name, player_id):
         """
@@ -42,7 +415,9 @@ class NaiveRAGDatabase:
         self.player_id = player_id
         
         # Filter data for this player
-        self.data = df[df['player'] == player_name].copy()
+        self.data = df[df['player'] == player_name].copy().reset_index(drop=True)
+        miss_mask = self.data['player_type'].astype(int) == 11
+        self.data.loc[miss_mask, list(self.missed_coordinate_keys)] = np.nan
         
         # Define continuous retrieval keys (for Euclidean distance)
         self.continuous_keys = [
@@ -67,20 +442,49 @@ class NaiveRAGDatabase:
         # Define action keys
         self.action_keys = ['landing_x', 'landing_y', 'player_type', 'moving_x', 'moving_y']
         
+        self._build_case_verbalizations()
+
         # Build feature matrix for fast retrieval
         self._build_feature_matrix()
         
         print(f"Database initialized for {player_name} with {len(self.data)} entries")
     
+    def _build_case_verbalizations(self):
+        verbalizer = NaiveRAGVerbalizer()
+        self.case_verbalizations = [
+            {
+                'record_id': int(row.name),
+                **verbalizer.build_case_verbalization(self._build_static_experience(row)),
+            }
+            for _, row in self.data.iterrows()
+        ]
+
     def _build_feature_matrix(self):
         """Build feature matrix for mixed distance computation."""
-        # Build continuous features matrix (already standardized in data)
-        self.continuous_features = self.data[self.continuous_keys].values.astype(np.float32)
-        
-        # Build discrete features matrix  
-        self.discrete_features = self.data[self.discrete_keys].values.astype(np.float32)
+        self.data_stores = {
+            'classic': self.data,
+            'normal': self.data[self.data['player_type'].astype(int) != 11].copy(),
+            'miss': self.data[self.data['player_type'].astype(int) == 11].copy(),
+        }
+        self.feature_stores = {}
+        for name, store_data in self.data_stores.items():
+            self.feature_stores[name] = {
+                'continuous': store_data[self.continuous_keys].values.astype(np.float32),
+                'discrete': store_data[self.discrete_keys].values.astype(np.float32),
+            }
+
+        self.continuous_features = self.feature_stores['classic']['continuous']
+        self.discrete_features = self.feature_stores['classic']['discrete']
+        total_count = len(self.data_stores['classic'])
+        miss_count = len(self.data_stores['miss'])
+        self.stats = {
+            'total_count': int(total_count),
+            'normal_count': int(len(self.data_stores['normal'])),
+            'miss_count': int(miss_count),
+            'miss_rate': float(miss_count / total_count) if total_count else 0.0,
+        }
     
-    def _compute_mixed_distance(self, query_continuous, query_discrete):
+    def _compute_mixed_distance(self, query_continuous, query_discrete, store_name='classic'):
         """
         Compute mixed distance combining Euclidean distance for continuous features
         and Hamming distance for discrete features.
@@ -92,12 +496,18 @@ class NaiveRAGDatabase:
         Returns:
             distances: Array of mixed distances for all database entries
         """
+        features = self.feature_stores[store_name]
+        continuous_features = features['continuous']
+        discrete_features = features['discrete']
+        if len(continuous_features) == 0:
+            return np.array([], dtype=np.float32)
+
         # Compute Euclidean distance for continuous features
-        continuous_diff = self.continuous_features - query_continuous
+        continuous_diff = continuous_features - query_continuous
         continuous_dist = np.sqrt(np.sum(continuous_diff ** 2, axis=1))
         
         # Compute Hamming distance for discrete features (normalized by number of features)
-        discrete_diff = (self.discrete_features != query_discrete).astype(np.float32)
+        discrete_diff = (discrete_features != query_discrete).astype(np.float32)
         discrete_dist = np.mean(discrete_diff, axis=1)  # Average across discrete features
         
         # Combine distances with equal weighting (can be adjusted)
@@ -105,8 +515,84 @@ class NaiveRAGDatabase:
         mixed_dist = continuous_dist + discrete_dist
         
         return mixed_dist
-    
-    def retrieve(self, query_state, top_k=5):
+
+    def _extract_query_features(self, query_state):
+        if isinstance(query_state, dict):
+            query_continuous = np.array([query_state[k] for k in self.continuous_keys], dtype=np.float32)
+            query_discrete = np.array([query_state[k] for k in self.discrete_keys], dtype=np.float32)
+        else:
+            n_continuous = len(self.continuous_keys)
+            query_continuous = query_state[:n_continuous].astype(np.float32)
+            query_discrete = query_state[n_continuous:].astype(np.float32)
+        return query_continuous, query_discrete
+
+    def _build_static_experience(self, row):
+        exp = {'record_id': int(row.name)}
+        is_miss = int(float(row.get('player_type', 0))) == 11
+
+        # Add retrieval keys
+        for key in self.retrieval_keys:
+            exp[key] = float(row[key])
+
+        # Add metadata
+        for key in self.metadata_keys:
+            if key in row:
+                exp[key] = float(row[key])
+
+        # Add score_status as integer
+        if 'player_score' in row and 'opponent_score' in row:
+            exp['score_status'] = int(float(row['player_score']) - float(row['opponent_score']))
+
+        # Add semantic area names for all positions
+        if 'player_location_x' in row and 'player_location_y' in row:
+            player_area_id = coord2area(float(row['player_location_x']), float(row['player_location_y']))
+            exp['player_location_area'] = LANG_AREA_MAPPING.get(player_area_id, 'Unknown')
+
+        if 'hit_x' in row and 'hit_y' in row:
+            hit_area_id = coord2area(float(row['hit_x']), float(row['hit_y']))
+            exp['hit_position_area'] = LANG_AREA_MAPPING.get(hit_area_id, 'Unknown')
+
+        if 'opponent_location_x' in row and 'opponent_location_y' in row:
+            opponent_area_id = coord2area(float(row['opponent_location_x']), float(row['opponent_location_y']))
+            exp['opponent_location_area'] = LANG_AREA_MAPPING.get(opponent_area_id, 'Unknown')
+
+        # Add actions
+        for key in self.action_keys:
+            if key in row:
+                if is_miss and key in self.missed_coordinate_keys:
+                    exp[key] = None
+                else:
+                    exp[key] = float(row[key])
+
+        # Add landing area semantic name
+        if not is_miss and 'landing_x' in row and 'landing_y' in row:
+            landing_area_id = coord2area(float(row['landing_x']), float(row['landing_y']))
+            exp['landing_area'] = LANG_AREA_MAPPING.get(landing_area_id, 'Unknown')
+        else:
+            exp['landing_area'] = None if is_miss else 'Unknown'
+
+        # Add movement area semantic name
+        if not is_miss and 'moving_x' in row and 'moving_y' in row:
+            movement_area_id = coord2area(float(row['moving_x']), float(row['moving_y']))
+            exp['moving_area'] = LANG_AREA_MAPPING.get(movement_area_id, 'Unknown')
+        else:
+            exp['moving_area'] = None if is_miss else 'Unknown'
+
+        # Add shot type name
+        if 'opponent_type' in row:
+            exp['opponent_type_name'] = INDEX2EN_SHOT.get(int(row['opponent_type']), f"Unknown({int(row['opponent_type'])})")
+
+        return exp
+
+    def _build_experience(self, row, similarity, distance):
+        exp = self._build_static_experience(row)
+        record_id = exp['record_id']
+        exp['case_verbalization'] = dict(self.case_verbalizations[record_id])
+        exp['similarity'] = float(similarity)
+        exp['distance'] = float(distance)
+        return exp
+
+    def _retrieve_from_store(self, query_state, top_k=5, store_name='classic'):
         """
         Retrieve top-k similar experiences using mixed distance.
 
@@ -118,17 +604,12 @@ class NaiveRAGDatabase:
             List of dicts containing experience data
         """
         # Extract query features
-        if isinstance(query_state, dict):
-            query_continuous = np.array([query_state[k] for k in self.continuous_keys], dtype=np.float32)
-            query_discrete = np.array([query_state[k] for k in self.discrete_keys], dtype=np.float32)
-        else:
-            # Assume query_state is array in order [continuous..., discrete...]
-            n_continuous = len(self.continuous_keys)
-            query_continuous = query_state[:n_continuous].astype(np.float32)
-            query_discrete = query_state[n_continuous:].astype(np.float32)
+        query_continuous, query_discrete = self._extract_query_features(query_state)
 
         # Compute mixed distances (lower is better)
-        distances = self._compute_mixed_distance(query_continuous, query_discrete)
+        distances = self._compute_mixed_distance(query_continuous, query_discrete, store_name=store_name)
+        if len(distances) == 0:
+            return []
 
         # Convert distances to similarities (higher is better)
         # Using negative exponential: similarity = exp(-distance)
@@ -138,74 +619,112 @@ class NaiveRAGDatabase:
         top_indices = np.argsort(distances)[:top_k]
 
         # Build experience list
+        store_data = self.data_stores[store_name]
         experiences = []
         for idx in top_indices:
-            row = self.data.iloc[idx]
-            exp = {}
-
-            # Add retrieval keys
-            for key in self.retrieval_keys:
-                exp[key] = float(row[key])
-
-            # Add metadata
-            for key in self.metadata_keys:
-                if key in row:
-                    exp[key] = float(row[key])
-
-            # Add score_status as integer
-            if 'player_score' in row and 'opponent_score' in row:
-                exp['score_status'] = int(float(row['player_score']) - float(row['opponent_score']))
-
-            # Add semantic area names for all positions
-            if 'player_location_x' in row and 'player_location_y' in row:
-                player_area_id = coord2area(float(row['player_location_x']), float(row['player_location_y']))
-                exp['player_location_area'] = LANG_AREA_MAPPING.get(player_area_id, 'Unknown')
-
-            if 'hit_x' in row and 'hit_y' in row:
-                hit_area_id = coord2area(float(row['hit_x']), float(row['hit_y']))
-                exp['hit_position_area'] = LANG_AREA_MAPPING.get(hit_area_id, 'Unknown')
-
-            if 'opponent_location_x' in row and 'opponent_location_y' in row:
-                opponent_area_id = coord2area(float(row['opponent_location_x']), float(row['opponent_location_y']))
-                exp['opponent_location_area'] = LANG_AREA_MAPPING.get(opponent_area_id, 'Unknown')
-
-            # Add actions
-            for key in self.action_keys:
-                if key in row:
-                    exp[key] = float(row[key])
-
-            # Add landing area semantic name
-            if 'landing_x' in row and 'landing_y' in row:
-                landing_area_id = coord2area(float(row['landing_x']), float(row['landing_y']))
-                exp['landing_area'] = LANG_AREA_MAPPING.get(landing_area_id, 'Unknown')
-            else:
-                exp['landing_area'] = 'Unknown'
-
-            # Add movement area semantic name
-            if 'moving_x' in row and 'moving_y' in row:
-                movement_area_id = coord2area(float(row['moving_x']), float(row['moving_y']))
-                exp['movement_area'] = LANG_AREA_MAPPING.get(movement_area_id, 'Unknown')
-            else:
-                exp['movement_area'] = 'Unknown'
-
-            # Add shot type name
-            if 'opponent_type' in row:
-                exp['opponent_type_name'] = INDEX2EN_SHOT.get(int(row['opponent_type']), f"Unknown({int(row['opponent_type'])})")
-
-            # Add similarity score
-            exp['similarity'] = float(similarities[idx])
-
+            row = store_data.iloc[idx]
+            exp = self._build_experience(row, similarities[idx], distances[idx])
             experiences.append(exp)
 
         return experiences
+
+    def retrieve(self, query_state, top_k=5):
+        return self._retrieve_from_store(query_state, top_k=top_k, store_name='classic')
+
+    def retrieve_dual(self, query_state, normal_top_k=8, miss_top_k=5):
+        normal_cases = self._retrieve_from_store(query_state, top_k=normal_top_k, store_name='normal')
+        miss_cases = self._retrieve_from_store(query_state, top_k=miss_top_k, store_name='miss')
+        nearest_normal = normal_cases[0] if normal_cases else {}
+        nearest_miss = miss_cases[0] if miss_cases else {}
+        return {
+            'normal_cases': normal_cases,
+            'miss_cases': miss_cases,
+            'summary': {
+                **self.stats,
+                'normal_top_k': int(normal_top_k),
+                'miss_top_k': int(miss_top_k),
+                'retrieved_normal_count': int(len(normal_cases)),
+                'retrieved_miss_count': int(len(miss_cases)),
+                'nearest_normal_distance': nearest_normal.get('distance'),
+                'nearest_miss_distance': nearest_miss.get('distance'),
+                'nearest_normal_similarity': nearest_normal.get('similarity'),
+                'nearest_miss_similarity': nearest_miss.get('similarity'),
+            }
+        }
+
+    def validate(self):
+        if self.schema_version != type(self).schema_version:
+            raise ValueError(f"Unsupported NaiveRAG schema version: {self.schema_version}")
+        if self.verbalization_schema_version != type(self).verbalization_schema_version:
+            raise ValueError(
+                f"Unsupported NaiveRAG verbalization schema version: "
+                f"{self.verbalization_schema_version}"
+            )
+        if not isinstance(self.data, pd.DataFrame) or self.data.empty:
+            raise ValueError(f"NaiveRAG database for {self.player_name} contains no rows")
+        if list(self.data.index) != list(range(len(self.data))):
+            raise ValueError("NaiveRAG record IDs are not aligned with the database rows")
+        if len(self.case_verbalizations) != len(self.data):
+            raise ValueError("NaiveRAG case verbalization count does not match row count")
+        for record_id, verbalization in enumerate(self.case_verbalizations):
+            if not isinstance(verbalization, dict):
+                raise ValueError(f"NaiveRAG verbalization {record_id} is not an object")
+            if verbalization.get('record_id') != record_id:
+                raise ValueError(f"NaiveRAG verbalization {record_id} is assigned to the wrong row")
+            if verbalization.get('num_shots') != 1:
+                raise ValueError(f"NaiveRAG verbalization {record_id} has invalid num_shots")
+            if not isinstance(verbalization.get('description'), str) or not verbalization['description'].strip():
+                raise ValueError(f"NaiveRAG verbalization {record_id} has no description")
+        for store_name in ('classic', 'normal', 'miss'):
+            if store_name not in self.data_stores or store_name not in self.feature_stores:
+                raise ValueError(f"NaiveRAG database is missing the {store_name} store")
+            store = self.data_stores[store_name]
+            features = self.feature_stores[store_name]
+            if len(store) != len(features['continuous']) or len(store) != len(features['discrete']):
+                raise ValueError(f"NaiveRAG {store_name} store is not aligned with its features")
+            expected_continuous = store[self.continuous_keys].values.astype(np.float32)
+            expected_discrete = store[self.discrete_keys].values.astype(np.float32)
+            if not np.array_equal(features['continuous'], expected_continuous):
+                raise ValueError(f"NaiveRAG {store_name} continuous features are assigned to the wrong rows")
+            if not np.array_equal(features['discrete'], expected_discrete):
+                raise ValueError(f"NaiveRAG {store_name} discrete features are assigned to the wrong rows")
+
+        expected_normal = self.data[self.data['player_type'].astype(int) != 11]
+        expected_miss = self.data[self.data['player_type'].astype(int) == 11]
+        if not self.data_stores['classic'].equals(self.data):
+            raise ValueError("NaiveRAG classic store does not match the canonical data")
+        if not self.data_stores['normal'].equals(expected_normal):
+            raise ValueError("NaiveRAG normal store does not match player_type")
+        if not self.data_stores['miss'].equals(expected_miss):
+            raise ValueError("NaiveRAG miss store does not match player_type")
+        if not expected_miss[list(self.missed_coordinate_keys)].isna().all().all():
+            raise ValueError("NaiveRAG missed-shot coordinates must all be null")
+        total_count = len(self.data)
+        normal_count = len(expected_normal)
+        miss_count = len(expected_miss)
+        expected_stats = {
+            'total_count': total_count,
+            'normal_count': normal_count,
+            'miss_count': miss_count,
+            'miss_rate': float(miss_count / total_count),
+        }
+        if self.stats != expected_stats:
+            raise ValueError("NaiveRAG stats do not match the data stores")
+        return self
     
     def save(self, filepath):
         """Save database to file."""
-        with open(filepath, 'wb') as f:
-            pickle.dump({
+        self.validate()
+        payload = {
+                'schema_version': self.schema_version,
+                'verbalization_schema_version': self.verbalization_schema_version,
                 'player_name': self.player_name,
                 'player_id': self.player_id,
                 'data': self.data,
+                'case_verbalizations': self.case_verbalizations,
+                'data_stores': self.data_stores,
+                'feature_stores': self.feature_stores,
+                'stats': self.stats,
                 'continuous_features': self.continuous_features,
                 'discrete_features': self.discrete_features,
                 'continuous_keys': self.continuous_keys,
@@ -213,7 +732,15 @@ class NaiveRAGDatabase:
                 'retrieval_keys': self.retrieval_keys,
                 'metadata_keys': self.metadata_keys,
                 'action_keys': self.action_keys
-            }, f)
+        }
+        temporary_path = f'{filepath}.tmp-{os.getpid()}'
+        try:
+            with open(temporary_path, 'wb') as f:
+                pickle.dump(payload, f)
+            os.replace(temporary_path, filepath)
+        finally:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
         print(f"Database saved to {filepath}")
     
     @classmethod
@@ -221,19 +748,34 @@ class NaiveRAGDatabase:
         """Load database from file."""
         with open(filepath, 'rb') as f:
             data = pickle.load(f)
+
+        schema_version = data.get('schema_version', 1)
+        verbalization_schema_version = data.get('verbalization_schema_version')
+        if schema_version != cls.schema_version or verbalization_schema_version != cls.verbalization_schema_version:
+            raise ValueError(
+                "This NaiveRAG database does not contain compatible offline verbalizations. "
+                "Rebuild it with Scripts/prepare_all_data.py --naive-rag."
+            )
         
         # Create instance without calling __init__
         instance = cls.__new__(cls)
+        instance.schema_version = schema_version
+        instance.verbalization_schema_version = verbalization_schema_version
         instance.player_name = data['player_name']
         instance.player_id = data['player_id']
         instance.data = data['data']
-        instance.continuous_features = data['continuous_features']
-        instance.discrete_features = data['discrete_features']
+        instance.case_verbalizations = data['case_verbalizations']
         instance.continuous_keys = data['continuous_keys']
         instance.discrete_keys = data['discrete_keys']
         instance.retrieval_keys = data['retrieval_keys']
         instance.metadata_keys = data['metadata_keys']
         instance.action_keys = data['action_keys']
+        instance.data_stores = data['data_stores']
+        instance.feature_stores = data['feature_stores']
+        instance.stats = data['stats']
+        instance.continuous_features = instance.feature_stores['classic']['continuous']
+        instance.discrete_features = instance.feature_stores['classic']['discrete']
+        instance.validate()
         
         print(f"Database loaded from {filepath}")
         return instance
@@ -245,9 +787,10 @@ class NaiveRAGAgent(BaseAgent):
     Supports verbalization to convert state and experiences to natural language.
     """
     
-    def __init__(self, player_name, database, model_name="Qwen/Qwen2.5-7B-Instruct",
-                 api_key="EMPTY", port=16000, base_url=None, top_k=5, enable_tracing=True,
-                 prompt_variant="norm"):
+    def __init__(self, player_name, database, model_name=None,
+                 api_key=None, host=None, port=None, base_url=None,
+                 host_url=None, top_k=5, normal_top_k=None, miss_top_k=None,
+                 retrieval_mode="classic", enable_tracing=True, prompt_variant="norm"):
         """
         Initialize NaiveRAG Agent.
         
@@ -264,6 +807,9 @@ class NaiveRAGAgent(BaseAgent):
         
         self.database = database
         self.top_k = top_k
+        self.normal_top_k = normal_top_k if normal_top_k is not None else top_k
+        self.miss_top_k = miss_top_k if miss_top_k is not None else max(1, min(5, top_k))
+        self.retrieval_mode = retrieval_mode
         self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("naive_rag", player_name, enable_tracing)
         
@@ -275,30 +821,55 @@ class NaiveRAGAgent(BaseAgent):
         self.verbalizer = create_naive_rag_verbalizer()
         
         # Initialize LLM
-        self.llm = LLM(model_name=model_name, api_key=api_key, port=port, base_url=base_url)
+        self.llm = LLM(
+            model_name=model_name,
+            host=host,
+            api_key=api_key,
+            port=port,
+            base_url=base_url,
+            host_url=host_url,
+        )
         
         # Load prompts
-        prompt_dir = os.path.join(project_path, "Prompts", "Agent")
-        if prompt_variant == "shifted":
-            system_prompt_name = "naive_rag_shifted_system.md"
-            user_template_name = "naive_rag_shifted_user.jinja"
-        elif prompt_variant == "norm":
-            system_prompt_name = "naive_rag_system.md"
-            user_template_name = "naive_rag_user.jinja"
-        else:
-            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
+        prompt_root = os.path.join(project_path, "Prompts", "New")
+        prompt_dir = os.path.join(prompt_root, "naive_rag")
+        template_names = {
+            ("classic", "norm"): "classic_user.jinja",
+            ("classic", "shifted"): "classic_shifted_user.jinja",
+            ("dual_db", "norm"): "dual_user.jinja",
+            ("dual_db", "shifted"): "dual_shifted_user.jinja",
+        }
+        template_key = (retrieval_mode, prompt_variant)
+        if template_key not in template_names:
+            raise ValueError(
+                f"Unsupported retrieval_mode/prompt_variant: {retrieval_mode}/{prompt_variant}"
+            )
+        user_template_name = template_names[template_key]
 
-        with open(os.path.join(prompt_dir, system_prompt_name), "r") as f:
+        with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
         
         # Load user template
         with open(os.path.join(prompt_dir, user_template_name), "r") as f:
             self.user_template = Template(f.read())
-        
-        # Load schema
-        schema_dir = os.path.join(project_path, "Schemas", "Agent")
-        with open(os.path.join(schema_dir, "naive_rag_schema.json"), "r") as f:
-            self.schema = json.load(f)
+
+    @staticmethod
+    def _parse_llm_action(response):
+        return BaseAgent.parse_prompt_action(response)
+
+    def _normalize_history_for_player(self, history):
+        """Mark each shared-history stroke from this agent's own viewpoint."""
+        normalized = []
+        for stroke in history or []:
+            stroke_data = dict(stroke)
+            player = stroke_data.get('player')
+            if player is not None:
+                stroke_data['is_target_turn'] = str(player) == str(self.player_name)
+            else:
+                stroke_data['is_target_turn'] = bool(stroke_data.get('is_target_turn', True))
+            stroke_data['turn_role'] = 'target' if stroke_data['is_target_turn'] else 'opponent'
+            normalized.append(stroke_data)
+        return normalized
     
     def predict(self, state, info, launch):
         """
@@ -315,7 +886,7 @@ class NaiveRAGAgent(BaseAgent):
         
         query_state = {
             'player_location_x': state[1][0],
-            'player_location_y': state[2][1],
+            'player_location_y': state[1][1],
             'hit_x': state[3][0],
             'hit_y': state[3][1],
             'opponent_type': int(state[0]),
@@ -339,6 +910,9 @@ class NaiveRAGAgent(BaseAgent):
         opponent_location_area = LANG_AREA_MAPPING.get(coord2area(opponent_location_x, opponent_location_y), 'Unknown')
 
         state_dict = {
+            'player': info.get('current_player_name', self.player_name),
+            'is_target_turn': True,
+            'turn_role': 'target',
             'rally': info.get('rally', 0),
             'ball_round': info['round'][-1] if info.get('round') else 1,
             'player_score': player_score,
@@ -372,13 +946,29 @@ class NaiveRAGAgent(BaseAgent):
 
         # Retrieve similar experiences
         t0 = time.time()
-        experiences = self.database.retrieve(query_state, top_k=self.top_k)
+        if self.retrieval_mode == 'dual_db':
+            retrieval_result = self.database.retrieve_dual(
+                query_state,
+                normal_top_k=self.normal_top_k,
+                miss_top_k=self.miss_top_k,
+            )
+            experiences = retrieval_result['normal_cases'] + retrieval_result['miss_cases']
+        else:
+            retrieval_result = self.database.retrieve(query_state, top_k=self.top_k)
+            experiences = retrieval_result
         t1 = time.time()
         self.tracer.log_retrieval(state_dict, experiences, "naive_rag", int((t1 - t0) * 1000))
         
         # Build context for LLM using verbalizer
-        state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
-        context = self.verbalizer.build_prompt_context_nl(state_dict, experiences, launch=launch, state_history=state_history)
+        rally_history = info.get('rally_history')
+        if rally_history is not None:
+            state_history = self._normalize_history_for_player(rally_history)
+        else:
+            state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
+        if self.retrieval_mode == 'dual_db':
+            context = self.verbalizer.build_dual_prompt_context_nl(state_dict, retrieval_result, launch=launch, state_history=state_history)
+        else:
+            context = self.verbalizer.build_prompt_context_nl(state_dict, experiences, launch=launch, state_history=state_history)
         context['style_shift_instruction'] = info.get('style_shift_instruction', '')
 
         # Render user prompt
@@ -387,10 +977,10 @@ class NaiveRAGAgent(BaseAgent):
         # Get LLM response
         t0 = time.time()
         response, raw_llm_output, usage = self.llm.get_verified_response(
-            schema=self.schema,
             system_prompt=self.system_prompt,
             user_prompt=user_prompt,
-            max_trials=5
+            max_trials=5,
+            validator=BaseAgent.validate_prompt_action_response,
         )
         t1 = time.time()
         self.tracer.log_generation(
@@ -406,12 +996,17 @@ class NaiveRAGAgent(BaseAgent):
             return self._default_action(launch)
         
         # Parse response
-        shot_type = response['shot_type']
-        landing_x = response.get('landing_x', 0.0)
-        landing_y = response.get('landing_y', 0.0)
-        moving_x = response.get('moving_x', 0.0)
-        moving_y = response.get('moving_y', 0.0)
-        reasoning = response.get('reasoning', '')
+        parsed_action, reasoning = self._parse_llm_action(response)
+        if parsed_action is None:
+            print("Warning: LLM response did not contain a valid action, using default action")
+            self.tracer.end_trace({"shot_type": "default_fallback"}, "Invalid LLM action")
+            return self._default_action(launch)
+
+        shot_type = parsed_action['shot_type']
+        landing_x = parsed_action['landing_x']
+        landing_y = parsed_action['landing_y']
+        moving_x = parsed_action['moving_x']
+        moving_y = parsed_action['moving_y']
 
         # For missed shot (type 11), force coordinates to 0.0
         if shot_type == 11:
@@ -493,7 +1088,7 @@ class NaiveRAGAgent(BaseAgent):
         # Build query state for retrieval
         query_state = {
             'player_location_x': state[1][0],
-            'player_location_y': state[2][1],
+            'player_location_y': state[1][1],
             'hit_x': state[3][0],
             'hit_y': state[3][1],
             'opponent_type': int(state[0]),

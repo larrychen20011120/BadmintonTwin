@@ -1,6 +1,21 @@
+import json
+import math
+
 from dtaidistance import dtw
 
+from Utils.badminton_config import INDEX2EN_SHOT, shot_type_to_index
+
 class BaseAgent:
+    PROMPT_ACTION_KEYS = {
+        "shot_type",
+        "landing_area",
+        "landing_x",
+        "landing_y",
+        "moving_area",
+        "moving_x",
+        "moving_y",
+    }
+
     def __init__(self, player_name, is_infernce=True):
 
         self.player_name = player_name
@@ -41,6 +56,164 @@ class BaseAgent:
 
     def predict(self, state, info, launch):
         raise NotImplementedError("Subclasses must implement evaluate")
+
+    @staticmethod
+    def normalized_to_prompt_coordinate(x, y):
+        """Quantize normalized coordinates to the integer prompt grid."""
+        x = float(x)
+        y = float(y)
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Prompt coordinates must be finite")
+        return (
+            math.floor((x + 1.0) * 177.5 + 1e-9),
+            math.floor((y + 1.0) * 240.0 + 1e-9),
+        )
+
+    @staticmethod
+    def prompt_to_normalized_coordinate(x, y):
+        """Convert integer prompt-grid coordinates back to normalized values."""
+        return float(x) / 177.5 - 1.0, float(y) / 240.0 - 1.0
+
+    @staticmethod
+    def prompt_area_name(x, y):
+        """Classify one integer prompt-grid position using the prompt definition."""
+        if x < 0 or x > 354 or y < 0 or y > 479:
+            return "Out of Bounds"
+
+        if x <= 49:
+            if y <= 204:
+                return "Rear Left Side Line"
+            if y <= 366:
+                return "Mid Left Side Line"
+            return "Front Left Side Line"
+
+        if x >= 306 or (x == 305 and y >= 151):
+            if y <= 204:
+                return "Rear Right Side Line"
+            if y <= 366:
+                return "Mid Right Side Line"
+            return "Front Right Side Line"
+
+        if y <= 150:
+            return "Deep Left Corner" if x <= 177 else "Deep Right Corner"
+
+        if x <= 103:
+            side = "Left Side"
+        elif x <= 250:
+            side = "Center"
+        else:
+            side = "Right Side"
+
+        if y <= 257:
+            return f"Rear {side}"
+        if y <= 365:
+            return f"Mid {side}"
+        return f"Front {side}"
+
+    @classmethod
+    def build_prompt_action(cls, shot_type, landing_x, landing_y, moving_x, moving_y):
+        """Build the canonical integer action shown in offline LLM evidence."""
+        shot_type_index = shot_type_to_index(shot_type)
+        shot_type_name = INDEX2EN_SHOT[shot_type_index]
+        if shot_type_index == 11:
+            return {
+                "shot_type": shot_type_name,
+                "landing_area": None,
+                "landing_x": None,
+                "landing_y": None,
+                "moving_area": None,
+                "moving_x": None,
+                "moving_y": None,
+            }
+
+        prompt_landing_x, prompt_landing_y = cls.normalized_to_prompt_coordinate(
+            landing_x, landing_y
+        )
+        prompt_moving_x, prompt_moving_y = cls.normalized_to_prompt_coordinate(
+            moving_x, moving_y
+        )
+        return {
+            "shot_type": shot_type_name,
+            "landing_area": cls.prompt_area_name(prompt_landing_x, prompt_landing_y),
+            "landing_x": prompt_landing_x,
+            "landing_y": prompt_landing_y,
+            "moving_area": cls.prompt_area_name(prompt_moving_x, prompt_moving_y),
+            "moving_x": prompt_moving_x,
+            "moving_y": prompt_moving_y,
+        }
+
+    @staticmethod
+    def format_prompt_action(action):
+        return f"Action: {json.dumps(action, ensure_ascii=True)}"
+
+    @classmethod
+    def parse_prompt_action(cls, response):
+        """Validate an LLM action and convert its integer coordinates to normalized values."""
+        if not isinstance(response, dict):
+            return None, ""
+
+        reasoning = response.get("rationale", response.get("reasoning", ""))
+        action = response.get("action", response)
+        if not isinstance(action, dict) or set(action) != cls.PROMPT_ACTION_KEYS:
+            return None, reasoning
+
+        try:
+            shot_type = shot_type_to_index(action["shot_type"])
+        except (TypeError, ValueError):
+            return None, reasoning
+
+        coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
+        area_keys = ("landing_area", "moving_area")
+        if shot_type == 11:
+            if any(action[key] is not None for key in coordinate_keys + area_keys):
+                return None, reasoning
+            return {
+                "shot_type": shot_type,
+                "landing_area": None,
+                "landing_x": None,
+                "landing_y": None,
+                "moving_area": None,
+                "moving_x": None,
+                "moving_y": None,
+            }, reasoning
+
+        coordinates = [action[key] for key in coordinate_keys]
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in coordinates):
+            return None, reasoning
+
+        landing_x, landing_y, moving_x, moving_y = coordinates
+        if not (0 <= landing_x <= 354 and 0 <= moving_x <= 354):
+            return None, reasoning
+        if not (0 <= landing_y <= 479 and 0 <= moving_y <= 479):
+            return None, reasoning
+
+        expected_landing_area = cls.prompt_area_name(landing_x, landing_y)
+        expected_moving_area = cls.prompt_area_name(moving_x, moving_y)
+        if action["landing_area"] != expected_landing_area:
+            return None, reasoning
+        if action["moving_area"] != expected_moving_area:
+            return None, reasoning
+
+        normalized_landing_x, normalized_landing_y = cls.prompt_to_normalized_coordinate(
+            landing_x, landing_y
+        )
+        normalized_moving_x, normalized_moving_y = cls.prompt_to_normalized_coordinate(
+            moving_x, moving_y
+        )
+        return {
+            "shot_type": shot_type,
+            "landing_area": expected_landing_area,
+            "landing_x": normalized_landing_x,
+            "landing_y": normalized_landing_y,
+            "moving_area": expected_moving_area,
+            "moving_x": normalized_moving_x,
+            "moving_y": normalized_moving_y,
+        }, reasoning
+
+    @classmethod
+    def validate_prompt_action_response(cls, response):
+        parsed, _ = cls.parse_prompt_action(response)
+        return parsed is not None
 
     def action(self, state, info, launch):
         normalized_action = self.predict(state, info, launch)

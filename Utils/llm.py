@@ -3,65 +3,74 @@ import time
 import re
 import os
 import copy
-from jsonschema import validate, ValidationError
-from json_repair import loads as repair_json_loads
+import json
+import yaml
 
 try:
-    import yaml
+    from dotenv import load_dotenv
+
+    load_dotenv(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, ".env")),
+        override=False,
+    )
 except Exception:
-    yaml = None
+    pass
+
+try:
+    from json_repair import loads as repair_json_loads
+except Exception:
+    repair_json_loads = None
 
 class LLM:
 
-    _DEFAULT_GENERATION = {
-        "temperature": 0.2,
-        "top_p": 0.9,
-        "max_tokens": 2048,
-        "extra_body": {
-            "repetition_penalty": 1.05,
-        },
-    }
-
     def __init__(
         self,
-        model_name,
-        host="140.113.213.17",
-        api_key="EMPTY",
-        port=16000,
+        model_name=None,
+        host=None,
+        api_key=None,
+        port=None,
         base_url=None,
+        host_url=None,
         config_path=None,
-        generation_profile=None,
+        llm_type=None,
+        provider=None,
         generation_params=None,
     ):
-
-        self.api_key = api_key
-        self.model_name = model_name
-        self.config_path = (
-            config_path
-            if config_path is not None
-            else os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "Scripts", "config.yaml"))
-        )
-        self.generation_profile = generation_profile
-        self.generation_params = self._resolve_generation_params(
+        settings = self.resolve_effective_settings(
             model_name=model_name,
-            profile_name=generation_profile,
-            overrides=generation_params,
+            host=host,
+            api_key=api_key,
+            port=port,
+            base_url=base_url,
+            host_url=host_url,
+            config_path=config_path,
+            llm_type=llm_type,
+            provider=provider,
+            generation_params=generation_params,
+            include_config=True,
         )
 
-        if api_key == "EMPTY":
+        self.config_path = settings["config_path"]
+        self.config = settings["_config"]
+        self.api_key = settings["api_key"]
+        self.llm_type = settings.get("llm_type")
+        self.model_name = settings["model_name"]
+        self.provider = settings["provider"]
+        self.generation_params = settings["generation_params"]
 
-            self.client = OpenAI(
-                api_key=api_key, 
-                base_url=f"http://{host}:{port}/v1"
-            )
-            
+        endpoint_url = settings.get("base_url") or settings.get("host_url")
+        client_kwargs = {"api_key": self.api_key}
+        default_headers = settings.get("default_headers")
+        if isinstance(default_headers, dict) and default_headers:
+            client_kwargs["default_headers"] = default_headers
+        if endpoint_url is not None:
+            client_kwargs["base_url"] = endpoint_url
+        elif self.api_key == "EMPTY":
+            client_kwargs["base_url"] = f"http://{settings['host']}:{settings['port']}/v1"
+
+        self.client = OpenAI(**client_kwargs)
+        if self.api_key == "EMPTY":
             print("Local model loaded successfully.")
-
-        else:
-            client_kwargs = {"api_key": api_key}
-            if base_url is not None:
-                client_kwargs["base_url"] = base_url
-            self.client = OpenAI(**client_kwargs)
 
     @staticmethod
     def _deep_update(base, updates):
@@ -75,11 +84,34 @@ class LLM:
                 merged[key] = value
         return merged
 
+    @classmethod
+    def _resolve_env_value(cls, value):
+        if isinstance(value, dict):
+            return {key: cls._resolve_env_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._resolve_env_value(item) for item in value]
+        if not isinstance(value, str):
+            return value
+
+        def _replace(match):
+            expr = match.group(1)
+            if ":-" in expr:
+                name, default = expr.split(":-", 1)
+                return os.environ.get(name, default)
+            return os.environ.get(expr, "")
+
+        return re.sub(r"\$\{([^}]+)\}", _replace, value)
+
     @staticmethod
-    def _normalize_model_name(model_name):
-        if not isinstance(model_name, str):
-            return model_name
-        return model_name.split("/")[-1]
+    def _coalesce(*values):
+        for value in values:
+            if value is not None and value != "":
+                return value
+        return None
+
+    @staticmethod
+    def _default_config_path():
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "Scripts", "config.yaml"))
 
     def _load_llm_config(self, config_path):
         if yaml is None or not os.path.exists(config_path):
@@ -91,25 +123,151 @@ class LLM:
         except Exception:
             return {}
 
-    def _resolve_generation_params(self, model_name, profile_name=None, overrides=None):
-        config = self._load_llm_config(self.config_path)
-        params = copy.deepcopy(self._DEFAULT_GENERATION)
+    def _resolve_client_config(self, model_name, host, api_key, port, base_url, host_url, llm_type=None, provider=None):
+        llm_cfg = self.config.get("llm", {}) if isinstance(self.config, dict) else {}
+        providers = llm_cfg.get("providers", {}) if isinstance(llm_cfg.get("providers", {}), dict) else {}
+
+        configured_type = self._resolve_env_value(llm_cfg.get("active_type") or llm_cfg.get("default_type"))
+        resolved_type = self._coalesce(
+            llm_type,
+            os.environ.get("BADMINTON_LLM_TYPE"),
+            configured_type,
+            "qwen",
+        )
+        resolved_type = str(resolved_type).lower()
+
+        configured_provider = self._resolve_env_value(llm_cfg.get("active_provider") or llm_cfg.get("default_provider"))
+        resolved_provider = self._coalesce(
+            provider,
+            os.environ.get("BADMINTON_LLM_PROVIDER"),
+            configured_provider,
+            "local",
+        )
+        resolved_provider = str(resolved_provider).lower()
+
+        provider_cfg = providers.get(resolved_provider)
+        if not isinstance(provider_cfg, dict):
+            available = ", ".join(sorted(providers.keys())) or "none"
+            raise ValueError(f"Unknown LLM provider '{resolved_provider}'. Available providers: {available}")
+        provider_cfg = self._resolve_env_value(provider_cfg)
+
+        models = provider_cfg.get("models", {}) if isinstance(provider_cfg.get("models", {}), dict) else {}
+        configured_model_name = models.get(resolved_type)
+        if model_name is None and configured_model_name is None:
+            available = ", ".join(sorted(models.keys())) or "none"
+            raise ValueError(
+                f"Unknown LLM type '{resolved_type}' for provider '{resolved_provider}'. "
+                f"Available types: {available}"
+            )
+
+        resolved_port = self._coalesce(port, provider_cfg.get("port"), 16000)
+        try:
+            resolved_port = int(resolved_port)
+        except (TypeError, ValueError):
+            resolved_port = 16000
+
+        resolved_api_key = self._coalesce(api_key, provider_cfg.get("api_key"), "EMPTY")
+        provider_headers = provider_cfg.get("default_headers", {})
+        default_headers = self._deep_update(
+            {},
+            provider_headers if isinstance(provider_headers, dict) else {},
+        )
+        default_headers = {
+            key: value for key, value in default_headers.items()
+            if value is not None and value != ""
+        }
+
+        return {
+            "llm_type": resolved_type,
+            "provider": resolved_provider,
+            "model_name": self._coalesce(
+                model_name,
+                configured_model_name,
+                "Qwen/Qwen2.5-7B-Instruct",
+            ),
+            "api_key": resolved_api_key,
+            "host": self._coalesce(host, provider_cfg.get("host"), "localhost"),
+            "port": resolved_port,
+            "base_url": self._coalesce(base_url, provider_cfg.get("base_url")),
+            "host_url": self._coalesce(host_url, provider_cfg.get("host_url")),
+            "default_headers": default_headers,
+        }
+
+    @classmethod
+    def resolve_effective_settings(
+        cls,
+        model_name=None,
+        host=None,
+        api_key=None,
+        port=None,
+        base_url=None,
+        host_url=None,
+        config_path=None,
+        llm_type=None,
+        provider=None,
+        generation_params=None,
+        include_config=False,
+    ):
+        config_path = config_path or cls._default_config_path()
+        instance = cls.__new__(cls)
+        instance.config_path = config_path
+        instance.config = instance._load_llm_config(config_path)
+        resolved = instance._resolve_client_config(
+            model_name=model_name,
+            host=host,
+            api_key=api_key,
+            port=port,
+            base_url=base_url,
+            host_url=host_url,
+            llm_type=llm_type,
+            provider=provider,
+        )
+
+        generation = instance._resolve_generation_params(
+            llm_type=resolved.get("llm_type"),
+            provider=resolved["provider"],
+            overrides=generation_params,
+        )
+
+        llm_gen_cfg = instance.config.get("llm_generation", {}) if isinstance(instance.config, dict) else {}
+        deterministic_cfg = llm_gen_cfg.get("deterministic", {}) if isinstance(llm_gen_cfg, dict) else {}
+        settings = {
+            **resolved,
+            "config_path": config_path,
+            "generation_params": generation,
+            "deterministic_active": bool(deterministic_cfg.get("active", False)) if isinstance(deterministic_cfg, dict) else False,
+        }
+        if include_config:
+            settings["_config"] = instance.config
+        return settings
+
+    def _resolve_generation_params(self, llm_type=None, provider=None, overrides=None):
+        config = self.config
+        params = dict()
 
         llm_gen_cfg = config.get("llm_generation", {}) if isinstance(config, dict) else {}
-        params = self._deep_update(params, llm_gen_cfg.get("default", {}))
+        deterministic_cfg = llm_gen_cfg.get("deterministic", {}) if isinstance(llm_gen_cfg.get("deterministic", {}), dict) else {}
+        provider_overrides = llm_gen_cfg.get("provider_overrides", {}) if isinstance(llm_gen_cfg.get("provider_overrides", {}), dict) else {}
 
-        by_model = llm_gen_cfg.get("by_model", {})
-        if isinstance(by_model, dict):
-            selected_profile = by_model.get(model_name)
-            if selected_profile is None:
-                selected_profile = by_model.get(self._normalize_model_name(model_name))
-            if profile_name is not None:
-                selected_profile = by_model.get(profile_name, selected_profile)
-            params = self._deep_update(params, selected_profile)
+        def _model_params():
+            by_type = llm_gen_cfg.get("by_type", {})
+            if not isinstance(by_type, dict):
+                return {}
+            selected = by_type.get(str(llm_type).lower()) if llm_type is not None else None
+            return selected if isinstance(selected, dict) else {}
+
+        if isinstance(deterministic_cfg, dict) and deterministic_cfg.get("active", False):
+            params = self._deep_update(params, deterministic_cfg.get("params", {}))
+        else:
+            params = self._deep_update(params, _model_params())
+
+        provider_name = str(provider or "").lower()
+        params = self._deep_update(params, provider_overrides.get(provider_name, {}))
 
         return self._deep_update(params, overrides)
 
-    def get_verified_response(self, schema, system_prompt="", user_prompt="", max_trials=10):
+    def get_verified_response(self, schema=None, system_prompt="", user_prompt="", max_trials=10,
+                              validator=None):
         
         trials = 0
         last_raw_text = ""
@@ -127,95 +285,64 @@ class LLM:
 
             data = self._extract_json(llm_response_str)
             if data is not None:
-                try:
-                    validate(instance=data, schema=schema)
-                    return data, llm_response_str, last_usage
-                except ValidationError as e:
-                    print(user_prompt)
-                    print("=" * 30)
-                    print(llm_response_str)
-                    print(f"❌ Structure Error {e.message} ❌")
+                if validator is not None:
+                    try:
+                        if not validator(data):
+                            print("Invalid structured response; retrying LLM generation")
+                            trials += 1
+                            continue
+                    except (TypeError, ValueError):
+                        print("Invalid structured response; retrying LLM generation")
+                        trials += 1
+                        continue
+                # print(user_prompt)
+                # print("=" * 30)
+                # print(llm_response_str)
+                return data, llm_response_str, last_usage
+            else:
+                print(user_prompt)
+                print("=" * 30)
+                print(llm_response_str)
+                print("❌ No parseable JSON found ❌")
 
             trials += 1
-        
         return None, last_raw_text, last_usage
 
     @staticmethod
     def _extract_json(raw_text):
-        """Extract and repair JSON from LLM text."""
+        """Parse a JSON-only LLM response with light repair for common mistakes."""
         if not raw_text or not isinstance(raw_text, str):
             return None
 
-        def _repair(candidate):
-            candidate = candidate.strip()
-            if not candidate:
-                return None
+        text = raw_text.strip()
+
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            text = fenced.group(1).strip()
+
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        if repair_json_loads is not None:
             try:
-                return repair_json_loads(candidate)
+                return repair_json_loads(text)
             except Exception:
-                return None
+                pass
 
-        def _object_candidates(text):
-            candidates = []
-            start = None
-            depth = 0
-            in_string = False
-            escape_next = False
+        repaired_text = re.sub(r"([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', text)
+        repaired_text = re.sub(r",\s*([}\]])", r"\1", repaired_text)
+        repaired_text = re.sub(r"'([^'\\]*(?:\\.[^'\\]*)*)'", r'"\1"', repaired_text)
 
-            for index, char in enumerate(text):
-                if escape_next:
-                    escape_next = False
-                    continue
-                if char == '\\':
-                    escape_next = True
-                    continue
-                if char == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if char == '{':
-                    if depth == 0:
-                        start = index
-                    depth += 1
-                elif char == '}' and depth > 0:
-                    depth -= 1
-                    if depth == 0 and start is not None:
-                        candidates.append(text[start:index + 1])
-                        start = None
-
-            return candidates
-
-        candidates = []
-        fenced_blocks = [
-            match.group(1).strip()
-            for match in re.finditer(r"```(?:json)?\s*(.*?)\s*```", raw_text, re.DOTALL | re.IGNORECASE)
-        ]
-        candidates.extend(fenced_blocks)
-        for block in fenced_blocks:
-            candidates.extend(reversed(_object_candidates(block)))
-
-        candidates.extend(reversed(_object_candidates(raw_text)))
-
-        first_brace = raw_text.find('{')
-        last_brace = raw_text.rfind('}')
-        if first_brace != -1 and last_brace > first_brace:
-            candidates.append(raw_text[first_brace:last_brace + 1])
-        candidates.append(raw_text.strip())
-
-        seen = set()
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            parsed = _repair(candidate)
-            if parsed is not None:
-                return parsed
-
-        print("=" * 30)
-        print(raw_text)
-        print("❌ Json Decode Error ❌")
-        return None
+        try:
+            return json.loads(repaired_text)
+        except Exception:
+            return None
 
     def get_response(self, system_prompt="", user_prompt=""):
 
@@ -239,9 +366,6 @@ class LLM:
             "messages": messages,
             **self.generation_params,
         }
-
-        if self.api_key != "EMPTY":
-            request_kwargs.pop("extra_body", None)
 
         response = self.client.chat.completions.create(**request_kwargs)
         response_text = response.choices[0].message.content

@@ -49,7 +49,7 @@ The badminton court is divided into 33 semantic areas:
 
 ## Shot Types
 
-Serve short (1), Serve long (10), Clear (2), Push Shot (3), Smash (4), Smash Defence (5), Drive (6), Net Shot (7), Lob (8), Drop (9), Missed shot (11)
+Use exactly one of these shot type names: Serve short, Serve long, Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, Drop, Missed shot.
 
 # Time Window Format
 
@@ -72,18 +72,24 @@ Rules:
 
 # Response Format
 
-1. Reasoning:
+1. Reasoning inside `<rationale>`:
+<rationale>
    - [1] Trajectory: Analyze the current rally flow
    - [2] Windows: Review temporal patterns from retrieved windows
    - [3] Decision: Choose shot type using the rally flow, temporal windows, and Style-Shift Instruction as a tactical prior
    - [4] Positioning: Determine landing and recovery using the Style-Shift Instruction when tactically reasonable
+</rationale>
 
-2. Output raw JSON as LAST content:
+2. Output raw JSON inside `<action>` as LAST content:
 
-{"shot_type": <int 1-11>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+</action>
 
 Rules:
-- Serve: shot_type must be 1 or 10
-- Missed shot (11): coordinates = 0.0
+- Serve: shot_type must be "Serve short" or "Serve long"
+- Missed shot: coordinates = 0.0
 - 3 decimal places for coordinates
-- No markdown fences around JSON
+- Do not put JSON inside `<rationale>`
+- `<action>` must contain only one raw JSON object
+- `</action>` must be the very last content with no markdown fences

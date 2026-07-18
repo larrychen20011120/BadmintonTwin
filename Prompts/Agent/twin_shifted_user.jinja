@@ -19,20 +19,23 @@ No explicit style-shift instruction is available for this match. Use the current
 ## Retrieved Similar Cases ({{ top_k|int }} cases)
 
 {% for case in cases %}
-Case {{ case.index }} ({{ case.scale_label }}, distance={{ "%.3f"|format(case.distance) }}):
+[Case {{ case.index }}]
 {{ case.description }}
-
 {% endfor %}
+
 ---
 
 ## Step-by-Step Reasoning
 
-Provide your reasoning, then output the JSON:
+Provide your reasoning inside `<rationale>`, then output the JSON inside `<action>`:
 
+<rationale>
 [1] Trajectory Analysis:
-[2] Multi-Scale Review:
-[3] Cross-Scale Consistency:
-[4] Shot Decision: Use the style-shift instruction as a tactical prior when choosing the shot type, while still respecting the current rally and multi-scale evidence.
-[5] Landing & Recovery: Use the style-shift instruction to adjust landing placement and recovery position when it is tactically reasonable.
+[2] Cases Review: 
+[3] Shot Decision:
+[4] Landing & Recovery:
+</rationale>
 
-{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+</action>

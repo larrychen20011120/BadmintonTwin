@@ -1,0 +1,152 @@
+## Task
+
+Annotate one completed badminton rally for retrospective stroke-level decision memories used to imitate the target player. Synthesize all strokes in the rally as evidence.
+
+Independently segment and describe the rally from four complementary aspects:
+
+- `my_tactical_pattern`
+- `my_tempo_movement_dynamics`
+- `opponent_tactical_pattern`
+- `opponent_tempo_movement_dynamics`
+
+Use broad tactical phases rather than interpreting every stroke individually.
+
+## Match / Rally Context
+
+{{ rally_meta_text }}
+
+## Full Rally Description
+
+The rally is represented as a semantic turn-based sequence using shot names and court-area names. Use this sequence as the primary evidence.
+
+{{ rally_turn_based_text }}
+
+## Aspect Definitions
+
+### my_tactical_pattern
+
+Describe how the target player handles the tactical situation and uses shot selection and placement to construct, maintain, regain, or survive control.
+
+When evident, describe:
+
+- whether the target player applies pressure toward the sidelines, deep corners, forecourt corners, body, or open court;
+- whether the target player repeatedly targets one area or varies placement to stretch the opponent laterally or front-to-back;
+- whether defence is purely safe and conservative, or is used to redirect the opponent, gain recovery time, change tempo, or create a counterattack;
+- whether the target player adopts a more aggressive pressure-seeking pattern or a more conservative control-and-reset pattern;
+- whether the target player maintains an attack, neutralizes pressure, or transitions between defence and counterattack;
+- whether the target player seeks net-front control, rear-court depth, early interception, or a more balanced rally structure.
+
+### my_tempo_movement_dynamics
+
+Describe how the rally develops for the target player in terms of tactical exchange tempo, movement direction, court coverage, recovery quality, and movement pressure.
+
+When evident, describe:
+
+- whether the target player's rhythm remains patient and controlled, suddenly accelerates, enters a fast attacking exchange, or slows into a reset;
+- whether the target player is moved laterally, front-to-back, repeatedly toward one area, or across multiple directions;
+- whether the target player recovers smoothly to an effective base position or remains displaced after the previous shot;
+- whether movement and recovery pressure remains manageable, gradually accumulates, is temporarily released, or results in failed recovery;
+- whether tempo changes reduce the target player's preparation time or allow the target player to regain balance;
+- where the target player's movement or recovery quality first begins to change meaningfully.
+
+Do not assume that the target player should always return to the geometric center of the court. Evaluate whether the target player reaches an effective base position for the current tactical situation and likely next response.
+
+### opponent_tactical_pattern
+
+Describe how the opponent uses shot selection and placement to construct pressure, maintain control, respond to the target player's choices, or regain the initiative.
+
+When evident, describe:
+
+- whether the opponent applies pressure toward the sidelines, corners, body, open court, or the target player's weak recovery side;
+- whether the opponent repeatedly targets one area or varies placement to create lateral or front-back movement;
+- whether the opponent sustains attacking pressure, patiently constructs an opening, or uses safer shots to reset the rally;
+- whether the opponent responds to the target player's defence by continuing pressure, changing direction, attacking newly opened space, or preventing recovery;
+- whether the opponent absorbs the target player's attack conservatively or attempts to counterattack;
+- whether the opponent controls the net, maintains rear-court depth, or forces the target player into a reactive position.
+
+### opponent_tempo_movement_dynamics
+
+Describe how the rally develops for the opponent in terms of tactical exchange tempo, movement direction, court coverage, recovery quality, and movement pressure.
+
+When evident, describe:
+
+- whether the opponent's rhythm remains patient and controlled, suddenly accelerates, enters a fast attacking exchange, or slows into a reset;
+- whether the opponent is moved laterally, front-to-back, repeatedly toward one area, or across multiple directions;
+- whether the opponent recovers smoothly to an effective base position or remains displaced after the previous shot;
+- whether the opponent's movement and recovery pressure remains manageable, gradually accumulates, is temporarily released, or results in failed recovery;
+- whether tempo changes reduce the opponent's preparation time or allow the opponent to regain balance;
+- where the opponent's movement or recovery quality first begins to change meaningfully.
+
+Tempo refers to the tactical rhythm inferred from the shot sequence, not measured physical stroke speed.
+
+Do not assume that either player should always return to the geometric center of the court. Evaluate effective base position relative to the current tactical situation and likely next response.
+
+## Annotation Rules
+
+- Segment ranges use inclusive `ball_round` values.
+- Segment each aspect independently across the full rally.
+- Within each aspect, segments must be ordered, non-overlapping, gap-free, and cover the rally from the first to the final stroke.
+- Each aspect should normally contain 1-3 broad phases.
+- Use one phase when no meaningful high-level change occurs.
+- Start a new phase only when the dominant pattern of that aspect clearly changes.
+- Do not split phases for isolated shot changes or minor local variations.
+- Different aspects may use different phase boundaries.
+- When movement or recovery quality changes, start the new tempo/movement phase at the first stroke where the change becomes observable.
+- Describe sustained patterns, spatial-control attempts, pressure patterns, or meaningful tactical transitions.
+- Each narrative should be one concise, phase-level sentence.
+- Mention specific target areas only when they form a tactically meaningful pattern.
+- Use only evidence supported by the completed rally.
+- Do not infer personality, confidence, true fatigue, injury, or other hidden states.
+- Do not write shot-by-shot captions or explain the meaning of every stroke.
+- Do not mention real player names. Use only "the target player" and "the opponent".
+- The rally summary should be high-level and anonymized.
+
+
+
+## Required JSON
+
+Return only one valid JSON object with:
+
+```json
+{
+  "rally_summary": "one concise tactical summary of this completed rally",
+  "aspect_segments": {
+    "my_tactical_pattern": [
+      {
+        "range": [1, 4],
+        "phase_name": "Net-front control attempt",
+        "narrative": "The target player keeps the shuttle low near the net to seek front-court control and invite a lift.",
+        "transition_reason": "brief high-level reason why this phase continues or changes",
+        "evidence_strokes": [1, 4]
+      }
+    ],
+    "my_tempo_movement_dynamics": [
+      {
+        "range": [1, 4],
+        "phase_name": "Controlled target recovery rhythm",
+        "narrative": "The target player maintains manageable recovery pressure and reaches effective base positions during the opening exchange.",
+        "transition_reason": "brief high-level reason why this phase continues or changes",
+        "evidence_strokes": [1, 4]
+      }
+    ],
+    "opponent_tactical_pattern": [
+      {
+        "range": [1, 4],
+        "phase_name": "Defensive reset through depth",
+        "narrative": "The opponent absorbs the target player's short pressure and uses depth to reset the rally.",
+        "transition_reason": "brief high-level reason why this phase continues or changes",
+        "evidence_strokes": [2, 4]
+      }
+    ],
+    "opponent_tempo_movement_dynamics": [
+      {
+        "range": [1, 4],
+        "phase_name": "Stable opponent recovery rhythm",
+        "narrative": "The opponent keeps movement pressure manageable while using safer recovery positions to stay in the rally.",
+        "transition_reason": "brief high-level reason why this phase continues or changes",
+        "evidence_strokes": [2, 4]
+      }
+    ]
+  }
+}
+```

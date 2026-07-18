@@ -12,7 +12,6 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.nn import CTCLoss
 from tqdm import tqdm
-from dtaidistance import dtw_ndim
 
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
@@ -40,21 +39,15 @@ class BC(nn.Module):
         self.shot_embedding = nn.Embedding(shot_type_len, 8)
         self.player_embedding = nn.Embedding(player_id_len, 8)
         
-        # Output layers for different components of the action.
-        # deterministic/gaussian predict one point; gmm predicts [pi, mu, sigma] for K components.
-        land_output_size = gmm_num * 5 if distribution == 'gmm' else 2
-        move_output_size = gmm_num * 5 if distribution == 'gmm' else 2
+        # Gaussian predicts [mu_x, mu_y, log_sigma_x, log_sigma_y, raw_correlation].
+        # GMM predicts [pi, mu, sigma] for K diagonal components.
+        output_sizes = {'deterministic': 2, 'gaussian': 5, 'gmm': gmm_num * 5}
+        land_output_size = output_sizes[distribution]
+        move_output_size = output_sizes[distribution]
 
         self.predict_land_area = nn.Linear(hidden_size, land_output_size, bias=(distribution != 'deterministic'))
         self.predict_shot_type = nn.Linear(hidden_size, shot_type_len, bias=False)
         self.predict_move_area = nn.Linear(hidden_size, move_output_size, bias=(distribution != 'deterministic'))
-
-        if distribution == 'gaussian':
-            # Input-agnostic learnable std (diagonal Gaussian for landing/move)
-            self.land_log_sigma_x = nn.Parameter(torch.zeros(1))
-            self.land_log_sigma_y = nn.Parameter(torch.zeros(1))
-            self.move_log_sigma_x = nn.Parameter(torch.zeros(1))
-            self.move_log_sigma_y = nn.Parameter(torch.zeros(1))
 
     def embed_and_transform(self, state):
         # Assuming state[:, 12] is shot_type and state[:, 17] is player_id
@@ -74,10 +67,10 @@ class BC(nn.Module):
         out = self.fc(embedded)                 # Shape: [batch_size, hidden_size]
         out = self.relu(out)
 
-        # For gaussian mode: outputs are mu only; variance is global learnable log_std.
+        # Gaussian outputs a state-dependent correlated 2D distribution.
         # For gmm mode: outputs are raw mixture params [pi_logits, mu_flat, raw_sigma_flat].
-        land_logit = self.predict_land_area(out)    # [batch_size, 2]
-        move_logit = self.predict_move_area(out)    # [batch_size, 2]
+        land_logit = self.predict_land_area(out)
+        move_logit = self.predict_move_area(out)
         shot_logit = self.predict_shot_type(out)    # Shape: [batch_size, shot_type_len]
 
         return land_logit, shot_logit, move_logit
@@ -131,67 +124,55 @@ class BC(nn.Module):
         
         
 
-def gaussian_nll_loss(pred_params, target, log_sigma_x, log_sigma_y):
-    """
-    Compute Negative Log-Likelihood for simple independent 2D Gaussian.
-
-    Args:
-        pred_params: [batch, 2] containing [mu_x, mu_y]
-        target: [batch, 2] containing [target_x, target_y]
-        log_sigma_x: log standard deviation for x
-        log_sigma_y: log standard deviation for y
-
-    Returns:
-        loss: scalar NLL loss
-    """
-    if pred_params.shape[1] < 2:
-        raise ValueError('Gaussian prediction must have at least 2 channels [mu_x, mu_y]')
-
+def gaussian_nll_loss(pred_params, target, reduction='mean'):
+    """Compute correlated 2D Gaussian NLL using ShuttleNet's parameterization."""
+    if pred_params.shape[-1] != 5:
+        raise ValueError('Gaussian prediction must have 5 channels [mu_x, mu_y, log_sx, log_sy, raw_corr]')
     mu_x = pred_params[:, 0]
     mu_y = pred_params[:, 1]
-    log_sigma_x = torch.clamp(log_sigma_x, min=-8.0, max=8.0)
-    log_sigma_y = torch.clamp(log_sigma_y, min=-8.0, max=8.0)
-
+    log_sigma_x = torch.clamp(pred_params[:, 2], min=-7.0, max=7.0)
+    log_sigma_y = torch.clamp(pred_params[:, 3], min=-7.0, max=7.0)
+    correlation = torch.tanh(pred_params[:, 4])
     sigma_x = torch.exp(log_sigma_x)
     sigma_y = torch.exp(log_sigma_y)
-
     dx = target[:, 0] - mu_x
     dy = target[:, 1] - mu_y
-
-    nll = torch.log(2 * np.pi * sigma_x * sigma_y) + 0.5 * (
-        (dx / sigma_x) ** 2 + (dy / sigma_y) ** 2
+    one_minus_corr2 = torch.clamp(1 - correlation ** 2, min=1e-5)
+    z = (
+        (dx / sigma_x) ** 2
+        + (dy / sigma_y) ** 2
+        - 2 * correlation * dx * dy / (sigma_x * sigma_y)
     )
+    nll = (
+        torch.log(2 * torch.pi * sigma_x * sigma_y * torch.sqrt(one_minus_corr2))
+        + z / (2 * one_minus_corr2)
+    )
+    if reduction == 'none':
+        return nll
+    if reduction == 'sum':
+        return nll.sum()
+    if reduction == 'mean':
+        return nll.mean()
+    raise ValueError('reduction must be none, sum, or mean')
 
-    return nll.mean()
 
+def sample_from_gaussian(pred_params):
+    """Sample from a state-dependent correlated 2D Gaussian."""
+    if pred_params.shape[-1] != 5:
+        raise ValueError('Gaussian prediction must have 5 channels [mu_x, mu_y, log_sx, log_sy, raw_corr]')
 
-def sample_from_gaussian(pred_params, log_sigma_x, log_sigma_y):
-    """
-    Sample from simple independent 2D Gaussian.
-
-    Args:
-        pred_params: [batch, 2] containing [mu_x, mu_y]
-        log_sigma_x: log standard deviation for x
-        log_sigma_y: log standard deviation for y
-
-    Returns:
-        samples: [batch, 2] containing sampled [x, y]
-    """
-    if pred_params.shape[1] < 2:
-        raise ValueError('Gaussian prediction must have at least 2 channels [mu_x, mu_y]')
-
-    mu_x = pred_params[:, 0]
-    mu_y = pred_params[:, 1]
-    log_sigma_x = torch.clamp(log_sigma_x, min=-8.0, max=8.0)
-    log_sigma_y = torch.clamp(log_sigma_y, min=-8.0, max=8.0)
-
-    sigma_x = torch.exp(log_sigma_x)
-    sigma_y = torch.exp(log_sigma_y)
-
-    eps_x = torch.randn_like(mu_x)
-    eps_y = torch.randn_like(mu_y)
-    sample = torch.stack([mu_x + eps_x * sigma_x, mu_y + eps_y * sigma_y], dim=1)
-    return torch.clamp(sample, -1.0, 1.0)
+    mu = pred_params[:, 0:2]
+    sigma_x = torch.exp(torch.clamp(pred_params[:, 2], min=-7.0, max=7.0))
+    sigma_y = torch.exp(torch.clamp(pred_params[:, 3], min=-7.0, max=7.0))
+    correlation = torch.tanh(pred_params[:, 4])
+    eps_x = torch.randn_like(sigma_x)
+    eps_y = torch.randn_like(sigma_y)
+    sample_x = mu[:, 0] + sigma_x * eps_x
+    sample_y = mu[:, 1] + sigma_y * (
+        correlation * eps_x
+        + torch.sqrt(torch.clamp(1 - correlation ** 2, min=1e-5)) * eps_y
+    )
+    return torch.clamp(torch.stack([sample_x, sample_y], dim=-1), -1.0, 1.0)
 
 
 def split_gmm_params(pred_params, gmm_num, min_sigma=1e-3):
@@ -293,16 +274,8 @@ class BC_Agent(BaseAgent):
                 self.model.min_sigma
             ).tolist()[0]
         elif self.distribution == 'gaussian':
-            output_land = sample_from_gaussian(
-                bc_land_pred,
-                self.model.land_log_sigma_x,
-                self.model.land_log_sigma_y
-            ).tolist()[0]
-            output_move = sample_from_gaussian(
-                bc_move_pred,
-                self.model.move_log_sigma_x,
-                self.model.move_log_sigma_y
-            ).tolist()[0]
+            output_land = sample_from_gaussian(bc_land_pred).tolist()[0]
+            output_move = sample_from_gaussian(bc_move_pred).tolist()[0]
         else:
             output_land = bc_land_pred.tolist()[0]
             output_move = bc_move_pred.tolist()[0]
@@ -469,16 +442,8 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                             model.min_sigma
                         )
                     elif distribution == 'gaussian':
-                        bc_land = sample_from_gaussian(
-                            bc_land_params,
-                            model.land_log_sigma_x,
-                            model.land_log_sigma_y
-                        )
-                        bc_move = sample_from_gaussian(
-                            bc_move_params,
-                            model.move_log_sigma_x,
-                            model.move_log_sigma_y
-                        )
+                        bc_land = sample_from_gaussian(bc_land_params)
+                        bc_move = sample_from_gaussian(bc_move_params)
                     else:
                         bc_land = bc_land_params
                         bc_move = bc_move_params
@@ -524,12 +489,12 @@ def evaluate_bc_on_test(test_split_path, merged_csv_path, player_index_map_path,
                 if len(rally_land_gt_seq) > 0:
                     land_pred_array = np.array(rally_land_pred_seq)
                     land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
+                    land_dtw = normalized_dtw_ndim_distance(land_pred_array, land_gt_array)
                     rally_land_dtw_list.append(land_dtw)
                     
                     move_pred_array = np.array(rally_move_pred_seq)
                     move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
+                    move_dtw = normalized_dtw_ndim_distance(move_pred_array, move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
                     rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
@@ -622,14 +587,14 @@ def train_model(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     distribution = getattr(args, 'distribution', 'deterministic')
 
-    # Load preprocessed data from baseline_prepare.py
+    # Load data generated by the unified preparation entry point.
     print("Loading preprocessed data...")
     state_path = os.path.join(args.data_dir, "train_state.pkl")
     action_path = os.path.join(args.data_dir, "train_action.pkl")
     
     if not os.path.exists(state_path) or not os.path.exists(action_path):
         print(f"Error: Preprocessed data not found in {args.data_dir}")
-        print("Please run: python Preprocessing/baseline_prepare.py --bc")
+        print("Please run: python Scripts/prepare_all_data.py --bc")
         return
     
     with open(state_path, 'rb') as f:
@@ -648,16 +613,11 @@ def train_model(args):
     dataset = BCDataset(state_tensor, landing, shot_type, move)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
-    input_dim = 32
-    hidden_dim = 128
-    player_id_len = 43
-    shot_type_len = 12
-
     model = BC(
-        input_dim,
-        hidden_dim,
-        player_id_len,
-        shot_type_len,
+        args.input_dim,
+        args.hidden_dim,
+        args.player_id_len,
+        args.shot_type_len,
         player_id=0,
         distribution=args.distribution,
         gmm_num=args.gmm_num
@@ -696,18 +656,8 @@ def train_model(args):
                     model.min_sigma
                 )
             elif distribution == 'gaussian':
-                loss_land = gaussian_nll_loss(
-                    land_pred,
-                    land_gt,
-                    model.land_log_sigma_x,
-                    model.land_log_sigma_y
-                )
-                loss_move = gaussian_nll_loss(
-                    move_pred,
-                    move_gt,
-                    model.move_log_sigma_x,
-                    model.move_log_sigma_y
-                )
+                loss_land = gaussian_nll_loss(land_pred, land_gt)
+                loss_move = gaussian_nll_loss(move_pred, move_gt)
             else:
                 loss_land = mse_loss(land_pred, land_gt)
                 loss_move = mse_loss(move_pred, move_gt)
@@ -771,6 +721,7 @@ def eval_model(args):
 
 if __name__ == "__main__":
     import argparse
+    from Utils.runtime_report import print_runtime_box
     
     parser = argparse.ArgumentParser(description='BC Model - Train or Evaluate')
     parser.add_argument('--mode', type=str, choices=['train', 'eval'], default='train',
@@ -787,6 +738,14 @@ if __name__ == "__main__":
                         help='Output path for trained model (default: BC_weight.pth)')
     parser.add_argument('--data_dir', type=str, default='Experiments/bc/data',
                         help='Directory containing preprocessed train_state.pkl and train_action.pkl')
+    parser.add_argument('--input_dim', type=int, default=32,
+                        help='Embedded state dimension (default: 32)')
+    parser.add_argument('--hidden_dim', type=int, default=128,
+                        help='Hidden layer dimension (default: 128)')
+    parser.add_argument('--player_id_len', type=int, default=43,
+                        help='Number of player IDs (default: 43)')
+    parser.add_argument('--shot_type_len', type=int, default=12,
+                        help='Number of shot types (default: 12)')
     
     # Evaluation arguments
     parser.add_argument('--model_path', type=str, default='Experiments/bc/BC_weight.pth',
@@ -812,6 +771,31 @@ if __name__ == "__main__":
                         help='Number of initial shots to skip in evaluation (default: 0)')
     
     args = parser.parse_args()
+
+    print_runtime_box(
+        "Runtime Parameters: Agent/bc.py",
+        [
+            ("mode", args.mode),
+            ("epochs", args.epochs),
+            ("batch_size", args.batch_size),
+            ("learning_rate", args.lr),
+            ("input_dim", args.input_dim),
+            ("hidden_dim", args.hidden_dim),
+            ("player_id_len", args.player_id_len),
+            ("shot_type_len", args.shot_type_len),
+            ("distribution", args.distribution),
+            ("gmm_num", args.gmm_num),
+            ("data_dir", args.data_dir),
+            ("output", args.output),
+            ("model_path", args.model_path),
+            ("test_split", args.test_split),
+            ("merged_csv", args.merged_csv),
+            ("player_map", args.player_map),
+            ("device", args.device),
+            ("skip_first_n", args.skip_first_n),
+            ("eval_output", args.eval_output),
+        ],
+    )
     
     if args.mode == 'train':
         print("="*50)

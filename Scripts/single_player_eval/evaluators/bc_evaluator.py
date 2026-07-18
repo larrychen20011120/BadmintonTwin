@@ -24,7 +24,7 @@ class BCEvaluator(BaseEvaluator):
     """BC模型單一選手評估器"""
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0, 
-                 model_path=None, teacher_forcing=False, save_trajectories=False,
+                 model_path=None, save_trajectories=False,
                  distribution=None, gmm_num=None):
         """
         Args:
@@ -34,11 +34,9 @@ class BCEvaluator(BaseEvaluator):
             skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             model_path: 模型路徑（可選，預設使用config中的路徑）
             distribution: 輸出模式，可選 deterministic、gaussian 或 gmm
-            teacher_forcing: 是否使用 teacher forcing 模式
             save_trajectories: 是否儲存原始軌跡
         """
         super().__init__(player_name, experiment, device, skip_first_n,
-                         teacher_forcing=teacher_forcing,
                          save_trajectories=save_trajectories)
 
         if distribution is None:
@@ -71,6 +69,13 @@ class BCEvaluator(BaseEvaluator):
         self.df = pd.read_csv(self.merged_csv_path)
         target_cols = state_col + action_col
         self.df = self.df.dropna(subset=target_cols).reset_index(drop=True)
+
+        self.print_runtime_parameters(
+            "bc",
+            distribution=self.distribution,
+            gmm_num=self.gmm_num,
+            extra_rows=[("bc.model_path", self.model_path)],
+        )
     
     def _load_model(self):
         """載入BC模型"""
@@ -137,6 +142,10 @@ class BCEvaluator(BaseEvaluator):
         
         if not rallies_data:
             return []
+
+        target_max_len = self.get_player_max_sequence_length(self.player_name)
+        if target_max_len == 0:
+            return []
         
         rally_trajectories = []
         
@@ -166,21 +175,16 @@ class BCEvaluator(BaseEvaluator):
             current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
             
             simulation_ended_early = False
+            target_pred_count = 0
             
-            for shot_idx in range(len(rally_df)):
-                row = rally_df.iloc[shot_idx]
-                ground_truth_player = row['player']
-                is_target_turn = (ground_truth_player == self.player_name)
-                
+            while target_pred_count < target_max_len:
+                current_player_id = int(current_state[17].item())
+                is_target_turn = current_player_id == self.player_id
+                current_player_name = self.player_name if is_target_turn else opponent_name
                 current_player_id = self.player_id if is_target_turn else opponent_player_id
-                
-                if self.teacher_forcing:
-                    # Teacher forcing: always use GT state from row
-                    state_for_pred = build_state_tensor_from_row(row, current_player_id).to(device)
-                else:
-                    # Rollout: use accumulated state
-                    current_state[17] = current_player_id
-                    state_for_pred = current_state
+                current_state[17] = current_player_id
+                state_for_pred = current_state
+                ball_round = int(state_for_pred[1].item())
                 
                 launch = (state_for_pred[1].item() == 1)
                 
@@ -216,25 +220,16 @@ class BCEvaluator(BaseEvaluator):
                         self.model.min_sigma
                     )[0].tolist()
                 elif self.distribution == 'gaussian':
-                    land_2d = sample_from_gaussian(
-                        land_logit,
-                        self.model.land_log_sigma_x,
-                        self.model.land_log_sigma_y
-                    )[0].tolist()
-                    move_2d = sample_from_gaussian(
-                        move_logit,
-                        self.model.move_log_sigma_x,
-                        self.model.move_log_sigma_y
-                    )[0].tolist()
+                    land_2d = sample_from_gaussian(land_logit)[0].tolist()
+                    move_2d = sample_from_gaussian(move_logit)[0].tolist()
                 else:
                     land_2d = [land_logit[0, 0].item(), land_logit[0, 1].item()]
                     move_2d = [move_logit[0, 0].item(), move_logit[0, 1].item()]
                 rally_pred_full_seq.append(build_pred_shot(
-                    ground_truth_player, int(shot_type.item()), land_2d, move_2d, int(row['ball_round'])))
-                
-                if self.teacher_forcing:
-                    # In teacher-forcing mode, do not transition; state resets from row each step
-                    continue
+                    current_player_name, int(shot_type.item()), land_2d, move_2d, ball_round))
+
+                if is_target_turn:
+                    target_pred_count += 1
                 
                 # Build action tensor
                 action_tensor = torch.tensor([

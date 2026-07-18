@@ -6,6 +6,18 @@ from abc import ABC, abstractmethod
 import json
 import os
 
+from Utils.llm import LLM
+from Utils.runtime_report import algorithm_runtime_rows, llm_rows, print_runtime_box
+
+
+def resolve_prompt_variant(experiment, style_shift_instruction_mode):
+    """Select the shifted prompt only when style-shift instructions are enabled."""
+    if style_shift_instruction_mode not in ('auto', 'off'):
+        raise ValueError("style_shift_instruction_mode must be 'auto' or 'off'")
+    if experiment == 'shifted' and style_shift_instruction_mode == 'auto':
+        return 'shifted'
+    return 'norm'
+
 
 class BaseEvaluator(ABC):
     """
@@ -15,7 +27,7 @@ class BaseEvaluator(ABC):
     """
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
-                 teacher_forcing=False, save_trajectories=False,
+                 save_trajectories=False,
                  style_shift_instruction_mode='auto', verbose_style_shift=False,
                  output_experiment=None):
         """
@@ -24,24 +36,24 @@ class BaseEvaluator(ABC):
             experiment: 實驗類型 ('norm' 或 'shifted')
             device: 運算裝置
             skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
-            teacher_forcing: 是否使用 teacher forcing（餵 GT state）模式
             save_trajectories: 是否儲存原始軌跡（雙方選手、完整 GT）
-            style_shift_instruction_mode: 'auto' 會注入可用 instruction；'off' 會關閉注入
+            style_shift_instruction_mode: 'auto' 會使用 shifted prompt 並注入可用
+                instruction；'off' 會使用一般 prompt 並關閉注入
             verbose_style_shift: 是否印出 style-shift instruction 套用狀態
             output_experiment: 存檔用的 experiment label；不影響 split/data path
         """
-        if style_shift_instruction_mode not in ('auto', 'off'):
-            raise ValueError("style_shift_instruction_mode must be 'auto' or 'off'")
-
         self.player_name = player_name
         self.experiment = experiment
         self.output_experiment = output_experiment or experiment
         self.device = device
         self.skip_first_n = skip_first_n
-        self.teacher_forcing = teacher_forcing
         self.save_trajectories = save_trajectories
         self.trajectory_output_path = None
         self.style_shift_instruction_mode = style_shift_instruction_mode
+        self.prompt_variant = resolve_prompt_variant(
+            experiment,
+            style_shift_instruction_mode,
+        )
         self.verbose_style_shift = verbose_style_shift
         self._style_shift_instruction_map = None
         self._style_shift_debug_seen = set()
@@ -53,6 +65,34 @@ class BaseEvaluator(ABC):
         self.test_split_path = self.config['paths'][f'{experiment}_split']
         self.merged_csv_path = self.config['paths']['merged_csv']
         self.player_map_path = self.config['paths']['player_map']
+
+    def print_runtime_parameters(self, algorithm, extra_rows=None, include_llm=False, **effective):
+        rows = algorithm_runtime_rows(
+            self.config,
+            algorithm,
+            experiment=self.experiment,
+            player=self.player_name,
+            device=self.device,
+            skip_first_n=self.skip_first_n,
+            **effective,
+        )
+
+        if extra_rows:
+            rows.extend(extra_rows)
+
+        if include_llm:
+            algo_config = self.config.get(algorithm, {})
+            settings = LLM.resolve_effective_settings(
+                model_name=algo_config.get('model_name'),
+                api_key=algo_config.get('api_key'),
+                host=algo_config.get('host'),
+                port=algo_config.get('port'),
+                base_url=algo_config.get('base_url'),
+                host_url=algo_config.get('host_url'),
+            )
+            rows.extend(llm_rows(settings))
+
+        print_runtime_box(f"Runtime Parameters: {algorithm}", rows)
         
     def _load_config(self):
         """載入設定檔"""
@@ -84,6 +124,30 @@ class BaseEvaluator(ABC):
             )
         
         return test_data[self.player_name]
+
+    def get_player_max_sequence_length(self, player_name=None):
+        """Return the maximum number of shots by a player in one rally."""
+        player_name = player_name or self.player_name
+        player_df = self.df[self.df['player'] == player_name]
+        if len(player_df) == 0:
+            return 0
+
+        group_cols = ['match_id']
+        if 'set' in player_df.columns:
+            group_cols.append('set')
+        group_cols.append('rally')
+
+        return int(player_df.groupby(group_cols).size().max())
+
+    def build_rollout_info(self, match_id, rally_num, current_state, action=None):
+        """Build agent info from rollout state instead of ground-truth rows."""
+        return {
+            'match_id': match_id,
+            'rally': rally_num,
+            'round': [int(current_state[1].item())],
+            'score': [int(current_state[2].item()), int(current_state[3].item())],
+            'action': [action]
+        }
 
     def _project_path(self):
         return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -145,6 +209,24 @@ class BaseEvaluator(ABC):
         info['style_shift_instruction_player'] = player_name if instruction else ''
         info['style_shift_instruction_mode'] = self.style_shift_instruction_mode
 
+        self._log_style_shift_instruction(player_name, row, instruction, available_instruction)
+        return instruction
+
+    def attach_style_shift_instruction_for_rollout(self, info, player_name, match_id, rally_num=None):
+        """Attach style-shift instruction when rollout has no current GT row."""
+        available_instruction = self.get_available_style_shift_instruction(player_name, match_id)
+        instruction = self.get_style_shift_instruction(player_name, match_id)
+
+        info['match_id'] = match_id
+        info['style_shift_instruction'] = instruction
+        info['style_shift_instruction_player'] = player_name if instruction else ''
+        info['style_shift_instruction_mode'] = self.style_shift_instruction_mode
+
+        row = {
+            'match_id': match_id,
+            'rally': rally_num if rally_num is not None else info.get('rally', ''),
+            'ball_round': info.get('round', [''])[-1] if info.get('round') else '',
+        }
         self._log_style_shift_instruction(player_name, row, instruction, available_instruction)
         return instruction
 

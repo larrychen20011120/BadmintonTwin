@@ -19,6 +19,8 @@ import yaml
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_path)
 
+from Utils.runtime_report import print_runtime_box
+
 
 REQUIRED_DATA_FILES = [
     'train_player_traj.pkl',
@@ -100,7 +102,7 @@ def train_rallynetv2(experiment_type, num_iters=None, batch_size=None, lr=None,
     if not has_required_data(resolved_data_dir):
         print(f"❌ RallyNetV2 訓練資料不存在或不完整: {resolved_data_dir}")
         print("   請先執行:")
-        print("   python Preprocessing/baseline_prepare.py --rallynetv2")
+        print(f"   python Scripts/prepare_all_data.py --{experiment_type} --rallynetv2")
         return False
 
     if load:
@@ -113,6 +115,33 @@ def train_rallynetv2(experiment_type, num_iters=None, batch_size=None, lr=None,
     hyperparameters_dir = os.path.dirname(hyperparameters_output)
     if hyperparameters_dir:
         os.makedirs(hyperparameters_dir, exist_ok=True)
+
+    print_runtime_box(
+        "Runtime Parameters: train_rallynetv2",
+        [
+            ("experiment", experiment_type),
+            ("data_dir", resolved_data_dir),
+            ("output_dir", output_dir),
+            ("hyperparameters_output", hyperparameters_output),
+            ("num_iters", num_iters),
+            ("batch_size", batch_size),
+            ("learning_rate", lr),
+            ("latent_size", latent_size),
+            ("context_size", context_size),
+            ("hidden_size", hidden_size),
+            ("lr_gamma", lr_gamma),
+            ("kl_anneal_iters", kl_anneal_iters),
+            ("pause_every", pause_every),
+            ("noise_std", noise_std),
+            ("adjoint", adjoint),
+            ("method", method),
+            ("split_ratio", split_ratio),
+            ("gmm_num", gmm_num),
+            ("min_sigma", min_sigma),
+            ("load", load),
+            ("load_step", load_step),
+        ],
+    )
 
     print('=' * 70)
     print(f'RallyNetV2 模型訓練 - {experiment_type.upper()}')

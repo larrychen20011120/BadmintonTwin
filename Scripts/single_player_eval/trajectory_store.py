@@ -97,14 +97,16 @@ def build_gt_shot_from_row(row):
                         player_location_x/y, hit_x/y, opponent_location_x/y,
                         player_score, opponent_score.
     """
+    shot_type = int(row['player_type'])
+    is_miss = shot_type == 11
     return {
         'player': str(row['player']),
         'ball_round': int(row['ball_round']),
-        'shot_type': int(row['player_type']),
-        'landing_x': float(row['landing_x']),
-        'landing_y': float(row['landing_y']),
-        'moving_x': float(row['moving_x']),
-        'moving_y': float(row['moving_y']),
+        'shot_type': shot_type,
+        'landing_x': None if is_miss else float(row['landing_x']),
+        'landing_y': None if is_miss else float(row['landing_y']),
+        'moving_x': None if is_miss else float(row['moving_x']),
+        'moving_y': None if is_miss else float(row['moving_y']),
         'player_location_x': float(row['player_location_x']),
         'player_location_y': float(row['player_location_y']),
         'hit_x': float(row['hit_x']),
@@ -129,12 +131,14 @@ def build_pred_shot(player_name, shot_type, land_logit_2d, move_logit_2d, ball_r
     Returns:
         dict.
     """
+    shot_type = int(shot_type)
+    is_miss = shot_type == 11
     return {
         'player': str(player_name),
-        'shot_type': int(shot_type),
-        'landing_x': float(land_logit_2d[0]),
-        'landing_y': float(land_logit_2d[1]),
-        'moving_x': float(move_logit_2d[0]),
-        'moving_y': float(move_logit_2d[1]),
+        'shot_type': shot_type,
+        'landing_x': None if is_miss else float(land_logit_2d[0]),
+        'landing_y': None if is_miss else float(land_logit_2d[1]),
+        'moving_x': None if is_miss else float(move_logit_2d[0]),
+        'moving_y': None if is_miss else float(move_logit_2d[1]),
         'ball_round': int(ball_round),
     }

@@ -20,8 +20,8 @@ paths:
     weight_dir: "Experiments/bc/weight"
     results_dir: "Experiments/bc/results"
     models:
-      norm: "Experiments/bc/weight/norm_model.pth"
-      shifted: "Experiments/bc/weight/shifted_model.pth"
+      norm: "Experiments/bc/weight/norm_correlated_gaussian_model.pth"
+      shifted: "Experiments/bc/weight/shifted_correlated_gaussian_model.pth"
     results:
       norm: "Experiments/bc/results/norm_eval.json"
       shifted: "Experiments/bc/results/shifted_eval.json"
@@ -35,6 +35,13 @@ paths:
     results:
       norm: "Experiments/naive_rag/results/norm_eval.json"
       shifted: "Experiments/naive_rag/results/shifted_eval.json"
+
+  # Pure LLM 實驗路徑
+  pure_llm:
+    results_dir: "Experiments/pure_llm/results"
+    results:
+      norm: "Experiments/pure_llm/results/norm_eval.json"
+      shifted: "Experiments/pure_llm/results/shifted_eval.json"
 
   # Random Agent 實驗路徑
   random:
@@ -53,73 +60,200 @@ paths:
       norm: "Experiments/timerag/results/norm_eval.json"
       shifted: "Experiments/timerag/results/shifted_eval.json"
 
-  # Twin (I-MSDP) 實驗路徑
+  # Twin (aspect-memory retrieval) 實驗路徑
   twin:
-    data:
-      norm: "Experiments/twin/data/norm"
-      shifted: "Experiments/twin/data/shifted"
+    memory:
+      norm: "Experiments/twin/memory/norm"
+      shifted: "Experiments/twin/memory/shifted"
+    embeddings:
+      norm: "Experiments/twin/embeddings/norm"
+      shifted: "Experiments/twin/embeddings/shifted"
     results_dir: "Experiments/twin/results"
     results:
       norm: "Experiments/twin/results/norm_eval.json"
       shifted: "Experiments/twin/results/shifted_eval.json"
 
+  # RallyNetV2 實驗路徑
+  rallynetv2:
+    data:
+      norm: "Experiments/rallynetv2/data/norm"
+      shifted: "Experiments/rallynetv2/data/shifted"
+    weight:
+      norm: "Experiments/rallynetv2/weight/norm/gen_e_10000.trc"
+      shifted: "Experiments/rallynetv2/weight/shifted/gen_e_10000.trc"
+    hyperparameters:
+      norm: "Experiments/rallynetv2/hyperparameters/norm.pkl"
+      shifted: "Experiments/rallynetv2/hyperparameters/shifted.pkl"
+    results_dir: "Experiments/rallynetv2/results"
+    results:
+      norm: "Experiments/rallynetv2/results/norm_eval.json"
+      shifted: "Experiments/rallynetv2/results/shifted_eval.json"
+
+  # ShuttleNet 實驗路徑
+  shuttlenet:
+    data:
+      norm: "Experiments/shuttlenet/data/norm"
+      shifted: "Experiments/shuttlenet/data/shifted"
+    weight_dir: "Experiments/shuttlenet/weight"
+    results_dir: "Experiments/shuttlenet/results"
+    models:
+      norm: "Experiments/shuttlenet/weight/norm_model.pth"
+      shifted: "Experiments/shuttlenet/weight/shifted_model.pth"
+    results:
+      norm: "Experiments/shuttlenet/results/norm_eval.json"
+      shifted: "Experiments/shuttlenet/results/shifted_eval.json"
+
+# 統一資料建構設定
+data_preparation:
+  experiments:
+    - norm
+    - shifted
+  methods:
+    - bc
+    - naive_rag
+    - timerag
+    - twin
+    - rallynetv2
+    - shuttlenet
+  create_shifted_split_if_missing: true
+
 # BC 訓練參數
 bc_training:
   epochs: 100
   batch_size: 64
-  learning_rate: 0.001
+  learning_rate: 0.0005
   input_dim: 32
-  hidden_dim: 128
+  hidden_dim: 64
   player_id_len: 43
   shot_type_len: 12
-  distribution: deterministic
+  distribution: gaussian
+  gmm_num: 5
+
+# RallyNetV2 訓練參數
+rallynetv2_training:
+  num_iters: 10000
+  batch_size: 64
+  learning_rate: 0.0005
+  latent_size: 32
+  context_size: 64
+  hidden_size: 64
+  lr_gamma: 0.999
+  kl_anneal_iters: 1000
+  pause_every: 100
+  noise_std: 0.1
+  adjoint: false
+  method: euler
+  split_ratio: 1.0
+  gmm_num: 5
+  min_sigma: 0.001
+
+# ShuttleNet 訓練參數
+shuttlenet_training:
+  epochs: 100
+  batch_size: 64
+  learning_rate: 0.0005
+  encode_length: 4
+  max_ball_round: 72
+  shot_dim: 32
+  area_dim: 32
+  player_dim: 32
+  encode_dim: 32
+  area_num: 5
+  dropout: 0.1
 
 # NaiveRAG 參數
 naive_rag:
-  model_name: "Qwen/Qwen2.5-7B-Instruct"
-  api_key: "EMPTY"
-  port: 16000
-  base_url: null  # Set to "https://openrouter.ai/api/v1" for OpenRouter
-  top_k: 5
+  skip_first_n: 0
+
+# Pure LLM 參數
+pure_llm:
   skip_first_n: 0
 
 # TimeRAG 參數
 timerag:
-  model_name: "Qwen/Qwen2.5-7B-Instruct"
-  api_key: "EMPTY"
-  port: 16000
-  base_url: null  # Set to "https://openrouter.ai/api/v1" for OpenRouter
-  window_size: 3
-  top_k: 5
+  window_size: 5
   skip_first_n: 0
 
-# Twin (I-MSDP) 參數
+# Twin (aspect-memory retrieval) 參數
 twin:
-  model_name: "Qwen/Qwen2.5-7B-Instruct"
-  api_key: "EMPTY"
-  port: 16000
-  base_url: null  # Set to "https://openrouter.ai/api/v1" for OpenRouter
-  max_scale: 10
-  top_k: 5
-  skip_first_n: 0
+  lambda_weight: 0.5
+  embedding_model: "BAAI/bge-large-en-v1.5"
+  embedding_revision: null  # 可填 Hugging Face commit hash 以固定 embedding 權重
+  embedding_device: "auto"
+  embedding_batch_size: 8
+  embedding_dtype: "float32"  # float32 | float16
+  normalize_embeddings: true
+  use_llm: true
+  workers: 1  # 設為 2 以上可按玩家平行建構；GPU embedding 請先確認顯存
+  max_rallies_per_player: null
+  derive_norm_from_shifted: true
+
+
+# 共用檢索參數
+retrieval:
+  mode: dual_db  # classic | dual_db
+  classic_top_k: 10
+  normal_top_k: 10
+  miss_top_k: 5
 
 # 評估參數
 evaluation:
   device: "cuda"  # 或 "cpu"
   skip_first_n: 0
 
-# LLM generation 參數（可依模型切換）
+# LLM 共用連線與模型設定
+# 私有 endpoint/API key 請使用環境變數覆蓋，不要直接寫入 config。
+llm:
+  # 可用 BADMINTON_LLM_TYPE=qwen/mistral/gemma 與
+  # BADMINTON_LLM_PROVIDER=local/openrouter 一鍵切換。
+  active_type: "${BADMINTON_LLM_TYPE:-qwen}"
+  active_provider: "${BADMINTON_LLM_PROVIDER:-local}"
+  providers:
+    local:
+      api_key: "${BADMINTON_LLM_API_KEY:-EMPTY}"
+      host: "${BADMINTON_LLM_HOST:-localhost}"
+      port: "${BADMINTON_LLM_PORT:-16000}"
+      base_url: "${BADMINTON_LLM_BASE_URL:-}"
+      host_url: "${BADMINTON_LLM_HOST_URL:-}"
+      models:
+        qwen: "Qwen/Qwen3.5-9B"
+        mistral: "mistralai/Ministral-3-14B-Instruct-2512"
+        gemma: "google/gemma-4-12B-it"
+    openrouter:
+      api_key: "${OPENROUTER_API_KEY}"
+      base_url: "https://openrouter.ai/api/v1"
+      default_headers:
+        HTTP-Referer: "${OPENROUTER_HTTP_REFERER:-https://github.com}"
+        X-Title: "${OPENROUTER_APP_TITLE:-BadmintonTwin}"
+      models:
+        qwen: "${OPENROUTER_QWEN_MODEL:-qwen/qwen3.5-9b}"
+        mistral: "${OPENROUTER_MISTRAL_MODEL:-mistralai/ministral-3-14b}"
+        gemma: "${OPENROUTER_GEMMA_MODEL:-google/gemma-3-12b-it}"
+
+# LLM generation 參數
 llm_generation:
-  default:
-    temperature: 0
-    top_p: 1.0
-    max_tokens: 2048
-    extra_body:
-      repetition_penalty: 1.05
-  by_model:
-    "Qwen/Qwen2.5-7B-Instruct":
-      temperature: 0
+  deterministic:
+    active: false
+    params:
+      temperature: 0.0
       top_p: 1.0
-      max_tokens: 2048
+      max_tokens: 4096
       extra_body:
-        repetition_penalty: 1.05
+        top_k: 1
+  by_type:
+    mistral:
+      temperature: 0.15
+      max_tokens: 4096
+    qwen:
+      temperature: 0.7
+      top_p: 0.8
+      max_tokens: 4096
+      extra_body:
+        repetition_penalty: 1.0
+        top_k: 20
+    gemma:
+      temperature: 1.0
+      top_p: 0.95
+      max_tokens: 4096
+      extra_body:
+        top_k: 64

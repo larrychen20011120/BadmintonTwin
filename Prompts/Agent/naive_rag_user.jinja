@@ -6,22 +6,20 @@
 
 ---
 
-## Retrieved Similar Cases ({{ top_k|int }} total)
+## Retrieved Similar Cases
+
+Use these {{ top_k|int }} retrieved single-shot cases as evidence of the target player's typical tactical choices in similar states.
 
 {% for case in cases %}
-Case {{ loop.index }} (similarity={{ "%.3f"|format(case.distance) }}):
+Case {{ loop.index }}:
 {{ case.description }}{% if not loop.last %}
 
 {% endif %}{% endfor %}
+
 ---
 
-## Step-by-Step Reasoning
+## Decision Task
 
-Provide your reasoning, then output the JSON:
-
-[1] Situation Analysis:
-[2] Case Pattern Review:
-[3] Shot Decision:
-[4] Landing & Recovery:
-
-{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+Predict the target player's next action for the current match situation.
+Base the decision on the current rally context first, then use the retrieved cases to imitate the player's likely shot type, landing placement, and recovery position.
+Return only the JSON object specified in the system prompt.

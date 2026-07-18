@@ -16,22 +16,20 @@ No explicit style-shift instruction is available for this match. Use the current
 
 ---
 
-## Retrieved Similar Cases ({{ top_k|int }} total)
+## Retrieved Similar Cases
+
+Use these {{ top_k|int }} retrieved single-shot cases as evidence of the target player's baseline tactical choices in similar states.
 
 {% for case in cases %}
-Case {{ loop.index }} (similarity={{ "%.3f"|format(case.distance) }}):
+Case {{ loop.index }}:
 {{ case.description }}{% if not loop.last %}
 
 {% endif %}{% endfor %}
+
 ---
 
-## Step-by-Step Reasoning
+## Decision Task
 
-Provide your reasoning, then output the JSON:
-
-[1] Situation Analysis:
-[2] Case Pattern Review:
-[3] Shot Decision: Use the style-shift instruction as a tactical prior when choosing the shot type, while still respecting the immediate rally context and retrieved cases.
-[4] Landing & Recovery: Use the style-shift instruction to adjust landing placement and recovery position when it is tactically reasonable.
-
-{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+Predict the target player's next action for this style-shifted match situation.
+Use the style-shift instruction as a tactical prior, but do not ignore the immediate rally context or legal shot constraints.
+Return only the JSON object specified in the system prompt.

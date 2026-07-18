@@ -88,6 +88,19 @@ def edit_distance(seq1, seq2):
     return dp[m][n] / max(m, n)
 
 
+def normalized_dtw_ndim_distance(seq_pred, seq_gt):
+    """
+    Compute n-dimensional DTW distance normalized by sqrt(warping path length).
+    """
+    from dtaidistance import dtw_ndim
+
+    dtw_dist = dtw_ndim.distance(seq_pred, seq_gt)
+    warping_path = dtw_ndim.warping_path(seq_pred, seq_gt)
+    if not warping_path:
+        return float('inf')
+    return float(dtw_dist / np.sqrt(len(warping_path)))
+
+
 def pad_and_convert_to_tensor(merged_data, max_length):
     """
     將合併後的資料填充到相同的長度並轉換成 PyTorch tensor。

@@ -89,10 +89,15 @@ def simplify_timerag_windows(windows):
             os_ = ws.get("opponent_score")
             window_steps.append({
                 "step": i,
+                "ball_round": ws.get("ball_round"),
+                "hitter": ws.get("player", "?"),
+                "turn_role": ws.get("turn_role", "target" if ws.get("is_target_turn") else "opponent"),
                 "opponent_hit": ws.get("opponent_type_name", "?"),
                 "ball_landing_at": ws.get("hit_position_area", "?"),
                 "player_at": ws.get("player_location_area", "?"),
                 "player_responded": ws.get("player_type_name", "?"),
+                "player_hit_to": ws.get("landing_area", "?"),
+                "player_moved_to": ws.get("movement_area", "?"),
                 "score": f"{int(ps)}-{int(os_)}" if ps is not None and os_ is not None else "?-?",
             })
 

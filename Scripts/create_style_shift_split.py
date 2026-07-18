@@ -12,7 +12,13 @@
 import json
 import argparse
 import os
+import sys
 import yaml
+
+project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(project_path)
+
+from Utils.runtime_report import print_runtime_box
 
 
 def load_config():
@@ -144,6 +150,15 @@ if __name__ == "__main__":
     
     # 載入設定
     config = load_config()
+
+    print_runtime_box(
+        "Runtime Parameters: create_style_shift_split",
+        [
+            ("validate", args.validate),
+            ("output", args.output or config['paths']['shifted_split']),
+            ("style_shift_json", config['paths']['style_shift_json']),
+        ],
+    )
     
     if args.validate:
         validate_split(config)

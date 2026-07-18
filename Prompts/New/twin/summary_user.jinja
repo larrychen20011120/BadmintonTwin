@@ -1,0 +1,19 @@
+## Task
+
+Summarize one completed rally from the target player's perspective. Synthesize the complete rally rather than emphasizing one isolated stroke. This summary will support target-player imitation as previous-rally context for every stroke in the next rally.
+
+Do not mention real player names. Use only "the target player" and "the opponent".
+
+## Completed Rally
+
+{{ rally_text }}
+
+## Required JSON
+
+Return only one valid JSON object:
+
+```json
+{
+  "rally_summary": "one concise tactical summary including score context, progression, turning point, physical-load proxy if relevant, and result if known"
+}
+```

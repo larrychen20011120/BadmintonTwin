@@ -19,6 +19,8 @@ import yaml
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_path)
 
+from Utils.runtime_report import algorithm_runtime_rows, print_runtime_box
+
 
 def load_config():
     """載入設定檔"""
@@ -53,9 +55,16 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
         print("   支援的類型: norm, shifted")
         return False
     
-    # 決定輸出路徑
+    distribution = distribution or config['bc_training'].get('distribution', 'deterministic')
+
+    # Keep correlated Gaussian checkpoints separate from the default GMM models.
     if output_name:
         output_path = os.path.join(config['paths']['bc']['weight_dir'], output_name)
+    elif distribution == 'gaussian':
+        output_path = os.path.join(
+            config['paths']['bc']['weight_dir'],
+            f'{experiment_type}_correlated_gaussian_model.pth'
+        )
     else:
         output_path = default_output
     
@@ -63,7 +72,6 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     # 設定輸出分布
-    distribution = distribution or config['bc_training'].get('distribution', 'deterministic')
     if distribution not in ('deterministic', 'gaussian', 'gmm'):
         print(f"❌ 不支援的 distribution: {distribution}")
         print("   支援的類型: deterministic, gaussian, gmm")
@@ -75,6 +83,31 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     batch_size = batch_size or bc_config['batch_size']
     lr = lr or bc_config['learning_rate']
     gmm_num = gmm_num or bc_config.get('gmm_num', 5)
+    input_dim = bc_config['input_dim']
+    hidden_dim = bc_config['hidden_dim']
+    player_id_len = bc_config['player_id_len']
+    shot_type_len = bc_config['shot_type_len']
+
+    print_runtime_box(
+        "Runtime Parameters: train_bc",
+        algorithm_runtime_rows(
+            config,
+            "bc",
+            experiment=experiment_type,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=lr,
+            distribution=distribution,
+            gmm_num=gmm_num,
+        ) + [
+            ("bc.input_dim", input_dim),
+            ("bc.hidden_dim", hidden_dim),
+            ("bc.player_id_len", player_id_len),
+            ("bc.shot_type_len", shot_type_len),
+            ("data_dir", data_dir),
+            ("output_path", output_path),
+        ],
+    )
     
     # 檢查資料是否存在
     state_path = os.path.join(data_dir, 'train_state.pkl')
@@ -94,6 +127,10 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     print(f"  - Epochs:     {epochs}")
     print(f"  - Batch Size: {batch_size}")
     print(f"  - Learning Rate: {lr}")
+    print(f"  - Input Dimension: {input_dim}")
+    print(f"  - Hidden Dimension: {hidden_dim}")
+    print(f"  - Player ID Count: {player_id_len}")
+    print(f"  - Shot Type Count: {shot_type_len}")
     print(f"  - Distribution: {distribution}")
     if distribution == 'gmm':
         print(f"  - GMM Components: {gmm_num}")
@@ -111,7 +148,11 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
         '--lr', str(lr),
         '--output', output_path,
         '--distribution', distribution,
-        '--gmm_num', str(gmm_num)
+        '--gmm_num', str(gmm_num),
+        '--input_dim', str(input_dim),
+        '--hidden_dim', str(hidden_dim),
+        '--player_id_len', str(player_id_len),
+        '--shot_type_len', str(shot_type_len)
     ]
     
     print(f"\n執行命令:\n{' '.join(cmd)}\n")
@@ -220,7 +261,7 @@ def main():
     parser.add_argument(
         '--output-name',
         type=str,
-        help='自訂輸出檔名（預設: norm_model.pth 或 shifted_model.pth）'
+        help='自訂輸出檔名（Gaussian 預設使用獨立的 correlated_gaussian_model 檔名）'
     )
     parser.add_argument(
         '--distribution',

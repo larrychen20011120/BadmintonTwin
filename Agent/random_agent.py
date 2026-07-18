@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from torch.nn import CTCLoss
 import pandas as pd
 from tqdm import tqdm
-from dtaidistance import dtw_ndim
 
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
@@ -214,12 +213,12 @@ def evaluate_random_on_test(test_split_path, merged_csv_path, player_index_map_p
                 if len(rally_land_gt_seq) > 0:
                     land_pred_array = np.array(rally_land_pred_seq)
                     land_gt_array = np.array(rally_land_gt_seq)
-                    land_dtw = dtw_ndim.distance(land_pred_array, land_gt_array) / len(land_gt_array)
+                    land_dtw = normalized_dtw_ndim_distance(land_pred_array, land_gt_array)
                     rally_land_dtw_list.append(land_dtw)
                     
                     move_pred_array = np.array(rally_move_pred_seq)
                     move_gt_array = np.array(rally_move_gt_seq)
-                    move_dtw = dtw_ndim.distance(move_pred_array, move_gt_array) / len(move_gt_array)
+                    move_dtw = normalized_dtw_ndim_distance(move_pred_array, move_gt_array)
                     rally_move_dtw_list.append(move_dtw)
                     
                     rally_shot_logits_tensor = torch.stack(rally_shot_logits_seq)
@@ -335,6 +334,7 @@ def run_evaluation(args):
 
 if __name__ == "__main__":
     import argparse
+    from Utils.runtime_report import print_runtime_box
     
     parser = argparse.ArgumentParser(description='Random Agent - Simulate or Evaluate')
     parser.add_argument('--seed', type=int, default=42,
@@ -356,5 +356,17 @@ if __name__ == "__main__":
                         help='Number of initial shots to skip in evaluation (default: 0)')
     
     args = parser.parse_args()
+
+    print_runtime_box(
+        "Runtime Parameters: Agent/random_agent.py",
+        [
+            ("seed", args.seed),
+            ("test_split", args.test_split),
+            ("merged_csv", args.merged_csv),
+            ("player_map", args.player_map),
+            ("output", args.output),
+            ("skip_first_n", args.skip_first_n),
+        ],
+    )
     
     run_evaluation(args)

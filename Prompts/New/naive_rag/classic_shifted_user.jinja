@@ -1,0 +1,55 @@
+This is an imitation task, not tactical optimization. Predict the behavior of the specific target player rather than selecting an ideal tactic.
+
+Jointly analyze the complete current rally and every retrieved case and the following instruction to predict the action this target player is most likely to produce.
+First determine whether the shot should be the 'Missed shot'. 
+If not the 'Missed shot', synthesize all evidence to predict the likely shot, landing position, and recovery position.
+
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Following Instruction
+
+{{ style_shift_instruction }}
+
+---
+
+## Retrieved Similar Cases
+
+{% for case in cases %}
+Case {{ loop.index }}:
+{{ case.description }}{% if not loop.last %}
+
+{% endif %}{% endfor %}
+
+---
+
+## Output Format
+
+Return only one valid JSON object. Do not use markdown fences, XML tags, or text outside the JSON object.
+
+{
+  "rationale": "a concise imitation rationale that synthesizes the current rally, all retrieved cases, and the following instruction",
+  "action": {
+    "shot_type": "<exact shot type name>",
+    "landing_area": <semantic area name string or null>,
+    "landing_x": <integer 0 to 354 or null>,
+    "landing_y": <integer 0 to 479 or null>,
+    "moving_area": <semantic area name string or null>,
+    "moving_x": <integer 0 to 354 or null>,
+    "moving_y": <integer 0 to 479 or null>
+  }
+}
+
+## Action Constraints
+
+- `shot_type` must be one of the exact shot type names mentioned above.
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`.
+- Use Missed shot when the agent fails to reach the shuttle, the physical situation or positioning is too difficult to produce any legal return into the opponent's court.
+- For `Missed shot`, set both semantic areas and all four coordinates to `null`.
+- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas.
+- Do not include extra fields.

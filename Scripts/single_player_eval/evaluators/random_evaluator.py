@@ -24,7 +24,7 @@ class RandomEvaluator(BaseEvaluator):
     """Random Agent單一選手評估器"""
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0, seed=None,
-                 teacher_forcing=False, save_trajectories=False):
+                 save_trajectories=False):
         """
         Args:
             player_name: 選手名稱
@@ -32,11 +32,9 @@ class RandomEvaluator(BaseEvaluator):
             device: 運算裝置
             skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             seed: 隨機種子（可選）
-            teacher_forcing: 是否使用 teacher forcing 模式
             save_trajectories: 是否儲存原始軌跡
         """
         super().__init__(player_name, experiment, device, skip_first_n,
-                         teacher_forcing=teacher_forcing,
                          save_trajectories=save_trajectories)
         
         self.seed = seed
@@ -61,6 +59,8 @@ class RandomEvaluator(BaseEvaluator):
         self.df = pd.read_csv(self.merged_csv_path)
         target_cols = state_col + action_col
         self.df = self.df.dropna(subset=target_cols).reset_index(drop=True)
+
+        self.print_runtime_parameters("random", seed=self.seed)
     
     def get_algorithm_name(self):
         return "random"
@@ -88,6 +88,9 @@ class RandomEvaluator(BaseEvaluator):
         
         # 取得選手的測試比賽
         test_match_ids = self.get_player_test_matches()
+        target_max_len = self.get_player_max_sequence_length(self.player_name)
+        if target_max_len == 0:
+            return []
         
         rally_trajectories = []
         
@@ -139,27 +142,19 @@ class RandomEvaluator(BaseEvaluator):
                 state_values[-1] = current_player_id
                 current_state = torch.tensor(state_values, dtype=torch.float32)
                 
-                info = self._build_info(first_row)
-                
                 simulation_ended_early = False
+                target_pred_count = 0
+                last_action = None
                 
-                for shot_idx in range(len(rally_df)):
-                    row = rally_df.iloc[shot_idx]
-                    ground_truth_player = row['player']
-                    is_target_turn = (ground_truth_player == self.player_name)
-                    
+                while target_pred_count < target_max_len:
+                    current_player_id = int(current_state[17].item())
+                    is_target_turn = current_player_id == self.player_id
+                    current_player_name = self.player_name if is_target_turn else opponent_name
                     current_player_id = self.player_id if is_target_turn else opponent_player_id
-
-                    if self.teacher_forcing:
-                        tf_values = [row[col] for col in state_col]
-                        tf_values[-1] = current_player_id
-                        state_for_pred = torch.tensor(tf_values, dtype=torch.float32)
-                    else:
-                        current_state[17] = current_player_id
-                        state_for_pred = current_state
-                    
-                    # 更新info
-                    info['score'] = [row['player_score'], row['opponent_score']]
+                    current_state[17] = current_player_id
+                    state_for_pred = current_state
+                    info = self.build_rollout_info(match_id, rally_num, state_for_pred, last_action)
+                    ball_round = int(state_for_pred[1].item())
                     
                     launch = (state_for_pred[1].item() == 1)
                     
@@ -180,10 +175,9 @@ class RandomEvaluator(BaseEvaluator):
                     land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]
                     move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
                     rally_pred_full_seq.append(build_pred_shot(
-                        ground_truth_player, int(output_shot), land_2d, move_2d, int(row['ball_round'])))
-                    
-                    if self.teacher_forcing:
-                        continue
+                        current_player_name, int(output_shot), land_2d, move_2d, ball_round))
+                    if is_target_turn:
+                        target_pred_count += 1
                     
                     # Build action tensor for transition
                     action_tensor = torch.tensor([
@@ -201,7 +195,7 @@ class RandomEvaluator(BaseEvaluator):
                         break
                     
                     current_state = next_state
-                    info['action'] = [action]
+                    last_action = action
                 
                 # Save rally trajectory (包含雙方玩家，GT完整長度)
                 if self.save_trajectories:

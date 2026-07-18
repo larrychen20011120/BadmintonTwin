@@ -1,0 +1,56 @@
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Retrieved Similar Cases ({{ top_k|int }} cases)
+
+{% for case in cases %}
+Case {{ case.index }} ({{ case.scale_label }}, distance={{ "%.3f"|format(case.distance) }}):
+{{ case.description }}
+
+{% endfor %}
+---
+
+Convert these cases into tactical evidence for a later decision model.
+
+Return exactly this JSON shape:
+
+{
+  "case_summaries": [
+    {
+      "case_index": 1,
+      "scale_label": "short-scale",
+      "similarity": 0.123,
+      "incoming_pressure": "opponent shot and arrival area",
+      "player_response_pattern": "historical response pattern",
+      "tactical_intent": "why this response matters tactically",
+      "candidate_action": {
+        "shot_type": "Drop",
+        "landing_area": "Front Center",
+        "moving_area": "Mid Center",
+        "landing_x": 0.000,
+        "landing_y": 0.700,
+        "moving_x": 0.000,
+        "moving_y": -0.100
+      }
+    }
+  ],
+  "cross_case_pattern": "main shared pattern across cases",
+  "agreements": ["evidence that points in the same direction"],
+  "conflicts": ["evidence that disagrees or is weak"],
+  "recommended_tactical_options": [
+    {
+      "shot_type": "Drop",
+      "intent": "tactical option supported by cases",
+      "landing_area": "Front Center",
+      "moving_area": "Mid Center",
+      "evidence_cases": [1, 3]
+    }
+  ]
+}
+
+Do not choose the final current action.

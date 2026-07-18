@@ -1,7 +1,13 @@
 import os
+import sys
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+
+project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.append(project_path)
+
+from Utils.runtime_report import print_runtime_box
 
 def merge_shuttleset(shuttleset_path, shuttleset22_path, save_path):
 
@@ -97,5 +103,14 @@ if __name__ == "__main__":
     shuttleset22_path = os.path.join("Data", "input_data", "shuttleset22.csv")
 
     merged_target_path = os.path.join("Data", "intermediate_data", "merged.csv")
+
+    print_runtime_box(
+        "Runtime Parameters: Preprocessing/data.py",
+        [
+            ("shuttleset_path", shuttleset_path),
+            ("shuttleset22_path", shuttleset22_path),
+            ("merged_target_path", merged_target_path),
+        ],
+    )
 
     shuttlesets_df = merge_shuttleset(shuttleset_path, shuttleset22_path, merged_target_path)

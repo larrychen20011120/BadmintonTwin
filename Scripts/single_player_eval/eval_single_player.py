@@ -26,6 +26,7 @@
     - rallynet: RallyNet (未實現)
     - rallynetv2: RallyNetV2
     - naive_rag: NaiveRAG
+    - pure_llm: Pure LLM
     - random: Random Agent
 """
 
@@ -38,6 +39,9 @@ import json
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(project_path)
 
+from Utils.llm import LLM
+from Utils.runtime_report import algorithm_runtime_rows, llm_rows, print_runtime_box
+
 
 def get_algorithm_map():
     """
@@ -48,18 +52,22 @@ def get_algorithm_map():
         BCEvaluator,
         RallyNetV2Evaluator,
         NaiveRAGEvaluator,
+        PureLLMEvaluator,
         TimeRAGEvaluator,
         TwinEvaluator,
-        RandomEvaluator
+        RandomEvaluator,
+        ShuttleNetEvaluator
     )
     
     return {
         'bc': BCEvaluator,
         'rallynetv2': RallyNetV2Evaluator,
         'naive_rag': NaiveRAGEvaluator,
+        'pure_llm': PureLLMEvaluator,
         'timerag': TimeRAGEvaluator,
         'twin': TwinEvaluator,
         'random': RandomEvaluator,
+        'shuttlenet': ShuttleNetEvaluator,
     }
 
 
@@ -105,9 +113,11 @@ def list_available_algorithms():
         ('rallynet', 'RallyNet - SDE-based模型 (未實現)', False),
         ('rallynetv2', 'RallyNetV2 - 擴展版RallyNet', True),
         ('naive_rag', 'NaiveRAG - 基於檢索的LLM方法', True),
+        ('pure_llm', 'PureLLM - 無檢索的純LLM方法', True),
         ('timerag', 'TimeRAG - 時間窗口檢索的LLM方法', True),
-        ('twin', 'Twin (I-MSDP) - 多尺度軌跡檢索的LLM方法', True),
+        ('twin', 'Twin - aspect-memory retrieval 的LLM方法', True),
         ('random', 'Random Agent - 隨機基線', True),
+        ('shuttlenet', 'ShuttleNet - position-aware rally/player fusion', True),
     ]
 
     for algo, desc, implemented in algorithms:
@@ -264,7 +274,7 @@ def main():
     parser.add_argument(
         '--algorithm',
         type=str,
-        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'timerag', 'twin', 'random'],
+        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'pure_llm', 'timerag', 'twin', 'random', 'shuttlenet'],
         help='要使用的演算法'
     )
     
@@ -286,16 +296,16 @@ def main():
     parser.add_argument(
         '--device',
         type=str,
-        default='cuda',
+        default=None,
         choices=['cuda', 'cpu'],
-        help='運算裝置（預設: cuda）'
+        help='運算裝置（預設讀取 config evaluation.device）'
     )
     
     parser.add_argument(
         '--skip-first-n',
         type=int,
-        default=0,
-        help='跳過前n個shots（預設: 0）'
+        default=None,
+        help='跳過前n個shots（預設讀取 config）'
     )
     
     parser.add_argument(
@@ -327,15 +337,15 @@ def main():
     parser.add_argument(
         '--model-path',
         type=str,
-        help='自訂模型路徑（僅適用於bc, rallynet, rallynetv2）'
+        help='自訂模型路徑（適用於bc, rallynet, rallynetv2, shuttlenet）'
     )
 
     parser.add_argument(
         '--distribution',
         type=str,
-        default='deterministic',
+        default=None,
         choices=['deterministic', 'gaussian', 'gmm'],
-        help='BC輸出模式（僅適用於bc）：deterministic、gaussian 或 gmm（預設: deterministic）'
+        help='BC輸出模式（僅適用於bc）：deterministic、gaussian 或 gmm（預設讀取 config）'
     )
     parser.add_argument(
         '--gmm-num',
@@ -358,22 +368,29 @@ def main():
     parser.add_argument(
         '--top-k',
         type=int,
-        default=5,
-        help='RAG檢索數量（僅適用於naive_rag, timerag, twin，預設: 5）'
+        default=None,
+        help='Classic RAG檢索數量（僅適用於naive_rag, timerag, twin, twin2，預設讀取 config retrieval.classic_top_k）'
     )
     
     parser.add_argument(
         '--window-size',
         type=int,
-        default=3,
-        help='時間窗口大小（僅適用於timerag，預設: 3）'
+        default=None,
+        help='時間窗口大小（僅適用於timerag，預設讀取 config）'
     )
     
     parser.add_argument(
         '--max-scale',
         type=int,
-        default=10,
-        help='I-MSDP最大suffix長度（僅適用於twin，預設: 10）'
+        default=None,
+        help='Deprecated; Twin now uses --lambda-weight.'
+    )
+
+    parser.add_argument(
+        '--lambda-weight',
+        type=float,
+        default=None,
+        help='Twin numeric/semantic retrieval mixing weight（僅適用於twin，預設讀取 config）'
     )
 
     parser.add_argument(
@@ -381,7 +398,9 @@ def main():
         type=str,
         default='auto',
         choices=['auto', 'off'],
-        help='Style-shift instruction 注入模式（僅適用於 shifted 的 naive_rag/timerag/twin）：auto 或 off'
+        help=('Style-shift instruction 模式（僅適用於 shifted 的 '
+              'pure_llm/naive_rag/timerag/twin/twin2）：auto 使用 shifted prompt 並注入 instruction；'
+              'off 使用一般 prompt 且不注入 instruction')
     )
 
     parser.add_argument(
@@ -407,6 +426,22 @@ def main():
         print("\n❌ 錯誤: 必須指定 --algorithm 和 --player")
         print("   或使用 --list-players 查看可用的選手")
         return 1
+
+    config = load_config()
+    eval_config = config.get('evaluation', {})
+    algorithm_config = config.get(args.algorithm, {})
+    retrieval_config = config.get('retrieval', {})
+    device = args.device or eval_config.get('device', 'cuda')
+    skip_first_n = (
+        args.skip_first_n
+        if args.skip_first_n is not None
+        else algorithm_config.get('skip_first_n', eval_config.get('skip_first_n', 0))
+    )
+    effective_top_k = args.top_k if args.top_k is not None else retrieval_config.get('classic_top_k', retrieval_config.get('top_k', algorithm_config.get('top_k')))
+    effective_window_size = args.window_size if args.window_size is not None else algorithm_config.get('window_size')
+    if args.algorithm == 'twin' and args.max_scale is not None:
+        print("Warning: --max-scale is deprecated and ignored for Twin; use --lambda-weight.")
+    effective_lambda_weight = args.lambda_weight if args.lambda_weight is not None else algorithm_config.get('lambda_weight')
     
     # 收集額外參數
     kwargs = {}
@@ -420,26 +455,44 @@ def main():
         kwargs['hyperparameters_path'] = args.hyperparameters_path
     if args.seed is not None:
         kwargs['seed'] = args.seed
-    if args.top_k != 5:
+    if args.algorithm in ('naive_rag', 'timerag', 'twin') and args.top_k is not None:
         kwargs['top_k'] = args.top_k
-    if args.algorithm == 'timerag':
+    if args.algorithm == 'timerag' and args.window_size is not None:
         kwargs['window_size'] = args.window_size
-    if args.algorithm == 'twin':
-        kwargs['max_scale'] = args.max_scale
+    if args.algorithm == 'twin' and effective_lambda_weight is not None:
+        kwargs['lambda_weight'] = effective_lambda_weight
     if args.save_trajectories:
         kwargs['save_trajectories'] = True
-    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
+    if args.algorithm in ('pure_llm', 'naive_rag', 'timerag', 'twin'):
         kwargs['style_shift_instruction_mode'] = args.style_shift_instruction
         kwargs['verbose_style_shift'] = args.verbose_style_shift
         kwargs['output_experiment'] = output_experiment_label(args.experiment, args.style_shift_instruction)
-    
+
+    rows = algorithm_runtime_rows(
+        config,
+        args.algorithm,
+        experiment=args.experiment,
+        player=args.player,
+        device=device,
+        skip_first_n=skip_first_n,
+        top_k=effective_top_k,
+        retrieval_mode=retrieval_config.get('mode'),
+        normal_top_k=retrieval_config.get('normal_top_k'),
+        miss_top_k=retrieval_config.get('miss_top_k'),
+        window_size=effective_window_size,
+        lambda_weight=effective_lambda_weight,
+    )
+    if args.algorithm in ('pure_llm', 'naive_rag', 'timerag', 'twin'):
+        rows.extend(llm_rows(LLM.resolve_effective_settings()))
+    print_runtime_box(f"Runtime Parameters: eval_single_player/{args.algorithm}", rows)
+     
     # 執行評估
     results = evaluate_single_player(
         algorithm=args.algorithm,
         player_name=args.player,
         experiment=args.experiment,
-        device=args.device,
-        skip_first_n=args.skip_first_n,
+        device=device,
+        skip_first_n=skip_first_n,
         save_results=not args.no_save,
         **kwargs
     )

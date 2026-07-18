@@ -1,0 +1,31 @@
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Style-Shift Instruction
+
+{% if style_shift_instruction %}
+{{ style_shift_instruction }}
+{% else %}
+No explicit style-shift instruction is available for this match. Use the current rally context normally.
+{% endif %}
+
+---
+
+## Step-by-Step Reasoning
+
+Provide your reasoning inside `<rationale>`, then output the JSON inside `<action>`:
+
+<rationale>
+[1] Situation Analysis:
+[2] Tactical Decision: Use the style-shift instruction as a tactical prior when choosing the shot type, while still respecting the immediate rally context.
+[3] Landing & Recovery: Use the style-shift instruction to adjust landing placement and recovery position when it is tactically reasonable.
+</rationale>
+
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+</action>

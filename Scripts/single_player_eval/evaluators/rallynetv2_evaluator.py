@@ -17,9 +17,17 @@ sys.path.append(project_path)
 
 from .base_evaluator import BaseEvaluator
 from Agent.rallynetv2 import LatentSDE
-from Agent.eval_rallynetv2 import build_state_tensor_from_row
 from Utils.helper import state_col, action_col, transition, terminate
 from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
+
+
+def build_state_tensor_from_row(row, player_id):
+    """
+    Build state tensor from dataframe row using state_col ordering.
+    """
+    state_values = [row[col] for col in state_col]
+    state_values[-1] = player_id
+    return torch.tensor(state_values, dtype=torch.float32)
 
 
 class RallyNetV2Evaluator(BaseEvaluator):
@@ -27,7 +35,7 @@ class RallyNetV2Evaluator(BaseEvaluator):
     
     def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
                  model_path=None, hyperparameters_path=None,
-                 teacher_forcing=False, save_trajectories=False):
+                 save_trajectories=False):
         """
         Args:
             player_name: 選手名稱
@@ -36,20 +44,18 @@ class RallyNetV2Evaluator(BaseEvaluator):
             skip_first_n: 跳過前n個shots (只在存檔時記錄，不影響模擬)
             model_path: 模型路徑（可選）
             hyperparameters_path: hyperparameters路徑（可選）
-            teacher_forcing: 是否使用 teacher forcing 模式
         """
         super().__init__(player_name, experiment, device, skip_first_n,
-                         teacher_forcing=teacher_forcing,
                          save_trajectories=save_trajectories)
         
         # 設定模型路徑
         if model_path is None:
-            self.model_path = 'Experiments/rallynetv2/weight/gen_e_30000.trc'
+            self.model_path = self.config['paths']['rallynetv2']['weight'][experiment]
         else:
             self.model_path = model_path
         
         if hyperparameters_path is None:
-            self.hyperparameters_path = 'Experiments/rallynetv2/hyperparameters.pkl'
+            self.hyperparameters_path = self.config['paths']['rallynetv2']['hyperparameters'][experiment]
         else:
             self.hyperparameters_path = hyperparameters_path
         
@@ -72,6 +78,14 @@ class RallyNetV2Evaluator(BaseEvaluator):
         
         # 準備時間步
         self.ts = self._prepare_ts()
+
+        self.print_runtime_parameters(
+            "rallynetv2",
+            extra_rows=[
+                ("rallynetv2.model_path", self.model_path),
+                ("rallynetv2.hyperparameters_path", self.hyperparameters_path),
+            ],
+        )
     
     def _load_model(self):
         """載入RallyNetV2模型"""
@@ -119,6 +133,9 @@ class RallyNetV2Evaluator(BaseEvaluator):
         
         # 取得選手的測試比賽
         test_match_ids = self.get_player_test_matches()
+        target_max_len = self.get_player_max_sequence_length(self.player_name)
+        if target_max_len == 0:
+            return []
         
         rally_trajectories = []
         
@@ -166,38 +183,23 @@ class RallyNetV2Evaluator(BaseEvaluator):
                 current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
                 current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
                 
-                # 初始化ht tensor
-                rally_length = len(rally_df)
-                
-                if self.teacher_forcing:
-                    # Pre-build ht with all GT states
-                    ht = torch.zeros(rally_length, 1, 18, device=device)
-                    for i in range(rally_length):
-                        row_i = rally_df.iloc[i]
-                        pname = row_i['player']
-                        pid = self.player_id if pname == self.player_name else opponent_player_id
-                        ht[i, :, :] = build_state_tensor_from_row(row_i, pid).to(device)
-                else:
-                    ht = torch.zeros(rally_length, 1, 18, device=device)
+                max_rollout_steps = max(target_max_len * 2 + 2, len(rally_df), 1)
+                ht = torch.zeros(max_rollout_steps, 1, 18, device=device)
                 
                 rally_done = False
                 shot_idx = 0
                 simulation_ended_early = False
+                target_pred_count = 0
                 
-                while not rally_done and shot_idx < len(rally_df):
-                    row = rally_df.iloc[shot_idx]
-                    ground_truth_player = row['player']
-                    is_target_turn = (ground_truth_player == self.player_name)
+                while not rally_done and target_pred_count < target_max_len and shot_idx < max_rollout_steps:
+                    current_player_id = int(current_state[17].item())
+                    is_target_turn = current_player_id == self.player_id
+                    current_player_name = self.player_name if is_target_turn else opponent_name
                     current_player_id = self.player_id if is_target_turn else opponent_player_id
-                    
-                    if self.teacher_forcing:
-                        # ht already pre-built with GT states
-                        launch = (ht[shot_idx, 0, 1].item() == 1)
-                    else:
-                        current_state[17] = current_player_id
-                        launch = (current_state[1].item() == 1)
-                        # Update ht with current (potentially rolled-out) state
-                        ht[shot_idx, :, :] = current_state
+                    current_state[17] = current_player_id
+                    launch = (current_state[1].item() == 1)
+                    ball_round = int(current_state[1].item())
+                    ht[shot_idx, :, :] = current_state
                     
                     with torch.inference_mode():
                         
@@ -235,11 +237,9 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]
                     move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
                     rally_pred_full_seq.append(build_pred_shot(
-                        ground_truth_player, int(shot_type_masked.item()), land_2d, move_2d, int(row['ball_round'])))
-                    
-                    if self.teacher_forcing:
-                        shot_idx += 1
-                        continue
+                        current_player_name, int(shot_type_masked.item()), land_2d, move_2d, ball_round))
+                    if is_target_turn:
+                        target_pred_count += 1
                     
                     # Build action tensor
                     action_tensor = torch.tensor([

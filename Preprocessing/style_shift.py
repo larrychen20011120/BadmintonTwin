@@ -2,98 +2,295 @@ import argparse
 import json
 import os
 import sys
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+import yaml
 from jinja2 import Template
 
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
 
-from Preprocessing.match_feature import extract_match_features
+from Preprocessing.match_feature import extract_style_profile_features
 from Utils.llm import LLM
+from Utils.runtime_report import llm_rows, print_runtime_box
 
 
-def construct_user_prompt(user_prompt_template, normal_profile, abnormal_profile):
+FEATURE_COLS = [
+    'attack_shot_ratio',
+    'defense_shot_ratio',
+    'sideline_ratio',
+    'frontcourt_ratio',
+    'deepcourt_ratio',
+    'signed_side_bias',
+    'average_rally_length',
+    'average_movement',
+    'long_rally_loss_ratio',
+    'landing_opponent_distance',
+]
 
-    name_map = {
-        'avg_round': "average number of shots per rally",
-        'avg_win_round': "average number of shots in rallies won by the player",
-        'avg_lose_round': "average number of shots in rallies lost by the player", 
-        'avg_moving_distance': "average distance traveled by the player per shot",
-        'attack_shot_ratio': "the ratio of attacking shots in the match", 
-        'balance_shot_ratio': "the ratio of balance shots in the match", 
-        'defence_shot_ratio': "the ratio of defensive shots in the match", 
-        'avg_opponent_moving_distance': "average distance traveled by the opponent per shot",
-        'avg_location_x': "average player position on the court (X-axis)",
-        'avg_location_y': "average player position on the court (Y-axis)",
-        'avg_landing_x': "average landing position of the shuttlecock on the opponent court (X-axis)", 
-        'avg_landing_y': "average landing position of the shuttlecock on the opponent court (Y-axis)", 
+FEATURE_DIMENSIONS = {
+    'style_profile': FEATURE_COLS,
+}
+
+FEATURE_LABELS = {
+    'attack_shot_ratio': 'attack shot ratio',
+    'defense_shot_ratio': 'defense shot ratio',
+    'sideline_ratio': 'sideline landing ratio',
+    'frontcourt_ratio': 'frontcourt landing ratio',
+    'deepcourt_ratio': 'deepcourt landing ratio',
+    'signed_side_bias': 'signed left-right landing bias',
+    'average_rally_length': 'average rally length',
+    'average_movement': 'average movement',
+    'long_rally_loss_ratio': 'long-rally loss ratio',
+    'landing_opponent_distance': 'landing-opponent distance',
+}
+
+def _json_dumps(data):
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _clean_number(value):
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (np.integer, np.floating)):
+        value = value.item()
+    if isinstance(value, float):
+        return round(value, 6)
+    return value
+
+
+def _clean_dict(data):
+    return {key: _clean_number(value) for key, value in data.items()}
+
+
+def _to_nested_profile(flat_profile):
+    return {key: _clean_number(value) for key, value in flat_profile.items()}
+
+
+def _profile_from_row(row, feature_cols):
+    return _to_nested_profile({col: row[col] for col in feature_cols})
+
+
+def _mean_profile(df, feature_cols):
+    if df.empty:
+        return _to_nested_profile({col: np.nan for col in feature_cols})
+    return _to_nested_profile(dict(df[feature_cols].mean(skipna=True)))
+
+
+def _load_config():
+    config_path = os.path.join(project_path, 'Scripts', 'config.yaml')
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f) or {}
+
+
+def _project_path(path):
+    if os.path.isabs(path):
+        return path
+    return os.path.join(project_path, path)
+
+
+def _build_match_player_df(merged_df):
+    records = []
+    for match_id, match_df in merged_df.groupby('match_id'):
+        player_counts = match_df['player'].dropna().value_counts()
+        if len(player_counts) < 2:
+            continue
+        player, opponent = player_counts.index[:2].tolist()
+        records.append({
+            'match_id': int(match_id),
+            'player': player,
+            'opponent': opponent,
+        })
+    return pd.DataFrame(records)
+
+
+def _load_match_player_df(merged_df, match_path):
+    if match_path and os.path.exists(match_path):
+        return pd.read_csv(match_path)
+    return _build_match_player_df(merged_df)
+
+
+def _iqr_value(value, median, iqr, cap):
+    if pd.isna(value) or pd.isna(median):
+        return 0.0
+    if pd.isna(iqr) or iqr == 0:
+        return 0.0 if value == median else cap
+    return (value - median) / iqr
+
+
+def _deviation_strength(abs_iqr):
+    if abs_iqr >= 3.0:
+        return 'extreme'
+    if abs_iqr >= 2.0:
+        return 'strong'
+    if abs_iqr >= 1.5:
+        return 'moderate'
+    return 'normal'
+
+
+def _side_bias_label(value, neutral_threshold=0.05):
+    if pd.isna(value):
+        return 'unknown'
+    if value > neutral_threshold:
+        return 'right-biased'
+    if value < -neutral_threshold:
+        return 'left-biased'
+    return 'balanced'
+
+
+def _supporting_signal(feature, signed_iqr, value, baseline_median, baseline_iqr):
+    direction = 'higher' if signed_iqr > 0 else 'lower'
+    signal = {
+        'feature': feature,
+        'label': FEATURE_LABELS.get(feature, feature),
+        'direction': direction,
+        'signed_iqr': _clean_number(signed_iqr),
+        'abs_iqr': _clean_number(abs(float(signed_iqr))),
+        'deviation_strength': _deviation_strength(abs(float(signed_iqr))),
+        'current_value': _clean_number(value),
+        'baseline_median': _clean_number(baseline_median),
+        'baseline_iqr': _clean_number(baseline_iqr),
     }
-    data = {
-        "normal_profile":       { name_map[k]: v for k, v in normal_profile.items() },
-        "abnormal_profile":     { name_map[k]: v for k, v in abnormal_profile.items() }
-    }
-    user_prompt = user_prompt_template.render(
-		normal_profile=data["normal_profile"],
-		abnormal_profile=data["abnormal_profile"]
-	)
-    return user_prompt
-	
-def get_difference(llm, schema, system_prompt="", user_prompt=""):
-	response = llm.get_verified_response(schema, system_prompt, user_prompt)
-	print(response)
-	return response["overall_style_shift_summary"]
+    if feature == 'signed_side_bias':
+        signal.update({
+            'current_side_bias': _side_bias_label(value),
+            'baseline_side_bias': _side_bias_label(baseline_median),
+            'relative_side_shift': 'more rightward than usual' if signed_iqr > 0 else 'more leftward than usual',
+        })
+    return signal
 
 
-def get_iqr_outliers(series):
-    Q1 = series.quantile(0.25)
-    Q3 = series.quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    return (series < lower_bound) | (series > upper_bound)
+def _score_player_matches(feature_df, feature_threshold, feature_count_threshold, total_threshold, cap, max_shifted_ratio):
+    rows = []
+    signals_by_idx = {}
+    baselines_by_idx = {}
+    values = feature_df[FEATURE_COLS].apply(pd.to_numeric, errors='coerce')
 
-# def get_std_outliers(series, threshold=3):
-#     mean = series.mean()
-#     std = series.std()
-    
-#     lower_bound = mean - threshold * std
-#     upper_bound = mean + threshold * std
-    
-#     return (series < lower_bound) | (series > upper_bound)
+    for idx, row in values.iterrows():
+        baseline = values.drop(index=idx)
+        median = baseline.median(skipna=True)
+        iqr = baseline.quantile(0.75) - baseline.quantile(0.25)
+        baselines_by_idx[idx] = _clean_dict(dict(median))
 
-# def get_mad_outliers(series, threshold=3):
-#     median = series.median()
-#     mad = (series - median).abs().median()
-#     modified_z_score = 0.6745 * (series - median) / mad
-    
-#     return modified_z_score.abs() > threshold
+        supporting_signals = []
+        capped_abs = []
+        for feature in FEATURE_COLS:
+            signed_iqr = _iqr_value(row[feature], median[feature], iqr[feature], cap)
+            capped_abs.append(min(abs(signed_iqr), cap))
+            if abs(signed_iqr) >= feature_threshold:
+                supporting_signals.append(_supporting_signal(feature, signed_iqr, row[feature], median[feature], iqr[feature]))
+
+        supporting_signals = sorted(supporting_signals, key=lambda item: abs(item['signed_iqr']), reverse=True)
+        total_score = float(np.mean(capped_abs))
+        shifted_candidate = len(supporting_signals) >= feature_count_threshold and total_score >= total_threshold
+        rows.append({
+            'row_index': idx,
+            'match_id': int(feature_df.loc[idx, 'match_id']),
+            'total_score': total_score,
+            'shifted_feature_count': len(supporting_signals),
+            'shifted_candidate': bool(shifted_candidate),
+            'shifted': False,
+        })
+        signals_by_idx[idx] = supporting_signals
+
+    scores = pd.DataFrame(rows).set_index('row_index') if rows else pd.DataFrame()
+    if scores.empty:
+        return scores, signals_by_idx, baselines_by_idx
+
+    if max_shifted_ratio is None or max_shifted_ratio <= 0:
+        max_shifted_count = len(scores)
+    else:
+        max_shifted_count = int(np.floor(len(scores) * max_shifted_ratio))
+
+    candidates = scores[scores['shifted_candidate']].sort_values(
+        ['total_score', 'shifted_feature_count', 'match_id'],
+        ascending=[False, False, True],
+    )
+    keep_ids = set(candidates.head(max_shifted_count)['match_id'].astype(int).tolist())
+    scores['shifted'] = scores['match_id'].astype(int).isin(keep_ids)
+
+    return scores, signals_by_idx, baselines_by_idx
 
 
-if __name__ == "__main__":
+def construct_user_prompt(
+    user_prompt_template,
+    normal_profile,
+    abnormal_profile,
+    supporting_signals,
+    total_score,
+    shifted_feature_count,
+):
+    return user_prompt_template.render(
+        normal_profile=_json_dumps(normal_profile),
+        abnormal_profile=_json_dumps(abnormal_profile),
+        supporting_signals=_json_dumps(supporting_signals),
+        total_score=_clean_number(total_score),
+        shifted_feature_count=int(shifted_feature_count),
+    )
 
+
+def get_difference(llm, schema, system_prompt='', user_prompt=''):
+    result = llm.get_verified_response(schema, system_prompt, user_prompt)
+    response = result[0] if isinstance(result, tuple) else result
+    print(response)
+    if response is None:
+        raise RuntimeError('LLM failed to generate a valid style-shift JSON response.')
+    return response['instruction']
+
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--enough_thres", type=int, default=7, help="Over this threshold, we need to calculate normal set or anomaly set.")
-    parser.add_argument("--outlier_thres", type=int, default=2, help="Number of features are outliers!")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
-    parser.add_argument("--api_key", type=str, default="EMPTY")
-    parser.add_argument("--base_url", type=str, default=None)
+    parser.add_argument('--enough_thres', type=int, default=8, help='Minimum player match count needed for anomaly detection.')
+    parser.add_argument('--feature_threshold', type=float, default=1.5, help='Minimum absolute leave-one-out IQR deviation for a supporting signal.')
+    parser.add_argument('--feature_count_threshold', type=int, default=3, help='Minimum supporting signals required for a shifted candidate.')
+    parser.add_argument('--total_threshold', type=float, default=1.1, help='Minimum average capped IQR deviation required for a shifted candidate.')
+    parser.add_argument('--cap', type=float, default=3.0, help='Cap applied to each absolute IQR deviation when computing total_score.')
+    parser.add_argument('--max_shifted_ratio', type=float, default=0.25, help='Per-player cap for shifted matches using floor(match_count * ratio). Set 0 to disable.')
+    parser.add_argument('--model_name', type=str, default=None)
+    parser.add_argument('--api_key', type=str, default=None)
+    parser.add_argument('--base_url', type=str, default=None)
 
     args = parser.parse_args()
 
-    merged_path = os.path.join("Data", "input_data", "merged.csv")
-    match_path = os.path.join("Data", "input_data", "match_player.csv")
-    user_template_path = os.path.join("Prompts", "Preprocessing", "style_shift.jinja")
-    shcema_path = os.path.join("Schemas", "Preprocessing", "style_shift_schema.json")
-    
+    config = _load_config()
+    paths = config.get('paths', {}) if isinstance(config.get('paths', {}), dict) else {}
+    merged_path = _project_path(paths.get('merged_csv', os.path.join('Data', 'intermediate_data', 'merged.csv')))
+    match_path = _project_path(paths.get('match_player_csv', os.path.join('Data', 'intermediate_data', 'match_player.csv')))
+    save_path = _project_path(paths.get('style_shift_json', os.path.join('Data', 'intermediate_data', 'style_shift.json')))
+    user_template_path = _project_path(os.path.join('Prompts', 'Preprocessing', 'style_shift.jinja'))
+    schema_path = _project_path(os.path.join('Schemas', 'Preprocessing', 'style_shift_schema.json'))
 
     merged_df = pd.read_csv(merged_path)
-    match_df = pd.read_csv(match_path)
+    match_df = _load_match_player_df(merged_df, match_path)
 
-    with open(user_template_path, "r", encoding="utf-8") as f:
+    with open(user_template_path, 'r', encoding='utf-8') as f:
         user_prompt_template = Template(f.read())
-    with open(shcema_path, "r", encoding="utf-8") as f:
+    with open(schema_path, 'r', encoding='utf-8') as f:
         schema = json.load(f)
+
+    llm_settings = LLM.resolve_effective_settings(
+        model_name=args.model_name,
+        api_key=args.api_key,
+        base_url=args.base_url,
+    )
+    print_runtime_box(
+        'Runtime Parameters: style_shift',
+        [
+            ('enough_thres', args.enough_thres),
+            ('feature_threshold', args.feature_threshold),
+            ('feature_count_threshold', args.feature_count_threshold),
+            ('total_threshold', args.total_threshold),
+            ('cap', args.cap),
+            ('max_shifted_ratio', args.max_shifted_ratio if args.max_shifted_ratio > 0 else 'disabled'),
+            ('max_shifted_count_rule', 'floor(match_count * max_shifted_ratio)'),
+            ('merged_path', merged_path),
+            ('match_path', match_path if os.path.exists(match_path) else 'derived from merged.csv'),
+            ('save_path', save_path),
+        ] + llm_rows(llm_settings),
+    )
 
     llm = LLM(model_name=args.model_name, api_key=args.api_key, base_url=args.base_url)
 
@@ -105,99 +302,107 @@ if __name__ == "__main__":
     not_enough_players = total_counts[total_counts < args.enough_thres].index
 
     data = {
-        "normal": [],
-        "shifted": []
+        'normal': [],
+        'shifted': [],
     }
-    # each data item is { 'name', 'match_ids' }
 
     for player_name in not_enough_players:
+        match_ids = match_df[(match_df['player'] == player_name) | (match_df['opponent'] == player_name)]['match_id'].tolist()
+        feature_df = extract_style_profile_features(
+            merged_df,
+            match_ids,
+            player_name,
+        )
+        feature_cols = [col for col in feature_df.columns if col != 'match_id']
 
-        match_ids = match_df[ (match_df['player'] == player_name) | (match_df['opponent'] == player_name) ]["match_id"]
-        feature_df = extract_match_features(merged_df, match_ids, player_name)
-
-        features_cols = feature_df.columns.difference(['match_id'])
-        match_profile = dict(feature_df[features_cols].mean())
-        match_profile = {
-            k: v.item()
-            for k, v in match_profile.items()
-        }
-
-        normal_item = {
-            "name": player_name,
-            "match_ids": match_ids.tolist(),
-            "match_profile": match_profile
-        }
-        data["normal"].append(normal_item)
-
+        data['normal'].append({
+            'name': player_name,
+            'match_ids': [int(mid) for mid in match_ids],
+            'match_profile': _mean_profile(feature_df, feature_cols),
+        })
 
     for player_name in enough_players:
+        match_ids = match_df[(match_df['player'] == player_name) | (match_df['opponent'] == player_name)]['match_id'].tolist()
+        feature_df = extract_style_profile_features(
+            merged_df,
+            match_ids,
+            player_name,
+        )
+        feature_cols = [col for col in feature_df.columns if col != 'match_id']
 
-        match_ids = match_df[ (match_df['player'] == player_name) | (match_df['opponent'] == player_name) ]["match_id"]
-        feature_df = extract_match_features(merged_df, match_ids, player_name)
+        scores_df, supporting_signals_by_idx, baselines_by_idx = _score_player_matches(
+            feature_df,
+            args.feature_threshold,
+            args.feature_count_threshold,
+            args.total_threshold,
+            args.cap,
+            args.max_shifted_ratio,
+        )
 
-        # get the feature names (exclude 'match_id')
-        features_cols = feature_df.columns.difference(['match_id'])
+        shifted_indices = scores_df.index[scores_df['shifted']].tolist()
+        normal_indices = scores_df.index[~scores_df['shifted']].tolist()
+        normal_df = feature_df.loc[normal_indices]
+        baseline_df = normal_df if not normal_df.empty else feature_df
+        baseline_flat = _clean_dict(dict(baseline_df[feature_cols].mean(skipna=True)))
+        normal_profile = _to_nested_profile(baseline_flat)
 
-        is_outlier_iqr = feature_df[features_cols].apply(get_iqr_outliers)
-        # is_outlier_iqr = feature_df[features_cols].apply(get_mad_outliers)
-        feature_df['outlier_count'] = is_outlier_iqr.sum(axis=1)
-
-        features_cols = feature_df.columns.difference(['match_id', 'outlier_count'])
-
-        normal_df = feature_df[feature_df['outlier_count'] < args.outlier_thres]
-        abnormal_df = feature_df[feature_df['outlier_count'] >= args.outlier_thres]
-
-        normal_profile = dict(normal_df[features_cols].mean())
-        normal_profile = {
-            k: v.item()
-            for k, v in normal_profile.items()
-        }
-
-        normal_item = {
-            "name": player_name,
-            "match_ids": normal_df["match_id"].tolist(),
-            "match_profile": normal_profile
-        }
-        data["normal"].append(normal_item)
+        data['normal'].append({
+            'name': player_name,
+            'match_ids': [int(mid) for mid in normal_df['match_id'].tolist()],
+            'match_profile': normal_profile,
+        })
 
         match_profiles = []
         ids = []
+        iqr_scores = []
+        total_scores = []
+        shifted_feature_counts = []
+        supporting_signals = []
+        inferred_reasons = []
         instructions = []
 
-        for id in abnormal_df["match_id"]:
-            abnormal_profile = dict(abnormal_df[abnormal_df["match_id"] == id][features_cols])
+        abnormal_df = feature_df.loc[shifted_indices]
+        for idx, row in abnormal_df.iterrows():
+            abnormal_profile = _profile_from_row(row, feature_cols)
+            row_score = scores_df.loc[idx]
+            row_supporting_signals = supporting_signals_by_idx.get(idx, [])
+            row_baseline_profile = _to_nested_profile(baselines_by_idx.get(idx, baseline_flat))
 
-            need_append = True
+            user_prompt = construct_user_prompt(
+                user_prompt_template,
+                row_baseline_profile,
+                abnormal_profile,
+                row_supporting_signals,
+                row_score['total_score'],
+                row_score['shifted_feature_count'],
+            )
+            inferred_reason = get_difference(llm, schema, user_prompt=user_prompt)
 
-            for k, v in abnormal_profile.items():
-                if np.isnan(v).item():
-                    need_append = False
-                    break        
+            ids.append(int(row['match_id']))
+            match_profiles.append(abnormal_profile)
+            iqr_scores.append({
+                'total_score': _clean_number(row_score['total_score']),
+                'shifted_feature_count': int(row_score['shifted_feature_count']),
+            })
+            total_scores.append(_clean_number(row_score['total_score']))
+            shifted_feature_counts.append(int(row_score['shifted_feature_count']))
+            supporting_signals.append(row_supporting_signals)
+            inferred_reasons.append(inferred_reason)
+            instructions.append(inferred_reason)
 
-            abnormal_profile = {
-                k: v.item()
-                for k, v in abnormal_profile.items()
-            }
+        data['shifted'].append({
+            'name': player_name,
+            'match_ids': ids,
+            'match_profiles': match_profiles,
+            'iqr_scores': iqr_scores,
+            'total_scores': total_scores,
+            'shifted_feature_counts': shifted_feature_counts,
+            'supporting_signals': supporting_signals,
+            'inferred_reasons': inferred_reasons,
+            'instructions': instructions,
+        })
 
-            if need_append:
-                user_prompt = construct_user_prompt(user_prompt_template, normal_profile, abnormal_profile)
-                instruction = get_difference(llm, schema, user_prompt=user_prompt)
-
-                match_profiles.append(abnormal_profile)
-                ids.append(id)
-                instructions.append(instruction)
-
-        abnormal_item = {
-            "name": player_name,
-            "match_ids": ids,
-            "match_profiles": match_profiles,
-            "instructions": instructions
-        }
-
-        data["shifted"].append(abnormal_item)
-        
-    # save the normal and style_shifted data
-    save_path = os.path.join("Data", "intermediate_data", "style_shift.json")
-    with open(save_path, "w", encoding='utf-8') as f:
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-    print("JSON File Dumped!!")
+    print('JSON File Dumped!!')

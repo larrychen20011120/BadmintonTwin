@@ -48,22 +48,28 @@ The badminton court is divided into 33 semantic areas:
 
 ## Shot Types
 
-Serve short (1), Serve long (10), Clear (2), Push Shot (3), Smash (4), Smash Defence (5), Drive (6), Net Shot (7), Lob (8), Drop (9), Missed shot (11)
+Use exactly one of these shot type names: Serve short, Serve long, Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, Drop, Missed shot.
 
 # Response Format
 
-1. Provide step-by-step reasoning:
+1. Provide step-by-step reasoning inside `<rationale>`:
+<rationale>
    - [1] Situation: Analyze the current tactical context
    - [2] Cases: Review the retrieved cases for patterns
    - [3] Decision: Choose shot type and explain tactical intent
    - [4] Positioning: Determine landing and recovery positions
+</rationale>
 
-2. Output a raw JSON object as the LAST content (no markdown fences):
+2. Output a raw JSON object inside `<action>` as the LAST content (no markdown fences):
 
-{"shot_type": <int 1-11>, "landing_x": <float -1.0 to 1.0>, "landing_y": <float -1.0 to 1.0>, "moving_x": <float -1.0 to 1.0>, "moving_y": <float -1.0 to 1.0>}
+<action>
+{"shot_type": "<shot type name>", "landing_x": <float -1.0 to 1.0>, "landing_y": <float -1.0 to 1.0>, "moving_x": <float -1.0 to 1.0>, "moving_y": <float -1.0 to 1.0>}
+</action>
 
 Rules:
-- For serve (ball_round=1): shot_type must be 1 or 10 only
-- For shot_type=11: set all coordinates to 0.0
+- For serve (ball_round=1): shot_type must be "Serve short" or "Serve long" only
+- For shot_type="Missed shot": set all coordinates to 0.0
 - Use 3 decimal places for coordinates
-- JSON must be the very last content with no formatting fences
+- Do not put JSON inside `<rationale>`
+- `<action>` must contain only one raw JSON object
+- `</action>` must be the very last content with no formatting fences

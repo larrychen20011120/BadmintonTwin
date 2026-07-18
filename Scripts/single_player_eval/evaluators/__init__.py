@@ -6,7 +6,9 @@ from .base_evaluator import BaseEvaluator
 from .bc_evaluator import BCEvaluator
 from .rallynetv2_evaluator import RallyNetV2Evaluator
 from .naive_rag_evaluator import NaiveRAGEvaluator
+from .pure_llm_evaluator import PureLLMEvaluator
 from .random_evaluator import RandomEvaluator
+from .shuttlenet_evaluator import ShuttleNetEvaluator
 from .timerag_evaluator import TimeRAGEvaluator
 from .twin_evaluator import TwinEvaluator
 
@@ -15,7 +17,9 @@ __all__ = [
     'BCEvaluator',
     'RallyNetV2Evaluator',
     'NaiveRAGEvaluator',
+    'PureLLMEvaluator',
     'RandomEvaluator',
+    'ShuttleNetEvaluator',
     'TimeRAGEvaluator',
     'TwinEvaluator',
 ]

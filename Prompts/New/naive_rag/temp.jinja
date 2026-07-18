@@ -1,0 +1,78 @@
+# Task
+Predict the action the target player is most likely to perform, not the theoretically optimal action.
+
+Analyze the full observed rally and all retrieved cases. Treat the cases as behavioral evidence rather than action templates. Weight each case by its relevance to the current decision, especially:
+
+- incoming shot and landing position;
+- player and opponent positions;
+- previous and required movement;
+- rally sequence and phase;
+- match score and context;
+- time pressure and physical difficulty;
+- player-specific style or condition.
+
+Prioritize cases matching the most decision-relevant conditions and downweight superficial similarities. Infer the player's behavioral tendencies and adapt them to the current situation; the prediction may differ from every retrieved case.
+
+--
+
+## Current Match Situation
+
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+---
+
+## Similar Cases
+
+{% for case in cases %}
+Case {{ loop.index }}:
+{{ case.description }}{% if not loop.last %}
+
+{% endif %}{% endfor %}
+
+---
+
+## Action Prediction
+
+First determine whether the player is most likely to produce a Missed shot.
+
+Base this on the current rally and relevant case outcomes, considering reachability, movement demand, incoming-shot pressure, timing, and success rate in comparable situations. Predict Missed shot when the combined evidence indicates that the player is unlikely to reach the shuttle.
+
+Otherwise, predict one coherent action containing:
+
+- shot type;
+- landing area and coordinate;
+- recovery area and coordinate.
+
+The shot, landing position, and recovery position must be jointly consistent with the player's likely behavior.
+For each coordinate, first select the semantic area, then use the coordinate to specify the intended position within that area. The coordinate may be biased toward a particular side, corner, boundary, or reference point
+
+## Output Format
+
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
+
+{
+  "rationale": "an evidence-based explanation of the simulated action",
+  "action": {
+    "shot_type": "<exact shot type name>",
+    "landing_area": "<semantic area name>",
+    "landing_x": <float -1.0 to 1.0>,
+    "landing_y": <float -1.0 to 1.0>,
+    "moving_area": "<semantic area name>",
+    "moving_x": <float -1.0 to 1.0>,
+    "moving_y": <float -1.0 to 1.0>
+  }
+}
+
+The rationale must explain:
+- whether the player is likely to reach and return the shuttle;
+- which cases were most relevant
+- how the current situation modifies the player's behavioral pattern
+- why choose this shot type and the landing and recovery areas and coordinates
+
+## Action Constraints
+- `shot_type` must be one of the exact shot type names mentioned above.
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`.
+- For `Missed shot`, set `landing_x`, `landing_y`, `moving_x`, and `moving_y` to 0.0.
+- All coordinates must be normalized floats in [-1.0, 1.0], match their semantic areas, and use at most 3 decimal places.

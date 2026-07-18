@@ -6,22 +6,20 @@
 
 ---
 
-## Retrieved Similar Cases ({{ top_k|int }} cases)
+## Retrieved Similar Time Windows
+
+Use these {{ top_k|int }} retrieved temporal windows as evidence of how the target player tends to respond after similar rally sequences.
 
 {% for case in cases %}
-Case {{ case.index }} (distance={{ "%.3f"|format(case.distance) }}):
+Case {{ case.index }}:
 {{ case.description }}
 
 {% endfor %}
+
 ---
 
-## Step-by-Step Reasoning
+## Decision Task
 
-Provide your reasoning, then output the JSON:
-
-[1] Trajectory Analysis:
-[2] Temporal Pattern Review:
-[3] Shot Decision:
-[4] Landing & Recovery:
-
-{"shot_type": <int>, "landing_x": <float>, "landing_y": <float>, "moving_x": <float>, "moving_y": <float>}
+Predict the target player's next action for the current match situation.
+Base the decision on the current rally trajectory first, then use the retrieved temporal windows to imitate the player's likely shot type, landing placement, and recovery position.
+Return only the JSON object specified in the system prompt.
