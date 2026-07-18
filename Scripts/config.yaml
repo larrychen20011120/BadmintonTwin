@@ -191,7 +191,7 @@ twin:
 
 # 共用檢索參數
 retrieval:
-  mode: dual_db  # classic | dual_db
+  mode: classic  # classic | dual_db
   classic_top_k: 10
   normal_top_k: 10
   miss_top_k: 5
@@ -232,6 +232,13 @@ llm:
 
 # LLM generation 參數
 llm_generation:
+  provider_overrides:
+      openrouter:
+        extra_body:
+          reasoning:
+            effort: "none"
+          provider:
+            require_parameters: true
   deterministic:
     active: false
     params:

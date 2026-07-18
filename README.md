@@ -1,20 +1,48 @@
 # BadmintonTwin
 
+## Environment setup
+
+Install [uv](https://docs.astral.sh/uv/) and synchronize the Python 3.12
+environment from the committed lockfile:
+
+```bash
+uv sync --all-extras --frozen
+```
+
+The main environment uses the official PyTorch CUDA 12.8 wheels. Run project
+commands through `uv run`, for example:
+
+```bash
+uv run python Scripts/train_bc.py --help
+uv run python -m unittest discover -s tests
+```
+
+`environment.yaml` is retained temporarily as a legacy Conda fallback. New
+dependency changes must be made in `pyproject.toml` and locked with `uv lock`.
+
 ## Serve LLM with vLLM
 
-we offer three local LLM to justify the framework tranferability (Qwen / Mistral / LLaMA)
+vLLM is isolated from the training environment because its compiled kernels
+require a matching PyTorch/CUDA stack. Synchronize it once, then start Qwen on
+port 16000:
+
+```bash
+uv sync --project Scripts/vllm --frozen
+sh Scripts/serve_qwen.sh
 ```
-sh serve_qwen.sh
-```
+
+The locked vLLM wheel uses CUDA 12.9 because the current stable release does
+not publish a CUDA 12.8 wheel. The host NVIDIA driver must support CUDA 12.9,
+and the configured 7B BF16 model requires substantially more than 4 GB VRAM.
 
 ## Preprocess the dataset
 - create the merged file `Data/input/merged.csv` of shuttleset and shuttleset22
 - create the `Data/offline_data/style_shift.json` record the style shifted matches and normal matches
 - apply train-test split and data aggregation on `Data/offline_data/style_shift.json` to generate the `Data/offline_data/transformed_matches.json`
-```
-python data.py
-python style_shift.py
-python split.py
+```bash
+uv run python Preprocessing/data.py
+uv run python Preprocessing/style_shift.py
+uv run python Preprocessing/split.py
 ```
 
 ## Baseline
@@ -26,10 +54,10 @@ LLM annotations, states, and actions, but no model-specific embeddings.
 
 ```bash
 # Build canonical memory. This is the slow LLM annotation stage.
-python Scripts/prepare_all_data.py --norm --shifted --twin
+uv run python Scripts/prepare_all_data.py --norm --shifted --twin
 
 # Build embedding caches with twin.embedding_model from Scripts/config.yaml.
-python Scripts/prepare_twin_embeddings.py --norm --shifted
+uv run python Scripts/prepare_twin_embeddings.py --norm --shifted
 ```
 
 Changing `twin.embedding_model` and rerunning the second command creates a new

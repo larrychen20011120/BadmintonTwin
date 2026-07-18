@@ -4,39 +4,39 @@
 
 **Environment Setup:**
 ```bash
-conda env create -f environment.yaml
-conda activate badminton
+uv sync --all-extras --frozen
 ```
 
 **Start LLM Server (Required for Agent):**
 ```bash
+uv sync --project Scripts/vllm --frozen
 sh Scripts/serve_qwen.sh  # Serves Qwen2.5-7B on port 16000 via vLLM
 ```
-Requires GPU with ~16GB VRAM (uses 92% utilization).
+The server uses an isolated CUDA 12.9 vLLM environment. Requires GPU with
+~16GB VRAM (uses 92% utilization).
 
 **Data Preprocessing (One-time):**
 ```bash
-cd Preprocessing
-python data.py        # Merges shuttleset + shuttleset22 → Data/intermediate_data/merged.csv
-python style_shift.py # Identifies style-shifted matches → Data/intermediate_data/style_shift.json
-python split.py       # Train/test split → Data/intermediate_data/transformed_matches.json
+uv run python Preprocessing/data.py        # Merges shuttleset + shuttleset22 → Data/intermediate_data/merged.csv
+uv run python Preprocessing/style_shift.py # Identifies style-shifted matches → Data/intermediate_data/style_shift.json
+uv run python Preprocessing/split.py       # Train/test split → Data/intermediate_data/transformed_matches.json
 ```
 
 ## Running Experiments
 
 **Full Pipeline (automated):**
 ```bash
-python Scripts/run_full_pipeline.py --experiment norm      # Normal matches
-python Scripts/run_full_pipeline.py --experiment shifted   # Style-shifted matches
-python Scripts/run_full_pipeline.py --all                  # Both experiments
+uv run python Scripts/run_full_pipeline.py --experiment norm      # Normal matches
+uv run python Scripts/run_full_pipeline.py --experiment shifted   # Style-shifted matches
+uv run python Scripts/run_full_pipeline.py --all                  # Both experiments
 ```
 
 **Individual Agent Evaluation:**
 ```bash
 # BC (Behavior Cloning) - see Scripts/eval_bc.py
-python Agent/eval_rallynet.py     # RallyNet evaluation
-python Agent/eval_naive_rag.py    # Naive RAG baseline
-python Agent/eval_rallynetv2.py   # RallyNet v2 evaluation
+uv run python Agent/eval_rallynet.py     # RallyNet evaluation
+uv run python Agent/eval_naive_rag.py    # Naive RAG baseline
+uv run python Agent/eval_rallynetv2.py   # RallyNet v2 evaluation
 ```
 
 ## Architecture
@@ -103,7 +103,7 @@ Data/intermediate_data/ - Processed match data (merged.csv, transformed_matches.
 ## Training BC Models
 
 ```bash
-python Scripts/train_bc.py \
+uv run python Scripts/train_bc.py \
   --experiment norm \
   --epochs 100 \
   --batch_size 64

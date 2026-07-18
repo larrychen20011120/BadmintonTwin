@@ -1,3 +1,4 @@
+# Legacy Conda fallback. The maintained environment is pyproject.toml + uv.lock.
 name: badminton
 channels:
   - pytorch

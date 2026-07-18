@@ -57,7 +57,7 @@ def load_embedding_model(model_name=DEFAULT_EMBEDDING_MODEL, device=None, revisi
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise ImportError(
-            "Twin requires sentence-transformers. Install it or update environment.yaml."
+            "Twin requires sentence-transformers. Run `uv sync --extra twin`."
         ) from exc
     model_kwargs = {}
     if revision:

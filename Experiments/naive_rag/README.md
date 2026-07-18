@@ -66,7 +66,7 @@ python Agent/eval_naive_rag.py \
 ## 相依需求
 
 - 需要運行 LLM 伺服器（預設在 port 16000）
-- 需要 `dtaidistance` 套件（應該在 conda 環境中）
+- 需要 `dtaidistance` 套件（由 `uv sync` 安裝）
 
 ## 輸出格式
 

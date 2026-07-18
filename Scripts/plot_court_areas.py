@@ -27,8 +27,8 @@ Outputs (both are always generated):
     <output stem>_half.pdf   half-court figure (Player A's perspective)
 
 Usage:
-    conda run -n badminton python Scripts/plot_court_areas.py
-    conda run -n badminton python Scripts/plot_court_areas.py --output out.pdf --dpi 300 --show
+    uv run python Scripts/plot_court_areas.py
+    uv run python Scripts/plot_court_areas.py --output out.pdf --dpi 300 --show
 """
 
 import argparse

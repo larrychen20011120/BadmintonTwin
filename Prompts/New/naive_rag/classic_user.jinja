@@ -1,51 +1,52 @@
 # Task
-
-This is an imitation task, not tactical optimization. Predict the behavior of the specific target player rather than selecting an ideal tactic.
-
-Jointly analyze the complete current rally and every retrieved case to predict the action this target player is most likely to produce.
-First determine whether the shot should be the 'Missed shot'. 
-If not the 'Missed shot', synthesize all evidence to predict the likely shot, landing position, and recovery position.
+Predict the action the target player is most likely to perform, not the theoretically optimal action.
+Analyze the full observed rally and all retrieved cases. Treat the cases as behavioral evidence rather than action templates. Weight each case by its relevance to the current decision, especially:
+- incoming shot and landing position;
+- player and opponent positions;
+- previous and required movement;
+- rally sequence and phase;
+- match score and context;
+- time pressure and physical difficulty;
+- player-specific style or condition.
+Prioritize cases matching the most decision-relevant conditions and downweight superficial similarities. Infer the player's behavioral tendencies and adapt them to the current situation; the prediction may differ from every retrieved case.
 
 ## Current Match Situation
-
 {% if trajectory_text %}
 {{ trajectory_text }}
 {% endif %}
 
----
-
 ## Similar Cases
-
 {% for case in cases %}
 Case {{ loop.index }}:
 {{ case.description }}{% if not loop.last %}
-
 {% endif %}{% endfor %}
 
----
-
 ## Output Format
-
-Return only one valid JSON object. Do not use markdown fences, XML tags, or text outside the JSON object.
-
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
 {
-  "rationale": "a concise imitation rationale that synthesizes the current rally and all retrieved cases",
+  "rationale": "a concise evidence-based rationale that synthesizes the current rally and the relevant retrieved cases",
   "action": {
     "shot_type": "<exact shot type name>",
     "landing_area": <semantic area name string or null>,
-    "landing_x": <integer 0 to 354 or null>,
-    "landing_y": <integer 0 to 479 or null>,
+    "landing_x": <integer 0 to 355 or null>,
+    "landing_y": <integer 0 to 480 or null>,
     "moving_area": <semantic area name string or null>,
-    "moving_x": <integer 0 to 354 or null>,
-    "moving_y": <integer 0 to 479 or null>
+    "moving_x": <integer 0 to 355 or null>,
+    "moving_y": <integer 0 to 480 or null>
   }
 }
+The rationale must explain:
+- whether the player is likely to reach and return the shuttle;
+- which cases were most relevant and how they influence the prediction
+- how the current situation differs from those cases and modifies the player's likely behavior
+- why this shot type, landing area and moving_area were selected
+- why the landing coordinate is placed at that specific position within the area, such as toward the left, right, baseline, net, center, or boundary, considering the opponent's position, available space, contact position, and relevant case tendencies;
+- why the moving area and coordinate were selected, including any left, right, forward, or backward bias caused by the player's momentum, balance, and expected next shot.
+
+The rationale must distinguish between the reason for selecting an area and the reason for selecting a particular coordinate within that area. The coordinate description must be consistent with the actual output values.
 
 ## Action Constraints
-
-- `shot_type` must be one of the exact shot type names mentioned above.
-- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`.
-- Use Missed shot when the agent fails to reach the shuttle, the physical situation or positioning is too difficult to produce any legal return into the opponent's court.
-- For `Missed shot`, set both semantic areas and all four coordinates to `null`.
-- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas.
-- Do not include extra fields.
+- `shot_type` must be exactly one of: `Serve short`, `Serve long`, `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, `Drop`, `Missed shot`
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`
+- For `Missed shot`, set both semantic areas and all four coordinates to `null`
+- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas
