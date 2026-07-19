@@ -918,10 +918,10 @@ class TimeRAGAgent(BaseAgent):
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "timerag")
         template_names = {
-            ("classic", "norm"): "classic_user.jinja",
-            ("classic", "shifted"): "classic_shifted_user.jinja",
-            ("dual_db", "norm"): "dual_user.jinja",
-            ("dual_db", "shifted"): "dual_shifted_user.jinja",
+            ("classic", "norm"): "norm.jinja",
+            ("classic", "shifted"): "shift.jinja",
+            ("dual_db", "norm"): "norm.jinja",
+            ("dual_db", "shifted"): "shift.jinja",
         }
         template_key = (retrieval_mode, prompt_variant)
         if template_key not in template_names:

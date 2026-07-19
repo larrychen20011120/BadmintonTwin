@@ -16,12 +16,12 @@ from Utils.llm import LLM
 
 class PromptCoordinateTest(unittest.TestCase):
     def test_integer_grid_round_trip(self):
-        for x in range(355):
+        for x in range(356):
             normalized_x, _ = BaseAgent.prompt_to_normalized_coordinate(x, 0)
             prompt_x, _ = BaseAgent.normalized_to_prompt_coordinate(normalized_x, -1.0)
             self.assertEqual(prompt_x, x)
 
-        for y in range(480):
+        for y in range(481):
             _, normalized_y = BaseAgent.prompt_to_normalized_coordinate(0, y)
             _, prompt_y = BaseAgent.normalized_to_prompt_coordinate(-1.0, normalized_y)
             self.assertEqual(prompt_y, y)
@@ -38,14 +38,14 @@ class PromptCoordinateTest(unittest.TestCase):
         }
         actual_areas = {
             BaseAgent.prompt_area_name(x, y)
-            for x in range(355)
-            for y in range(480)
+            for x in range(356)
+            for y in range(481)
         }
         self.assertEqual(actual_areas, expected_areas)
 
     def test_prompt_area_matches_existing_coord2area(self):
-        for x in range(355):
-            for y in range(480):
+        for x in range(356):
+            for y in range(481):
                 normalized_x, normalized_y = BaseAgent.prompt_to_normalized_coordinate(x, y)
                 existing_area = LANG_AREA_MAPPING[coord2area(normalized_x, normalized_y)]
                 self.assertEqual(BaseAgent.prompt_area_name(x, y), existing_area)
@@ -82,14 +82,42 @@ class PromptCoordinateTest(unittest.TestCase):
         self.assertAlmostEqual(parsed["landing_x"], 213 / 177.5 - 1)
         self.assertAlmostEqual(parsed["landing_y"], 312 / 240 - 1)
 
-    def test_online_parser_rejects_decimal_and_area_mismatch(self):
+    def test_online_parser_rejects_decimal_and_unknown_area(self):
         action = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.15, -0.25)
         action["landing_x"] = 213.0
         parsed, _ = BaseAgent.parse_prompt_action({"action": action})
         self.assertIsNone(parsed)
 
         action = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.15, -0.25)
-        action["landing_area"] = "Rear Center"
+        action["landing_area"] = "Unknown Area"
+        parsed, _ = BaseAgent.parse_prompt_action({"action": action})
+        self.assertIsNone(parsed)
+
+    def test_online_parser_accepts_area_coordinate_mismatch(self):
+        action = {
+            "shot_type": "Net Shot",
+            "landing_area": "Front Center",
+            "landing_x": 186,
+            "landing_y": 440,
+            "moving_area": "Mid Left Side Line",
+            "moving_x": 50,
+            "moving_y": 420,
+        }
+        parsed, _ = BaseAgent.parse_prompt_action({"action": action})
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["moving_area"], "Mid Left Side Line")
+
+    def test_online_parser_accepts_grid_endpoints_only(self):
+        action = BaseAgent.build_prompt_action(2, 1.0, 1.0, 1.0, 1.0)
+        parsed, _ = BaseAgent.parse_prompt_action({"action": action})
+        self.assertIsNotNone(parsed)
+
+        action["landing_x"] = 356
+        parsed, _ = BaseAgent.parse_prompt_action({"action": action})
+        self.assertIsNone(parsed)
+
+        action["landing_x"] = 355
+        action["landing_y"] = 481
         parsed, _ = BaseAgent.parse_prompt_action({"action": action})
         self.assertIsNone(parsed)
 

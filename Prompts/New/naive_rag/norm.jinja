@@ -1,6 +1,12 @@
 # Task
+This is an imitation task, not tactical optimization.
 Predict the action the target player is most likely to perform, not the theoretically optimal action.
-Analyze the full observed rally and all retrieved cases. Treat the cases as behavioral evidence rather than action templates. Weight each case by its relevance to the current decision, especially:
+The prediction consists of:
+- the shot type the target player is most likely to perform;
+- where the returned shuttle is most likely to land on the opponent's court, represented by landing_area, landing_x, and landing_y;
+- where the target player is most likely to be positioned on their own court after completing the shot, represented by moving_area, moving_x, and moving_y.
+
+Jointly analyze the full observed rally and all retrieved cases. Treat the cases as behavioral evidence rather than action templates. Weight each case by its relevance to the current decision, especially:
 - incoming shot and landing position;
 - player and opponent positions;
 - previous and required movement;
@@ -9,14 +15,20 @@ Analyze the full observed rally and all retrieved cases. Treat the cases as beha
 - time pressure and physical difficulty;
 - player-specific style or condition.
 Prioritize cases matching the most decision-relevant conditions and downweight superficial similarities. Infer the player's behavioral tendencies and adapt them to the current situation; the prediction may differ from every retrieved case.
+First determine whether the player can reach the shuttle and produce a legal return into the opponent's court. Retrieved cases may include both legal returns and missed shots. Use missed-shot evidence to assess reachability and physical difficulty, but do not treat it as an automatic instruction to output `Missed shot`. Do not decide by simply counting outcomes or copying the nearest case.
 
 ## Current Match Situation
 {% if trajectory_text %}
 {{ trajectory_text }}
 {% endif %}
 
+{% if normal_cases is defined and miss_cases is defined %}
+{% set similar_cases = normal_cases + miss_cases %}
+{% else %}
+{% set similar_cases = cases %}
+{% endif %}
 ## Similar Cases
-{% for case in cases %}
+{% for case in similar_cases %}
 Case {{ loop.index }}:
 {{ case.description }}{% if not loop.last %}
 {% endif %}{% endfor %}
@@ -24,7 +36,7 @@ Case {{ loop.index }}:
 ## Output Format
 Return only one valid JSON object. Do not include markdown or any text outside the JSON.
 {
-  "rationale": "a concise evidence-based rationale that synthesizes the current rally and the relevant retrieved cases",
+  "rationale": "one concise evidence-based paragraph of 3–5 sentences",
   "action": {
     "shot_type": "<exact shot type name>",
     "landing_area": <semantic area name string or null>,
@@ -36,14 +48,9 @@ Return only one valid JSON object. Do not include markdown or any text outside t
   }
 }
 The rationale must explain:
-- whether the player is likely to reach and return the shuttle;
-- which cases were most relevant and how they influence the prediction
-- how the current situation differs from those cases and modifies the player's likely behavior
-- why this shot type, landing area and moving_area were selected
-- why the landing coordinate is placed at that specific position within the area, such as toward the left, right, baseline, net, center, or boundary, considering the opponent's position, available space, contact position, and relevant case tendencies;
-- why the moving area and coordinate were selected, including any left, right, forward, or backward bias caused by the player's momentum, balance, and expected next shot.
-
-The rationale must distinguish between the reason for selecting an area and the reason for selecting a particular coordinate within that area. The coordinate description must be consistent with the actual output values.
+- whether the player is likely to reach and return the shuttle, and why this shot type is the most likely response
+- which cases were most relevant and how the current situation modifies the predicted behavior
+- why the landing and moving coordinates are biased toward specific sub-regions of their semantic areas (e.g., why x is closer to the edge vs. center, or why y is deeper or shallower).
 
 ## Action Constraints
 - `shot_type` must be exactly one of: `Serve short`, `Serve long`, `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, `Drop`, `Missed shot`

@@ -106,25 +106,34 @@ def twin_memory_digest(memories):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def embedding_model_key(model_name, revision=None, normalize_embeddings=True, dtype="float32"):
+def embedding_model_key(model_name, revision=None, normalize_embeddings=True, dtype="float32",
+                        provider="local", embedding_dimension=None):
     spec = {
+        "provider": str(provider),
         "model_name": str(model_name),
         "revision": revision,
+        "embedding_dimension": embedding_dimension,
         "normalize_embeddings": bool(normalize_embeddings),
         "dtype": str(dtype),
     }
     digest = hashlib.sha256(
         json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:12]
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(model_name)).strip("_") or "embedding"
+    slug = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", f"{provider}_{model_name}"
+    ).strip("_") or "embedding"
     return f"{slug}_{digest}"
 
 
 def embedding_cache_paths(cache_root, player_name, model_name, revision=None,
-                          normalize_embeddings=True, dtype="float32"):
+                          normalize_embeddings=True, dtype="float32", provider="local",
+                          embedding_dimension=None):
     model_dir = os.path.join(
         cache_root,
-        embedding_model_key(model_name, revision, normalize_embeddings, dtype),
+        embedding_model_key(
+            model_name, revision, normalize_embeddings, dtype, provider,
+            embedding_dimension,
+        ),
     )
     basename = f"{safe_player_name(player_name)}_embeddings"
     return os.path.join(model_dir, f"{basename}.npy"), os.path.join(model_dir, f"{basename}.json")
@@ -133,13 +142,18 @@ def embedding_cache_paths(cache_root, player_name, model_name, revision=None,
 class TwinEmbeddingCache:
     """Model-specific, disposable semantic embeddings for a TwinDatabase."""
 
-    schema_version = 1
+    schema_version = 2
 
     def __init__(self, player_name, model_name, embeddings, memory_digest,
-                 revision=None, normalize_embeddings=True, dtype="float32"):
+                 revision=None, normalize_embeddings=True, dtype="float32",
+                 provider="local", configured_dimension=None):
         self.player_name = str(player_name)
+        self.provider = str(provider)
         self.model_name = str(model_name)
         self.revision = revision
+        self.configured_dimension = (
+            int(configured_dimension) if configured_dimension is not None else None
+        )
         self.normalize_embeddings = bool(normalize_embeddings)
         self.dtype = str(dtype)
         self.embeddings = np.asarray(embeddings)
@@ -148,10 +162,16 @@ class TwinEmbeddingCache:
 
     @classmethod
     def build(cls, database, model, model_name, revision=None, batch_size=None,
-              normalize_embeddings=True, dtype="float32"):
+              normalize_embeddings=True, dtype="float32", provider="local",
+              embedding_dimension=None):
         if dtype not in {"float16", "float32"}:
             raise ValueError("Twin embedding dtype must be float16 or float32")
         embedding_dim = get_embedding_dimension(model)
+        if embedding_dimension is not None and embedding_dim != int(embedding_dimension):
+            raise ValueError(
+                f"Twin embedding dimension mismatch for {database.player_name}: model produces "
+                f"{embedding_dim} dimensions, expected {embedding_dimension}."
+            )
         texts = [memory.get("semantic_text", "") for memory in database.memories]
         embeddings = encode_texts(
             model,
@@ -168,10 +188,13 @@ class TwinEmbeddingCache:
             revision=revision,
             normalize_embeddings=normalize_embeddings,
             dtype=dtype,
+            provider=provider,
+            configured_dimension=embedding_dimension,
         )
 
     def validate(self, database, model_name=None, revision=None,
-                 normalize_embeddings=None, dtype=None):
+                 normalize_embeddings=None, dtype=None, provider=None,
+                 embedding_dimension=None):
         if self.player_name != database.player_name:
             raise ValueError(
                 f"Twin embedding player mismatch: cache has {self.player_name}, "
@@ -184,6 +207,16 @@ class TwinEmbeddingCache:
                 f"Twin embedding model mismatch for {database.player_name}: cache uses "
                 f"{self.model_name}@{self.revision}, expected {model_name}@{revision}."
             )
+        if provider is not None and self.provider != str(provider):
+            raise ValueError(
+                f"Twin embedding provider mismatch for {database.player_name}: cache uses "
+                f"{self.provider}, expected {provider}."
+            )
+        if embedding_dimension is not None and (
+            self.configured_dimension != int(embedding_dimension)
+            or self.embedding_dim != int(embedding_dimension)
+        ):
+            raise ValueError(f"Twin embedding dimension mismatch for {database.player_name}.")
         if normalize_embeddings is not None and self.normalize_embeddings != bool(normalize_embeddings):
             raise ValueError(f"Twin embedding normalization mismatch for {database.player_name}.")
         if dtype is not None and self.dtype != str(dtype):
@@ -205,7 +238,8 @@ class TwinEmbeddingCache:
     def save(self, cache_root):
         array_path, metadata_path = embedding_cache_paths(
             cache_root, self.player_name, self.model_name, self.revision,
-            self.normalize_embeddings, self.dtype,
+            self.normalize_embeddings, self.dtype, self.provider,
+            self.configured_dimension,
         )
         os.makedirs(os.path.dirname(array_path), exist_ok=True)
         array_fd, array_tmp = tempfile.mkstemp(dir=os.path.dirname(array_path), prefix=".tmp_")
@@ -216,8 +250,10 @@ class TwinEmbeddingCache:
             metadata = {
                 "schema_version": self.schema_version,
                 "player_name": self.player_name,
+                "provider": self.provider,
                 "model_name": self.model_name,
                 "revision": self.revision,
+                "configured_dimension": self.configured_dimension,
                 "normalize_embeddings": self.normalize_embeddings,
                 "dtype": self.dtype,
                 "embedding_dim": self.embedding_dim,
@@ -236,10 +272,11 @@ class TwinEmbeddingCache:
 
     @classmethod
     def load(cls, cache_root, database, model_name, revision=None,
-             normalize_embeddings=True, dtype="float32", mmap_mode="r"):
+             normalize_embeddings=True, dtype="float32", mmap_mode="r",
+             provider="local", embedding_dimension=None):
         array_path, metadata_path = embedding_cache_paths(
             cache_root, database.player_name, model_name, revision,
-            normalize_embeddings, dtype,
+            normalize_embeddings, dtype, provider, embedding_dimension,
         )
         if not os.path.isfile(array_path) or not os.path.isfile(metadata_path):
             raise FileNotFoundError(
@@ -256,6 +293,8 @@ class TwinEmbeddingCache:
             metadata["memory_digest"], revision=metadata.get("revision"),
             normalize_embeddings=metadata.get("normalize_embeddings", True),
             dtype=metadata.get("dtype", str(embeddings.dtype)),
+            provider=metadata["provider"],
+            configured_dimension=metadata.get("configured_dimension"),
         )
         if str(embeddings.dtype) != cache.dtype:
             raise ValueError(f"Twin embedding array dtype mismatch for {database.player_name}.")
@@ -263,7 +302,10 @@ class TwinEmbeddingCache:
             raise ValueError(f"Twin embedding metadata dimension mismatch for {database.player_name}.")
         if int(metadata.get("memory_count", embeddings.shape[0])) != embeddings.shape[0]:
             raise ValueError(f"Twin embedding metadata count mismatch for {database.player_name}.")
-        cache.validate(database, model_name, revision, normalize_embeddings, dtype)
+        cache.validate(
+            database, model_name, revision, normalize_embeddings, dtype,
+            provider, embedding_dimension,
+        )
         return cache
 
 
@@ -1001,9 +1043,10 @@ class TwinAgent(BaseAgent):
                   base_url=None, host_url=None, top_k=5, lambda_weight=0.5,
                   normal_top_k=None, miss_top_k=None, retrieval_mode="classic",
                   embedding_model_name=DEFAULT_EMBEDDING_MODEL, embedding_device="auto",
-                  embedding_batch_size=None, embedding_revision=None,
-                  normalize_embeddings=True, embedding_dtype="float32",
-                  embedding_model=None, enable_tracing=True, prompt_variant="norm"):
+                   embedding_batch_size=None, embedding_revision=None,
+                   normalize_embeddings=True, embedding_dtype="float32",
+                   embedding_model=None, enable_tracing=True, prompt_variant="norm",
+                   embedding_provider="local", embedding_dimension=None):
         super().__init__(player_name)
         self.database = database
         self.top_k = top_k
@@ -1015,6 +1058,8 @@ class TwinAgent(BaseAgent):
         self.tracer = BadmintonTracer("twin", player_name, enable_tracing)
         self.verbalizer = TimeRAGVerbalizer()
         self.embedding_model_name = embedding_model_name
+        self.embedding_provider = embedding_provider
+        self.configured_embedding_dimension = embedding_dimension
         self.embedding_device = embedding_device
         self.embedding_batch_size = embedding_batch_size
         self.embedding_revision = embedding_revision
@@ -1026,8 +1071,14 @@ class TwinAgent(BaseAgent):
             embedding_revision,
             self.normalize_embeddings,
             embedding_dtype,
+            embedding_provider,
+            embedding_dimension,
         )
         database.attach_embedding_cache(embedding_cache)
+        if embedding_model is None and embedding_provider != "local":
+            raise ValueError(
+                f"An initialized embedding client is required for provider {embedding_provider}."
+            )
         self.embedding_model = embedding_model or load_embedding_model(
             embedding_model_name, embedding_device, embedding_revision
         )
@@ -1272,7 +1323,7 @@ def state_to_env_format(state_18):
 def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir, top_k, lambda_weight,
                     embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
                     embedding_revision=None, normalize_embeddings=True, embedding_dtype="float32",
-                    embedding_model=None):
+                    embedding_model=None, embedding_provider="local", embedding_dimension=None):
     db_path = os.path.join(database_dir, f"{safe_player_name(player_name)}_db.pkl")
     if not os.path.exists(db_path):
         return None
@@ -1284,6 +1335,8 @@ def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir
         revision=embedding_revision,
         normalize_embeddings=normalize_embeddings,
         dtype=embedding_dtype,
+        provider=embedding_provider,
+        embedding_dimension=embedding_dimension,
     )
     return TwinAgent(
         player_name=player_name,
@@ -1299,6 +1352,8 @@ def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir
         embedding_dtype=embedding_dtype,
         embedding_model=embedding_model,
         prompt_variant=prompt_variant,
+        embedding_provider=embedding_provider,
+        embedding_dimension=embedding_dimension,
     )
 
 
@@ -1306,9 +1361,10 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
                           embedding_cache_dir,
                           output_path=None, top_k=10, lambda_weight=0.5,
                           embedding_model_name=DEFAULT_EMBEDDING_MODEL, embedding_device="auto",
-                          embedding_batch_size=None, embedding_revision=None,
-                          normalize_embeddings=True, embedding_dtype="float32",
-                          prompt_variant="norm", skip_first_n=0):
+                           embedding_batch_size=None, embedding_revision=None,
+                           normalize_embeddings=True, embedding_dtype="float32",
+                           prompt_variant="norm", skip_first_n=0,
+                           embedding_provider="local", embedding_dimension=None):
     with open(test_split_path, 'r') as f:
         test_split = json.load(f)
     with open(player_index_map_path, 'r') as f:
@@ -1319,9 +1375,24 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
     df = df.dropna(subset=target_cols).reset_index(drop=True)
     ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
     results = {}
-    embedding_model = load_embedding_model(
-        embedding_model_name, embedding_device, embedding_revision
-    )
+    if embedding_provider == "local":
+        embedding_model = load_embedding_model(
+            embedding_model_name, embedding_device, embedding_revision
+        )
+    else:
+        from Utils.embeddings import create_embedding_client, resolve_embedding_settings
+
+        embedding_settings = resolve_embedding_settings(provider=embedding_provider)
+        if embedding_model_name != DEFAULT_EMBEDDING_MODEL:
+            embedding_settings["model_name"] = embedding_model_name
+        else:
+            embedding_model_name = embedding_settings["model_name"]
+        if embedding_dimension is not None:
+            embedding_settings["dimension"] = embedding_dimension
+        else:
+            embedding_dimension = embedding_settings["dimension"]
+        embedding_revision = embedding_settings.get("revision")
+        embedding_model = create_embedding_client(embedding_settings)
 
     for target_player_name, test_match_ids in tqdm(list(test_split['test'].items()), desc="Evaluating Twin players"):
         if target_player_name not in player2index:
@@ -1332,6 +1403,7 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
             target_player_name, player2index, database_dir, embedding_cache_dir, top_k,
             lambda_weight, embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
             embedding_revision, normalize_embeddings, embedding_dtype, embedding_model,
+            embedding_provider, embedding_dimension,
         )
         if target_agent is None:
             results[target_player_name] = {
@@ -1396,6 +1468,7 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
                             ground_truth_player, player2index, database_dir, embedding_cache_dir, top_k,
                             lambda_weight, embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
                             embedding_revision, normalize_embeddings, embedding_dtype, embedding_model,
+                            embedding_provider, embedding_dimension,
                         )
                         if agent is not None:
                             agent_cache[ground_truth_player] = agent

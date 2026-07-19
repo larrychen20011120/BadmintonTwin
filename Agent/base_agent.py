@@ -3,7 +3,7 @@ import math
 
 from dtaidistance import dtw
 
-from Utils.badminton_config import INDEX2EN_SHOT, shot_type_to_index
+from Utils.badminton_config import INDEX2EN_SHOT, area_groups, shot_type_to_index
 
 class BaseAgent:
     PROMPT_ACTION_KEYS = {
@@ -15,6 +15,7 @@ class BaseAgent:
         "moving_x",
         "moving_y",
     }
+    PROMPT_AREA_NAMES = frozenset(area_groups) - {"Out of Bounds"}
 
     def __init__(self, player_name, is_infernce=True):
 
@@ -77,20 +78,20 @@ class BaseAgent:
     @staticmethod
     def prompt_area_name(x, y):
         """Classify one integer prompt-grid position using the prompt definition."""
-        if x < 0 or x > 354 or y < 0 or y > 479:
+        if x < 0 or x > 355 or y < 0 or y > 480:
             return "Out of Bounds"
 
         if x <= 49:
             if y <= 204:
                 return "Rear Left Side Line"
-            if y <= 366:
+            if y <= 365:
                 return "Mid Left Side Line"
             return "Front Left Side Line"
 
         if x >= 306 or (x == 305 and y >= 151):
             if y <= 204:
                 return "Rear Right Side Line"
-            if y <= 366:
+            if y <= 365:
                 return "Mid Right Side Line"
             return "Front Right Side Line"
 
@@ -181,17 +182,14 @@ class BaseAgent:
         if any(isinstance(value, bool) or not isinstance(value, int) for value in coordinates):
             return None, reasoning
 
-        landing_x, landing_y, moving_x, moving_y = coordinates
-        if not (0 <= landing_x <= 354 and 0 <= moving_x <= 354):
-            return None, reasoning
-        if not (0 <= landing_y <= 479 and 0 <= moving_y <= 479):
+        areas = [action[key] for key in area_keys]
+        if any(not isinstance(value, str) or value not in cls.PROMPT_AREA_NAMES for value in areas):
             return None, reasoning
 
-        expected_landing_area = cls.prompt_area_name(landing_x, landing_y)
-        expected_moving_area = cls.prompt_area_name(moving_x, moving_y)
-        if action["landing_area"] != expected_landing_area:
+        landing_x, landing_y, moving_x, moving_y = coordinates
+        if not (0 <= landing_x <= 355 and 0 <= moving_x <= 355):
             return None, reasoning
-        if action["moving_area"] != expected_moving_area:
+        if not (0 <= landing_y <= 480 and 0 <= moving_y <= 480):
             return None, reasoning
 
         normalized_landing_x, normalized_landing_y = cls.prompt_to_normalized_coordinate(
@@ -202,10 +200,10 @@ class BaseAgent:
         )
         return {
             "shot_type": shot_type,
-            "landing_area": expected_landing_area,
+            "landing_area": action["landing_area"],
             "landing_x": normalized_landing_x,
             "landing_y": normalized_landing_y,
-            "moving_area": expected_moving_area,
+            "moving_area": action["moving_area"],
             "moving_x": normalized_moving_x,
             "moving_y": normalized_moving_y,
         }, reasoning

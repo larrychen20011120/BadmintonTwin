@@ -203,13 +203,13 @@ def coord2area(point_x, point_y):
     area26 = [[305,204],[355,366],26]
     area27 = [[305,0],[355,204],27]
     area28 = [[177.5,0],[305,150],28]
-    row7 = [area25, area26, area27, area28]
+    row7 = [area26, area25, area27, area28]
 
     area29 = [[0,366],[50,480],29]
     area30 = [[0,204],[50,366],30]
     area31 = [[0,0],[50,204],31]
     area32 = [[50,0],[177.5,150],32]
-    row8 = [area29, area30, area31, area32]
+    row8 = [area30, area29, area31, area32]
 
     check_area_list = row1 + row2 + row3 + row4 + row5 + row6 + row7 + row8
     hit_area = mistake_landing_area

@@ -56,18 +56,31 @@ LLM annotations, states, and actions, but no model-specific embeddings.
 # Build canonical memory. This is the slow LLM annotation stage.
 uv run python Scripts/prepare_all_data.py --norm --shifted --twin
 
-# Build embedding caches with twin.embedding_model from Scripts/config.yaml.
+# Build embedding caches with the selected embedding provider from config.yaml.
 uv run python Scripts/prepare_twin_embeddings.py --norm --shifted
 ```
 
-Changing `twin.embedding_model` and rerunning the second command creates a new
-model-specific cache without rebuilding memory or overwriting other embedding
-models. Use `--players PLAYER_NAME` for a subset or `--force` to rebuild an
+Set `BADMINTON_EMBEDDING_PROVIDER=local` to use the configured
+`sentence-transformers` model. To use OpenRouter with
+`openai/text-embedding-3-small`, set `OPENROUTER_API_KEY` and switch providers:
+
+```bash
+BADMINTON_EMBEDDING_PROVIDER=openrouter \
+OPENROUTER_API_KEY=... \
+uv run python Scripts/prepare_twin_embeddings.py --norm --shifted
+```
+
+The model defaults to `openai/text-embedding-3-small` with 1536 dimensions and
+can be changed with `OPENROUTER_EMBEDDING_MODEL` and
+`OPENROUTER_EMBEDDING_DIMENSION`. Changing provider, model, dimension,
+normalization, or dtype creates a separate cache without rebuilding canonical
+memory. Use `--players PLAYER_NAME` for a subset or `--force` to rebuild an
 otherwise valid cache. The embedding command always reads `Scripts/config.yaml`.
 
-Twin evaluation requires both the canonical memory and the configured model's
-embedding cache. Old Twin pickle files with inline embeddings are unsupported;
-rebuild canonical memory before using this pipeline.
+Twin evaluation requires both the canonical memory and the selected provider's
+embedding cache. OpenRouter also performs one remote query-embedding request per
+Twin prediction. Cache schema 1 and old Twin pickle files with inline embeddings
+are unsupported; rebuild the embedding cache or canonical memory as applicable.
 
 Case:
 > In today’s match, I had no confidence. I just tried not to make mistakes and just tried to put the shuttle back into my opponent’s court

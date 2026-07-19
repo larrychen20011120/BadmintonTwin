@@ -288,16 +288,28 @@ class LLM:
                 if validator is not None:
                     try:
                         if not validator(data):
+                            print(user_prompt)
+                            print("=" * 30)
+                            print(llm_response_str)
+                            print("=" * 30)
+                            print(data)
                             print("Invalid structured response; retrying LLM generation")
                             trials += 1
                             continue
                     except (TypeError, ValueError):
-                        print("Invalid structured response; retrying LLM generation")
+                        print(user_prompt)
+                        print("=" * 30)
+                        print(llm_response_str)
+                        print("=" * 30)
+                        print(data)
+                        print("TypeError or ValueError during validation; retrying LLM generation")
                         trials += 1
                         continue
-                # print(user_prompt)
-                # print("=" * 30)
-                # print(llm_response_str)
+                print(user_prompt)
+                print("=" * 30)
+                print(llm_response_str)
+                print("=" * 30)
+
                 return data, llm_response_str, last_usage
             else:
                 print(user_prompt)

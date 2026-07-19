@@ -14,7 +14,8 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 sys.path.append(project_path)
 
 from .base_evaluator import BaseEvaluator
-from Agent.twin import TwinAgent, TwinDatabase, TwinEmbeddingCache, load_embedding_model
+from Agent.twin import TwinAgent, TwinDatabase, TwinEmbeddingCache
+from Utils.embeddings import create_embedding_client, resolve_embedding_settings
 from Utils.helper import state_col, action_col, transition, terminate
 from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
 
@@ -50,18 +51,22 @@ class TwinEvaluator(BaseEvaluator):
             self.train_split_path = train_split_path
 
         twin_config = self.config.get('twin', {})
+        embedding_settings = resolve_embedding_settings(config=self.config)
         retrieval_config = self.config.get('retrieval', {})
         self.retrieval_mode = retrieval_config.get('mode', 'classic')
         self.top_k = top_k if top_k is not None else retrieval_config.get('classic_top_k', retrieval_config.get('top_k', twin_config.get('top_k', 5)))
         self.normal_top_k = retrieval_config.get('normal_top_k', self.top_k)
         self.miss_top_k = retrieval_config.get('miss_top_k', max(1, min(5, self.top_k)))
         self.lambda_weight = lambda_weight if lambda_weight is not None else twin_config.get('lambda_weight', 0.5)
-        self.embedding_model_name = twin_config.get('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2')
-        self.embedding_revision = twin_config.get('embedding_revision')
-        self.embedding_device = twin_config.get('embedding_device', 'auto')
-        self.embedding_batch_size = twin_config.get('embedding_batch_size')
-        self.embedding_dtype = twin_config.get('embedding_dtype', 'float32')
-        self.normalize_embeddings = bool(twin_config.get('normalize_embeddings', True))
+        self.embedding_settings = embedding_settings
+        self.embedding_provider = embedding_settings['provider']
+        self.embedding_model_name = embedding_settings['model_name']
+        self.embedding_revision = embedding_settings['revision']
+        self.embedding_dimension = embedding_settings['dimension']
+        self.embedding_device = embedding_settings['device']
+        self.embedding_batch_size = embedding_settings['batch_size']
+        self.embedding_dtype = embedding_settings['dtype']
+        self.normalize_embeddings = embedding_settings['normalize_embeddings']
         self.enable_tracing = enable_tracing
         self.memory_dir = self._resolve_project_path(self.config['paths']['twin']['memory'][experiment])
         self.embedding_cache_dir = self._resolve_project_path(self.config['paths']['twin']['embeddings'][experiment])
@@ -93,8 +98,10 @@ class TwinEvaluator(BaseEvaluator):
             extra_rows=[
                 ("memory_dir", self.memory_dir),
                 ("embedding_cache_dir", self.embedding_cache_dir),
+                ("embedding_provider", self.embedding_provider),
                 ("embedding_model", self.embedding_model_name),
                 ("embedding_revision", self.embedding_revision),
+                ("embedding_dimension", self.embedding_dimension),
                 ("embedding_device", self.embedding_device),
                 ("embedding_batch_size", self.embedding_batch_size),
                 ("embedding_dtype", self.embedding_dtype),
@@ -115,13 +122,11 @@ class TwinEvaluator(BaseEvaluator):
             revision=self.embedding_revision,
             normalize_embeddings=self.normalize_embeddings,
             dtype=self.embedding_dtype,
+            provider=self.embedding_provider,
+            embedding_dimension=self.embedding_dimension,
         )
         if self.embedding_model is None:
-            self.embedding_model = load_embedding_model(
-                self.embedding_model_name,
-                self.embedding_device,
-                self.embedding_revision,
-            )
+            self.embedding_model = create_embedding_client(self.embedding_settings)
         print(f"[Twin] Memory and embeddings ready for {player_name}: {len(database.memories)} memories")
 
         twin_config = self.config.get('twin', {})
@@ -150,6 +155,8 @@ class TwinEvaluator(BaseEvaluator):
             embedding_model=self.embedding_model,
             enable_tracing=self.enable_tracing,
             prompt_variant=self.prompt_variant,
+            embedding_provider=self.embedding_provider,
+            embedding_dimension=self.embedding_dimension,
         )
         print(f"[Twin] Agent created for {player_name}")
 

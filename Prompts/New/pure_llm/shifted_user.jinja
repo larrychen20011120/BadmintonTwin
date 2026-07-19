@@ -1,45 +1,47 @@
+# Task
+Predict the action the target player is most likely to perform, not the theoretically optimal action.
+The prediction consists of:
+- the shot type the target player is most likely to perform;
+- where the returned shuttle is most likely to land on the opponent's court, represented by landing_area, landing_x, and landing_y;
+- where the target player is most likely to be positioned on their own court after completing the shot, represented by moving_area, moving_x, and moving_y.
+
+First determine whether the target player is likely to reach the shuttle. 
+If the player is unlikely to reach the shuttle because of positioning, movement difficulty, time pressure, balance, or contact quality, predict Missed shot.
+If the action is not Missed shot, analyze the full observed rally using the current match information and your general knowledge of badminton behavior.
+Use general badminton knowledge to infer the response a player is most likely to perform under the current physical and match conditions. 
+
+Treat the style shift as a soft behavioral bias describing the target player's current tactical tendency, not as a mandatory action.
+If multiple actions are physically plausible, use the style shift to adjust the likelihood of shot type, placement, risk level, and recovery position. Actual trajectory, timing, court position, balance, and contact quality always take priority.
+
 ## Current Match Situation
-
-This is an imitation task, not tactical optimization. Jointly analyze the complete current rally and the following instruction to predict the behavior of the specified player.
-First determine whether the shot should be the 'Missed shot'. 
-If not the 'Missed shot', synthesize all evidence to predict the likely shot, landing position, and recovery position.
-
 {% if trajectory_text %}
 {{ trajectory_text }}
 {% endif %}
 
----
-
-## Following Instruction
-
+## Style Shift Instruction
 {{ style_shift_instruction }}
 
----
-
 ## Output Format
-
-Return only one valid JSON object. Do not use markdown fences, XML tags, or text outside the JSON object.
-
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
 {
-  "rationale": "a concise rationale that describe your selction",
+  "rationale": "one concise paragraph of 3–5 sentences",
   "action": {
     "shot_type": "<exact shot type name>",
     "landing_area": <semantic area name string or null>,
-    "landing_x": <integer 0 to 354 or null>,
-    "landing_y": <integer 0 to 479 or null>,
+    "landing_x": <integer 0 to 355 or null>,
+    "landing_y": <integer 0 to 480 or null>,
     "moving_area": <semantic area name string or null>,
-    "moving_x": <integer 0 to 354 or null>,
-    "moving_y": <integer 0 to 479 or null>
+    "moving_x": <integer 0 to 355 or null>,
+    "moving_y": <integer 0 to 480 or null>
   }
 }
+The rationale must explain:
+- whether the player is likely to reach and return the shuttle, and why this shot type is the most likely response
+- why the landing and moving coordinates are biased toward those specific parts of their areas, considering the player's physical condition, movement, court positions
 
 ## Action Constraints
-- `shot_type` must be one of the exact shot type names mentioned above.
-- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`.
-- Use Missed shot when the agent fails to reach the shuttle, the physical situation or positioning is too difficult to produce any legal return into the opponent's court.
-- For `Missed shot`, set both semantic areas and all four coordinates to `null`.
-- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas.
-- Do not include extra fields.
-- Select the semantic area first, then choose a coordinate clearly inside that area. Area boundaries are classification cut points, not intended targets.
-- The recovery position should be physically reachable from the contact point, preserve useful court coverage, and avoid exact area boundaries.
-- Deep Left Corner, Deep Right Corner, and all Side Line areas are high-risk because small coordinate errors can send the shuttle out of bounds.
+- `shot_type` must be exactly one of: `Serve short`, `Serve long`, `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, `Drop`, `Missed shot`
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`
+- For `Missed shot`, set both semantic areas and all four coordinates to `null`
+- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas
+- Deep Left Corner, Deep Right Corner, and all Side Line areas are high-risk because small coordinate errors can send the shuttle out of bounds

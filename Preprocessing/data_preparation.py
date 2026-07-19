@@ -504,6 +504,8 @@ def prepare_twin_embeddings(
     force=False,
     embedding_model=None,
     embedding_model_loader=None,
+    embedding_provider='local',
+    embedding_dimension=None,
 ):
     """Build model-specific embedding caches from canonical Twin memories."""
     from Agent.twin import TwinDatabase, TwinEmbeddingCache, load_embedding_model
@@ -537,6 +539,8 @@ def prepare_twin_embeddings(
                     normalize_embeddings=normalize_embeddings,
                     dtype=embedding_dtype,
                     mmap_mode='r',
+                    provider=embedding_provider,
+                    embedding_dimension=embedding_dimension,
                 )
                 skipped += 1
                 continue
@@ -560,6 +564,8 @@ def prepare_twin_embeddings(
             batch_size=embedding_batch_size,
             normalize_embeddings=normalize_embeddings,
             dtype=embedding_dtype,
+            provider=embedding_provider,
+            embedding_dimension=embedding_dimension,
         )
         cache.save(cache_dir)
         built += 1

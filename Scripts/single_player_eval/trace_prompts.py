@@ -591,7 +591,7 @@ class NaiveRAGTracer(PromptTracer):
         # This tracer follows its existing classic retrieval flow.
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "naive_rag")
-        template_name = "classic_shifted_user.jinja" if self.experiment == "shifted" else "classic_user.jinja"
+        template_name = "shift.jinja" if self.experiment == "shifted" else "norm.jinja"
         with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
         
@@ -721,7 +721,7 @@ class TimeRAGTracer(PromptTracer):
         # This tracer follows its existing classic retrieval flow.
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "timerag")
-        template_name = "classic_shifted_user.jinja" if self.experiment == "shifted" else "classic_user.jinja"
+        template_name = "shift.jinja" if self.experiment == "shifted" else "norm.jinja"
         with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
         

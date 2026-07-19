@@ -11,8 +11,9 @@ import yaml
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_path)
 
-from Agent.twin import embedding_model_key, load_embedding_model
+from Agent.twin import embedding_model_key
 from Preprocessing.data_preparation import prepare_twin_embeddings
+from Utils.embeddings import create_embedding_client, resolve_embedding_settings
 from Utils.runtime_report import print_runtime_box
 
 
@@ -50,22 +51,16 @@ def main():
 
     try:
         config = load_config()
-        twin_config = config['twin']
         twin_paths = config['paths']['twin']
-        model_name = str(twin_config['embedding_model']).strip()
-        revision = twin_config.get('embedding_revision')
-        device = twin_config.get('embedding_device', 'auto')
-        batch_size = twin_config.get('embedding_batch_size')
-        dtype = twin_config.get('embedding_dtype', 'float32')
-        normalize_embeddings = bool(twin_config.get('normalize_embeddings', True))
-        if not model_name:
-            raise ValueError('twin.embedding_model must not be empty')
-        if device not in {'auto', 'cpu', 'cuda'}:
-            raise ValueError('twin.embedding_device must be auto, cpu, or cuda')
-        if dtype not in {'float16', 'float32'}:
-            raise ValueError('twin.embedding_dtype must be float16 or float32')
-        if batch_size is not None and (not isinstance(batch_size, int) or batch_size < 1):
-            raise ValueError('twin.embedding_batch_size must be a positive integer or null')
+        embedding_settings = resolve_embedding_settings(config=config)
+        provider = embedding_settings['provider']
+        model_name = embedding_settings['model_name']
+        revision = embedding_settings['revision']
+        dimension = embedding_settings['dimension']
+        device = embedding_settings['device']
+        batch_size = embedding_settings['batch_size']
+        dtype = embedding_settings['dtype']
+        normalize_embeddings = embedding_settings['normalize_embeddings']
         for experiment in experiments:
             if experiment not in twin_paths['memory'] or experiment not in twin_paths['embeddings']:
                 raise ValueError(f'Missing Twin paths for experiment: {experiment}')
@@ -73,14 +68,18 @@ def main():
         print(f'Configuration error: {exc}', file=sys.stderr)
         return 2
 
-    model_key = embedding_model_key(model_name, revision, normalize_embeddings, dtype)
+    model_key = embedding_model_key(
+        model_name, revision, normalize_embeddings, dtype, provider, dimension,
+    )
     print_runtime_box(
         'Runtime Parameters: prepare_twin_embeddings',
         [
             ('config', CONFIG_PATH),
             ('experiments', experiments),
+            ('embedding_provider', provider),
             ('embedding_model', model_name),
             ('embedding_revision', revision),
+            ('embedding_dimension', dimension),
             ('embedding_model_key', model_key),
             ('embedding_device', device),
             ('embedding_batch_size', batch_size),
@@ -97,7 +96,7 @@ def main():
     def get_embedding_model():
         nonlocal shared_model
         if shared_model is None:
-            shared_model = load_embedding_model(model_name, device, revision)
+            shared_model = create_embedding_client(embedding_settings)
         return shared_model
 
     for experiment in experiments:
@@ -119,6 +118,8 @@ def main():
                 players=args.players,
                 force=args.force,
                 embedding_model_loader=get_embedding_model,
+                embedding_provider=provider,
+                embedding_dimension=dimension,
             )
         except Exception as exc:
             failures.append((experiment, str(exc)))

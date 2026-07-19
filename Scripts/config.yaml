@@ -177,9 +177,6 @@ timerag:
 # Twin (aspect-memory retrieval) 參數
 twin:
   lambda_weight: 0.5
-  embedding_model: "BAAI/bge-large-en-v1.5"
-  embedding_revision: null  # 可填 Hugging Face commit hash 以固定 embedding 權重
-  embedding_device: "auto"
   embedding_batch_size: 8
   embedding_dtype: "float32"  # float32 | float16
   normalize_embeddings: true
@@ -188,10 +185,28 @@ twin:
   max_rallies_per_player: null
   derive_norm_from_shifted: true
 
+# Embedding 連線與模型設定，獨立於 LLM provider
+embedding:
+  active_provider: "${BADMINTON_EMBEDDING_PROVIDER:-local}"
+  providers:
+    local:
+      model: "${LOCAL_EMBEDDING_MODEL:-BAAI/bge-large-en-v1.5}"
+      revision: null  # 可填 Hugging Face commit hash 以固定 embedding 權重
+      device: "${LOCAL_EMBEDDING_DEVICE:-auto}"
+      dimension: "${LOCAL_EMBEDDING_DIMENSION:-1024}"
+    openrouter:
+      model: "${OPENROUTER_EMBEDDING_MODEL:-openai/text-embedding-3-small}"
+      dimension: "${OPENROUTER_EMBEDDING_DIMENSION:-1536}"
+      api_key: "${OPENROUTER_API_KEY}"
+      base_url: "https://openrouter.ai/api/v1"
+      default_headers:
+        HTTP-Referer: "${OPENROUTER_HTTP_REFERER:-https://github.com}"
+        X-Title: "${OPENROUTER_APP_TITLE:-BadmintonTwin}"
+
 
 # 共用檢索參數
 retrieval:
-  mode: classic  # classic | dual_db
+  mode: dual_db  # classic | dual_db
   classic_top_k: 10
   normal_top_k: 10
   miss_top_k: 5
