@@ -52,6 +52,17 @@ uv run python Preprocessing/split.py
 Twin data preparation has two independent stages. Canonical memory contains the
 LLM annotations, states, and actions, but no model-specific embeddings.
 
+Preview one rally before building the full memory database:
+
+```bash
+uv run python Scripts/preview_twin_memory.py \
+  --player "Viktor AXELSEN" --match-id 99 --set 2 --rally 30 \
+  --show-prompt --show-annotation
+```
+
+Add `--no-llm` for an offline fallback preview or `--output preview.json` to
+save the complete prompt, annotation, and generated memories.
+
 ```bash
 # Build canonical memory. This is the slow LLM annotation stage.
 uv run python Scripts/prepare_all_data.py --norm --shifted --twin

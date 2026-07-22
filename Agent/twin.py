@@ -599,20 +599,21 @@ class TwinDatabase:
         else:
             score_text = f"Before this rally, the score is tied at {target_score}-{opponent_score}."
 
-        serve_text = "The target player is serving." if str(first.get("player", "")) == self.player_name else "The target player is receiving."
-        stage_text = self._score_stage(target_score, opponent_score)
-        previous_roles = self._previous_rally_roles(rally_df)
-        momentum_text = self._streak_text(previous_roles)
-        num_strokes = int(len(rally_df))
-        rally_length_text = f"The completed rally contains {num_strokes} strokes."
+        # serve_text = "The target player is serving." if str(first.get("player", "")) == self.player_name else "The target player is receiving."
+        # stage_text = self._score_stage(target_score, opponent_score)
+        # previous_roles = self._previous_rally_roles(rally_df)
+        # momentum_text = self._streak_text(previous_roles)
+        # num_strokes = int(len(rally_df))
+        # rally_length_text = f"The completed rally contains {num_strokes} strokes."
 
-        return "\n".join([
-            score_text,
-            serve_text,
-            stage_text,
-            momentum_text,
-            rally_length_text,
-        ])
+        # return "\n".join([
+        #     score_text,
+        #     serve_text,
+        #     stage_text,
+        #     momentum_text,
+        #     rally_length_text,
+        # ])
+        return score_text
 
     def _rally_meta(self, group_key, rally_df, opponent):
         meta = {
@@ -729,10 +730,11 @@ class TwinDatabase:
     @staticmethod
     def _segment_for_round(segments, ball_round):
         def _format_segment(segment):
-            return " ".join([
-                f"Phase: {segment.get('phase_name', 'Unspecified phase')}.",
-                f"Narrative: {segment.get('narrative', '')}",
-            ]).strip()
+            phase_name = str(
+                segment.get("phase_name") or "Unspecified phase"
+            ).strip().rstrip(".")
+            narrative = str(segment.get("narrative") or "").strip()
+            return f"{phase_name}. {narrative}".strip()
 
         for segment in segments or []:
             rng = segment.get("range", [ball_round, ball_round])
