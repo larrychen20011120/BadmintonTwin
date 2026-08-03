@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_ROOT = PROJECT_ROOT / "Prompts" / "New"
 ONE_STAGE_TEMPLATE_PATHS = (
     PROMPT_ROOT / "pure_llm" / "user.jinja",
+    PROMPT_ROOT / "pure_llm" / "user_instruct.jinja",
 )
 RAG_TEMPLATE_PATHS = tuple(
     PROMPT_ROOT / algorithm / f"stage{stage}_{variant}.jinja"
@@ -261,12 +262,23 @@ class LLMPromptRenderingTest(unittest.TestCase):
         }
 
     def test_pure_llm_templates_render_strictly(self):
-        template = PROMPT_ROOT / "pure_llm" / "user.jinja"
-        rendered = render_strict(template, trajectory_text="Complete current rally.")
-        self.assertIn("Complete current rally.", rendered)
-        self.assertNotIn("style_shift_instruction", template.read_text())
-        self.assertNotIn("rally_profile_instruction", template.read_text())
-        self.assertFalse((PROMPT_ROOT / "pure_llm" / "shifted_user.jinja").exists())
+        normal_template = PROMPT_ROOT / "pure_llm" / "user.jinja"
+        normal = render_strict(
+            normal_template,
+            trajectory_text="Complete current rally.",
+        )
+        self.assertIn("Complete current rally.", normal)
+        self.assertNotIn("rally_profile_instruction", normal_template.read_text())
+
+        instructed_template = PROMPT_ROOT / "pure_llm" / "user_instruct.jinja"
+        instructed = render_strict(
+            instructed_template,
+            trajectory_text="Complete current rally.",
+            rally_profile_instruction="Attack. Attack more.",
+        )
+        self.assertIn("Complete current rally.", instructed)
+        self.assertIn("Attack. Attack more.", instructed)
+        self.assertIn("Tactical Imitation Instruction", instructed)
 
     def test_pure_llm_normalizes_shared_history_from_each_player_view(self):
         agent = PureLLMAgent.__new__(PureLLMAgent)

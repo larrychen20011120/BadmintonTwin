@@ -236,7 +236,12 @@ class PlayerRolloutLimitTest(unittest.TestCase):
             },
         }
 
-        for evaluator_type in (NaiveRAGEvaluator, TimeRAGEvaluator, TwinEvaluator):
+        for evaluator_type in (
+            PureLLMEvaluator,
+            NaiveRAGEvaluator,
+            TimeRAGEvaluator,
+            TwinEvaluator,
+        ):
             with self.subTest(evaluator=evaluator_type.__name__):
                 evaluator = evaluator_type.__new__(evaluator_type)
                 self.configure(evaluator)

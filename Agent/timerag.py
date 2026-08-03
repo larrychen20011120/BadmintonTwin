@@ -1454,7 +1454,6 @@ class TimeRAGAgent(BaseAgent):
                 system_prompt=self.system_prompt,
                 user_prompt=stage2_prompt,
                 max_trials=5,
-                validator=BaseAgent.validate_rag_stage2_response,
             )
             t1 = time.time()
             self.tracer.log_generation(

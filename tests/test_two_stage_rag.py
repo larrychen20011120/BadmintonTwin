@@ -54,9 +54,11 @@ class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
         self.prompts = []
+        self.validators = []
 
     def get_verified_response(self, system_prompt, user_prompt, validator=None, **_):
         self.prompts.append(user_prompt)
+        self.validators.append(validator)
         response = self.responses.pop(0)
         if response is not None and validator is not None:
             assert validator(response), response
@@ -222,6 +224,28 @@ class TwoStageRAGTest(unittest.TestCase):
         )
         agent.llm = FakeLLM(responses)
         return agent
+
+    def test_stage2_calls_do_not_use_semantic_validator(self):
+        stage1 = {
+            "rationale": "The evidence supports a legal Clear.",
+            "outcome": "returned",
+            "shot_type": "Clear",
+        }
+        timerag_database = TimeRAGDatabase(dataframe(), "Player A", 0, window_size=2)
+        timerag_agent = TimeRAGAgent(
+            "Player A", timerag_database, enable_tracing=False, conditioned_top_k=3
+        )
+        timerag_agent.llm = FakeLLM([stage1, placement_response()])
+        agents = [
+            self.naive_agent([stage1, placement_response()]),
+            timerag_agent,
+            self.twin_agent([aspect_response(), stage1, placement_response()]),
+        ]
+
+        for agent in agents:
+            with self.subTest(agent=type(agent).__name__):
+                agent.predict(STATE, info(), launch=False)
+                self.assertIsNone(agent.llm.validators[-1])
 
     def test_twin_keeps_aspect_pre_stage_and_two_stage_action_contract(self):
         agent = self.twin_agent([

@@ -1,4 +1,4 @@
-"""Physical-rally evaluator for the zero-shot PureLLM baseline."""
+"""Physical-rally evaluator for the PureLLM baseline."""
 
 import json
 import pandas as pd
@@ -10,11 +10,14 @@ from Utils.helper import state_col, action_col
 
 
 class PureLLMEvaluator(NaiveRAGEvaluator):
-    """Evaluate each physical rally without retrieval or profile instructions."""
+    """Evaluate each physical rally without retrieval."""
 
     def __init__(self, player_name=None, device='cuda', skip_first_n=0,
                  enable_tracing=True, save_trajectories=False,
-                 output_experiment=None, all_rallies=False):
+                 output_experiment=None, all_rallies=False,
+                 instruction_mode='no_instruct'):
+        if instruction_mode not in ('instruct', 'no_instruct'):
+            raise ValueError("instruction_mode must be 'instruct' or 'no_instruct'")
         BaseEvaluator.__init__(
             self,
             player_name,
@@ -23,12 +26,13 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
             skip_first_n,
             save_trajectories=save_trajectories,
             style_shift_instruction_mode='off',
-            output_experiment=output_experiment or 'rally_no_instruct',
+            output_experiment=output_experiment or f'rally_{instruction_mode}',
         )
 
         self.enable_tracing = enable_tracing
         self.all_rallies = all_rallies
-        self.instruction_mode = 'no_instruct'
+        self.instruction_mode = instruction_mode
+        self.prompt_variant = 'shifted' if instruction_mode == 'instruct' else 'norm'
 
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
@@ -51,7 +55,7 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
             "pure_llm",
             include_llm=True,
             extra_rows=[
-                ("prompt_mode", "zero_shot"),
+                ("prompt_variant", self.prompt_variant),
                 ("evaluation_unit", "physical_rally"),
                 ("prompt_dir", "Prompts/New/pure_llm"),
             ],
@@ -68,6 +72,7 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
             base_url=llm_config.get('base_url'),
             host_url=llm_config.get('host_url'),
             enable_tracing=self.enable_tracing,
+            prompt_variant=self.prompt_variant,
         )
         print(f"[PureLLM] Agent created for {player_name}")
         return agent

@@ -76,15 +76,17 @@ class EvalAllRalliesResumeTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, changed)
 
-    def test_pure_llm_uses_fixed_instruction_mode(self):
+    def test_pure_llm_supports_instruction_modes(self):
         self.assertEqual(
             eval_all_rallies._resolve_instruction_mode('pure_llm', None, 'instruct'),
+            'instruct',
+        )
+        self.assertEqual(
+            eval_all_rallies._resolve_instruction_mode(
+                'pure_llm', 'no_instruct', 'instruct'
+            ),
             'no_instruct',
         )
-        with self.assertRaisesRegex(ValueError, 'fixed zero-shot baseline'):
-            eval_all_rallies._resolve_instruction_mode(
-                'pure_llm', 'instruct', 'no_instruct'
-            )
 
     def test_no_instruct_keeps_rallies_without_profiles(self):
         record = self.record()
@@ -103,6 +105,10 @@ class EvalAllRalliesResumeTest(unittest.TestCase):
         )
         self.assertEqual(
             eval_all_rallies._evaluation_records('twin', dataset, 'instruct'),
+            [],
+        )
+        self.assertEqual(
+            eval_all_rallies._evaluation_records('pure_llm', dataset, 'instruct'),
             [],
         )
 
@@ -125,6 +131,20 @@ class EvalAllRalliesResumeTest(unittest.TestCase):
         self.assertNotIn('retrieval_architecture', settings)
         self.assertNotIn('database_manifest_sha256', settings)
         self.assertEqual(set(settings['prompt_sha256']), {'user'})
+
+        args.instruction_mode = 'instruct'
+        instructed_settings = eval_all_rallies._safe_settings(
+            eval_all_rallies.load_config(), args, dataset
+        )
+        self.assertEqual(
+            instructed_settings['prompt_contract'],
+            'zero_shot_with_tactical_profile',
+        )
+        self.assertTrue(instructed_settings['tactical_profile_input'])
+        self.assertNotEqual(
+            settings['prompt_sha256']['user'],
+            instructed_settings['prompt_sha256']['user'],
+        )
 
     def test_twin_settings_fingerprint_aspect_and_two_stage_contracts(self):
         args = SimpleNamespace(

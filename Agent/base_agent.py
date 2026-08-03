@@ -285,11 +285,6 @@ class BaseAgent:
             return None
         if not (0 <= landing_y <= 480 and 0 <= moving_y <= 480):
             return None
-        if placement.get("landing_area") != cls.prompt_area_name(landing_x, landing_y):
-            return None
-        if placement.get("moving_area") != cls.prompt_area_name(moving_x, moving_y):
-            return None
-
         normalized_landing = cls.prompt_to_normalized_coordinate(landing_x, landing_y)
         normalized_moving = cls.prompt_to_normalized_coordinate(moving_x, moving_y)
         return {

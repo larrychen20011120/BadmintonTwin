@@ -110,11 +110,20 @@ def _safe_settings(config, args, dataset):
         'player_map_sha256': _file_digest(config['paths']['player_map']),
     }
     if args.algorithm == 'pure_llm':
+        prompt_name = (
+            'user_instruct.jinja'
+            if args.instruction_mode == 'instruct'
+            else 'user.jinja'
+        )
         settings.update({
-            'prompt_contract': 'fixed_zero_shot',
-            'tactical_profile_input': False,
+            'prompt_contract': (
+                'zero_shot_with_tactical_profile'
+                if args.instruction_mode == 'instruct'
+                else 'fixed_zero_shot'
+            ),
+            'tactical_profile_input': args.instruction_mode == 'instruct',
             'prompt_sha256': {
-                'user': _file_digest(os.path.join(prompt_dir, 'user.jinja')),
+                'user': _file_digest(os.path.join(prompt_dir, prompt_name)),
             },
         })
         return settings
@@ -207,19 +216,13 @@ def _fingerprint(settings):
 
 
 def _resolve_instruction_mode(algorithm, requested_mode, default_mode):
-    if algorithm == 'pure_llm':
-        if requested_mode == 'instruct':
-            raise ValueError(
-                'PureLLM is a fixed zero-shot baseline and does not support instruct mode'
-            )
-        return 'no_instruct'
-    if algorithm in RAG_ALGORITHMS:
+    if algorithm in PARALLEL_LLM_ALGORITHMS:
         return requested_mode or default_mode
     return 'no_instruct'
 
 
 def _evaluation_records(algorithm, dataset, instruction_mode='no_instruct'):
-    if algorithm not in RAG_ALGORITHMS or instruction_mode == 'no_instruct':
+    if algorithm not in PARALLEL_LLM_ALGORITHMS or instruction_mode == 'no_instruct':
         return list(dataset['test'])
     return [
         record for record in dataset['test']
@@ -498,12 +501,12 @@ def _run_parallel_llm(args, config, dataset):
         'save_trajectories': False,
         'all_rallies': True,
         'output_experiment': output_label,
+        'instruction_mode': args.instruction_mode,
     }
     if args.algorithm in RAG_ALGORITHMS:
         evaluator_kwargs.update({
             'experiment': 'rally',
             'conditioned_top_k': args.conditioned_top_k,
-            'instruction_mode': args.instruction_mode,
         })
         if args.algorithm == 'timerag':
             evaluator_kwargs['window_size'] = args.window_size

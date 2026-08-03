@@ -1,0 +1,124 @@
+# Court Area Definitions
+The half court is divided into 17 semantic areas.
+## Deep Areas (Out of the Baseline) 
+- **Deep Left Corner**: 
+  - Semantics: Left corner area out of the baseline
+  - Condition: 50 <= x <= 177 AND 0 <= y <= 150
+- **Deep Right Corner**: 
+  - Semantics: Right corner area out of the baseline
+  - Condition: 178 <= x <= 305 AND 0 <= y <= 150
+## Rear Areas (Back Court)
+- **Rear Left Side**:
+  - Semantics: Left-hand side of the inner rear court.
+  - Condition: 50 <= x <= 103 AND 151 <= y <= 257
+- **Rear Center**: 
+  - Semantics: Central zone of the rear court around the center line.
+  - Condition: 104 <= x <= 250 AND 151 <= y <= 257
+- **Rear Right Side**: 
+  - Semantics: Right-hand side of the inner rear court.
+  - Condition: 251 <= x <= 304 AND 151 <= y <= 257
+- **Rear Left Side Line**: 
+  - Semantics: Outer left tramline/sideline area of the back court.
+  - Condition: 0 <= x <= 49 AND 0 <= y <= 204
+- **Rear Right Side Line**: 
+  - Semantics: Outer right tramline/sideline area of the back court.
+  - Condition: 305 <= x <= 355 AND 0 <= y <= 204
+## Mid Areas (Middle Court)
+- **Mid Left Side**:  
+  - Semantics: Left-hand side of the inner middle court.
+  - Condition: 50 <= x <= 103 AND 258 <= y <= 365
+- **Mid Center**:  
+  - Semantics: Central zone of the middle court.
+  - Condition: 104 <= x <= 250 AND 258 <= y <= 365
+- **Mid Right Side**:  
+  - Semantics: Right-hand side of the inner middle court.
+  - Condition: 251 <= x <= 304 AND 258 <= y <= 365
+- **Mid Left Side Line**:  
+  - Semantics: Outer left tramline/sideline area of the middle court.
+  - Condition: 0 <= x <= 49 AND 205 <= y <= 365
+- **Mid Right Side Line**:  
+  - Semantics: Outer right tramline/sideline area of the middle court.
+  - Condition: 305 <= x <= 355 AND 205 <= y <= 365
+## Front Areas (Front Court)
+- **Front Left Side**: 
+  - Semantics: Left-hand side of the inner front court near the net.
+  - Condition: 50 <= x <= 103 AND 366 <= y <= 480
+- **Front Right Side**:  
+  - Semantics: Right-hand side of the inner front court near the net.
+  - Condition: 251 <= x <= 304 AND 366 <= y <= 480
+- **Front Center**:  
+  - Semantics: Central net area / short service zone.
+  - Condition: 104 <= x <= 250 AND 366 <= y <= 480
+- **Front Left Side Line**:  
+  - Semantics: Outer left tramline/sideline area of the front court.
+  - Condition: 0 <= x <= 49 AND 366 <= y <= 480
+- **Front Right Side Line**:  
+  - Semantics: Outer right tramline/sideline area of the front court.
+  - Condition: 305 <= x <= 355 AND 366 <= y <= 480
+# Coordinate System
+- x increases from left to right.
+- y increases from the baseline toward the net.
+- Valid grid coordinates satisfy 0 <= x <= 355 and 0 <= y <= 480.
+- All non-missed landing and recovery coordinates must be integers.
+- The semantic area must match its integer coordinate.
+
+# Shot Types
+## Serve
+- **Serve short**
+- **Serve long**
+## Attack
+- **Push Shot**
+- **Smash**
+- **Drop**
+## Defense
+- **Clear**
+- **Smash Defence**
+- **Lob**
+## Neutral
+- **Drive**
+- **Net Shot**
+
+# Task
+Your task is to simulate the return outcome, shot type, landing position, and recovery position.
+This is a behavior simulation and imitation task, not tactical optimization.
+
+Make one joint decision from the current rally situation, the tactical imitation instruction, and general knowledge of badminton behavior. Consider the incoming shot, player and opponent positions, movement and reachability, prior rally actions, score pressure, and likely landing and recovery behavior. Predict what this player is likely to do while following the instructed playing profile, not what would be the best tactic.
+
+First decide whether the player is likely to reach and legally return the shuttle. Positioning, movement difficulty, time pressure, balance, and contact quality may make a Missed shot more likely. A weak but legal return into the opponent's court is not automatically a Missed shot.
+
+For a legal return, first select the shot type. Then, for each coordinate, first select the most likely semantic area and determine where within that area the point is likely to lie. Do not automatically use the area center. Explain whether the point is biased left, right, front, back, or center, and which current-rally or instruction evidence supports that bias.
+
+## Current Match Situation
+{% if trajectory_text %}
+{{ trajectory_text }}
+{% endif %}
+
+## Tactical Imitation Instruction
+{{ rally_profile_instruction }}
+
+## Instruction Usage
+Treat the tactical imitation instruction as a behavioral prior for shot choice, landing placement, and recovery position. Apply it only when it is feasible in the current rally situation.
+
+Immediate reachability, legal shot constraints, and the current rally state take priority. Do not let the instruction turn an unreachable shuttle into a successful return or produce an illegal serve or return.
+
+## Output Format
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
+{
+  "rationale": "One concise behavior-based paragraph explaining reachability, how the instruction affected the shot choice, why each semantic area was selected, and where each coordinate lies within that area.",
+  "action": {
+    "shot_type": "<exact shot type name>",
+    "landing_area": <semantic area name string or null>,
+    "landing_x": <integer 0 to 355 or null>,
+    "landing_y": <integer 0 to 480 or null>,
+    "moving_area": <semantic area name string or null>,
+    "moving_x": <integer 0 to 355 or null>,
+    "moving_y": <integer 0 to 480 or null>
+  }
+}
+
+## Action Constraints
+- `shot_type` must be exactly one of: `Serve short`, `Serve long`, `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, `Drop`, `Missed shot`
+- In a serve situation, `shot_type` must be either `Serve short` or `Serve long`
+- In a non-serve situation, `shot_type` must be one of `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, or `Drop`
+- For `Missed shot`, set both semantic areas and all four coordinates to `null`
+- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas

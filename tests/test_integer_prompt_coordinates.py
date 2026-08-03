@@ -164,7 +164,7 @@ class MissedTrajectoryTest(unittest.TestCase):
 
 
 class LLMActionValidationTest(unittest.TestCase):
-    def test_two_stage_contract_locks_shot_type_and_validates_areas(self):
+    def test_two_stage_contract_locks_shot_type_and_accepts_area_mismatch(self):
         returned = {
             "rationale": "Reachable and consistent with Clear evidence.",
             "outcome": "returned",
@@ -196,10 +196,29 @@ class LLMActionValidationTest(unittest.TestCase):
         })
         self.assertIsNotNone(stage2)
         placement["moving_area"] = "Front Center"
-        self.assertIsNone(BaseAgent.parse_rag_stage2_response({
+        mismatched = BaseAgent.parse_rag_stage2_response({
             "rationale": "Invalid area.",
             "placement": placement,
-        }))
+        })
+        self.assertIsNotNone(mismatched)
+        self.assertEqual(mismatched["moving_area"], "Front Center")
+
+    def test_parseable_stage2_response_is_not_retried_without_validator(self):
+        placement = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.15, -0.25)
+        placement.pop("shot_type")
+        placement["moving_area"] = "Front Center"
+        response = json.dumps({
+            "rationale": "Parseable placement with a mismatched area.",
+            "placement": placement,
+        })
+        calls = []
+
+        llm = LLM.__new__(LLM)
+        llm.get_response = lambda **_: (calls.append(1) or response, {})
+        parsed, _, _ = llm.get_verified_response(max_trials=5)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(parsed["placement"]["moving_area"], "Front Center")
 
     def test_invalid_action_is_retried_before_return(self):
         invalid_action = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.1, -0.2)

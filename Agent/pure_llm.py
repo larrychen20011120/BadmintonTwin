@@ -20,8 +20,13 @@ class PureLLMAgent(BaseAgent):
 
     def __init__(self, player_name, model_name=None,
                  api_key=None, host=None, port=None,
-                 base_url=None, host_url=None, enable_tracing=True):
+                 base_url=None, host_url=None, enable_tracing=True,
+                 prompt_variant="norm"):
         super().__init__(player_name)
+
+        if prompt_variant not in {'norm', 'shifted'}:
+            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
+        self.prompt_variant = prompt_variant
 
         self.tracer = BadmintonTracer("pure_llm", player_name, enable_tracing)
         self.trajectory = []
@@ -40,7 +45,10 @@ class PureLLMAgent(BaseAgent):
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "pure_llm")
 
-        with open(os.path.join(prompt_dir, "user.jinja"), "r") as f:
+        template_name = (
+            "user_instruct.jinja" if prompt_variant == "shifted" else "user.jinja"
+        )
+        with open(os.path.join(prompt_dir, template_name), "r") as f:
             self.user_template = Template(f.read())
 
     @staticmethod
@@ -125,6 +133,9 @@ class PureLLMAgent(BaseAgent):
             state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
         context = self.verbalizer.build_prompt_context_nl(
             state_dict, [], launch=launch, state_history=state_history)
+        context['rally_profile_instruction'] = info.get(
+            'rally_profile_instruction', ''
+        )
 
         user_prompt = self.user_template.render(**context)
 

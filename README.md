@@ -133,7 +133,9 @@ uv run python Scripts/single_player_eval/eval_all_rallies.py \
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm random --no-instruct --seed 42 --device cpu
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
-  --algorithm pure_llm --workers 4
+  --algorithm pure_llm --workers 4 --instruction-mode no_instruct
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm pure_llm --workers 4 --instruction-mode instruct
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm naive_rag --workers 4 --conditioned-top-k 10 --instruction-mode instruct
 uv run python Scripts/single_player_eval/eval_all_rallies.py \

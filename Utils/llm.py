@@ -59,6 +59,7 @@ class LLM:
         self.generation_params = settings["generation_params"]
 
         endpoint_url = settings.get("base_url") or settings.get("host_url")
+
         client_kwargs = {"api_key": self.api_key}
         default_headers = settings.get("default_headers")
         if isinstance(default_headers, dict) and default_headers:
@@ -67,6 +68,7 @@ class LLM:
             client_kwargs["base_url"] = endpoint_url
         elif self.api_key == "EMPTY":
             client_kwargs["base_url"] = f"http://{settings['host']}:{settings['port']}/v1"
+
 
         self.client = OpenAI(**client_kwargs)
         if self.api_key == "EMPTY":
@@ -305,10 +307,10 @@ class LLM:
                         print("TypeError or ValueError during validation; retrying LLM generation")
                         trials += 1
                         continue
-                print(user_prompt)
-                print("=" * 30)
-                print(llm_response_str)
-                print("=" * 30)
+                # print(user_prompt)
+                # print("=" * 30)
+                # print(llm_response_str)
+                # print("=" * 30)
 
                 return data, llm_response_str, last_usage
             else:
@@ -378,7 +380,7 @@ class LLM:
             "messages": messages,
             **self.generation_params,
         }
-
+        # print(request_kwargs)
         response = self.client.chat.completions.create(**request_kwargs)
         response_text = response.choices[0].message.content
 
