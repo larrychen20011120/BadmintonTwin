@@ -114,6 +114,7 @@ rally_clustering:
   elbow_window_radius: 1
   fallback_min_abs_z: 0.5
   fallback_max_tendencies: 5
+  instruction_variant_seed: 42
 
 # BC 訓練參數
 bc_training:
@@ -239,6 +240,7 @@ evaluation:
   workers: 1
   start_method: "spawn"
   instruction_mode: "no_instruct"  # no_instruct | instruct
+  instruction_variant: "original"  # original | opposite | random_other | rewrite
   rollout_extra_steps: 2
   save_decision_trace: true
 

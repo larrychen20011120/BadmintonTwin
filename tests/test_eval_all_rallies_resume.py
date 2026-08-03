@@ -112,6 +112,51 @@ class EvalAllRalliesResumeTest(unittest.TestCase):
             [],
         )
 
+    def test_instruction_variant_is_applied_without_mutating_source_record(self):
+        record = self.record()
+        record['player_profiles'] = {
+            player: {
+                'cluster_id': index,
+                'label': f'Original {player}',
+                'description': f'Original description {player}',
+                'instruction': f'Original instruction {player}',
+                'instruction_variants': {
+                    'random_other': {
+                        'label': f'Other {player}',
+                        'description': f'Other description {player}',
+                        'instruction': f'Other instruction {player}',
+                        'source': 'same_player_cluster',
+                        'target_cluster_id': index + 2,
+                        'seed': 17,
+                    },
+                },
+            }
+            for index, player in enumerate(record['players'])
+        }
+
+        transformed = eval_all_rallies._apply_instruction_variant(
+            [record], 'random_other'
+        )
+
+        source_profile = record['player_profiles']['A']
+        applied_profile = transformed[0]['player_profiles']['A']
+        self.assertEqual(source_profile['instruction'], 'Original instruction A')
+        self.assertEqual(applied_profile['instruction'], 'Other instruction A')
+        self.assertEqual(applied_profile['original_instruction'], 'Original instruction A')
+        self.assertEqual(applied_profile['target_cluster_id'], 2)
+        self.assertEqual(applied_profile['variant_seed'], 17)
+        self.assertEqual(applied_profile['instruction_variant'], 'random_other')
+        self.assertNotIn('instruction_variants', applied_profile)
+
+    def test_missing_instruction_variant_is_rejected(self):
+        record = self.record()
+        record['player_profiles'] = {
+            player: {'instruction_variants': {}}
+            for player in record['players']
+        }
+        with self.assertRaisesRegex(ValueError, "Missing 'rewrite' instruction variant"):
+            eval_all_rallies._apply_instruction_variant([record], 'rewrite')
+
     def test_pure_llm_settings_exclude_retrieval_contract(self):
         args = SimpleNamespace(
             algorithm='pure_llm',

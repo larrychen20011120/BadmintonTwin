@@ -13,6 +13,7 @@ from Scripts.single_player_eval.score import (
     compute_hierarchy,
     discover_completed_runs,
     main,
+    validate_runs,
 )
 
 
@@ -95,6 +96,37 @@ def create_run(root, trajectories, algorithm='bc'):
 
 
 class ScoreTest(unittest.TestCase):
+    def test_runs_with_different_instruction_variants_are_rejected(self):
+        common = {
+            'algorithm': 'pure_llm',
+            'experiment': 'rally',
+            'instruction_mode': 'instruct',
+        }
+        runs = [
+            {'manifest': {**common, 'instruction_variant': variant}, 'keys': set(), 'by_key': {}}
+            for variant in ('opposite', 'rewrite')
+        ]
+
+        with self.assertRaisesRegex(ValueError, "instruction_variant"):
+            validate_runs(runs)
+
+    def test_missing_instruction_variant_is_treated_as_original(self):
+        common = {
+            'algorithm': 'pure_llm',
+            'experiment': 'rally',
+            'instruction_mode': 'instruct',
+        }
+        runs = [
+            {'manifest': common, 'keys': set(), 'by_key': {}},
+            {
+                'manifest': {**common, 'instruction_variant': 'original'},
+                'keys': set(),
+                'by_key': {},
+            },
+        ]
+
+        validate_runs(runs)
+
     def test_score_loads_without_legacy_single_player_eval_modules(self):
         spec = importlib.util.spec_from_file_location('isolated_score', score_module.__file__)
         module = importlib.util.module_from_spec(spec)

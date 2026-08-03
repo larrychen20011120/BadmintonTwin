@@ -67,6 +67,14 @@ class RallyDataPipelineTest(unittest.TestCase):
                 'description': 'Attack often',
                 'instruction': 'Attack more.',
                 'instruction_source': 'deterministic',
+                'instruction_variants': {
+                    'rewrite': {
+                        'label': 'Attack rewritten',
+                        'description': 'Attack often, in other words',
+                        'instruction': 'Apply more attacking play.',
+                        'source': 'llm',
+                    },
+                },
             }],
             'train_assignments': [{**assignment_train, 'cluster_id': 0}],
             'test_assignments': [{
@@ -90,6 +98,12 @@ class RallyDataPipelineTest(unittest.TestCase):
         self.assertEqual(
             dataset['test'][0]['player_profiles']['A']['instruction'],
             'Attack more.',
+        )
+        self.assertEqual(
+            dataset['test'][0]['player_profiles']['A']['instruction_variants']['rewrite'][
+                'instruction'
+            ],
+            'Apply more attacking play.',
         )
 
     def test_prepare_jobs_run_rally_methods_once(self):

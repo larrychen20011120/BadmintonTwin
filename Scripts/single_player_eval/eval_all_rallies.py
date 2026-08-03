@@ -2,6 +2,7 @@
 """Evaluate each unique physical test rally once, with parallel RAG resume support."""
 
 import argparse
+import copy
 import concurrent.futures
 import hashlib
 import json
@@ -33,6 +34,7 @@ from Scripts.single_player_eval.trajectory_store import (
 
 RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin'}
 PARALLEL_LLM_ALGORITHMS = RAG_ALGORITHMS | {'pure_llm'}
+INSTRUCTION_VARIANTS = {'original', 'opposite', 'random_other', 'rewrite'}
 _WORKER_EVALUATOR = None
 _WORKER_OUTPUT_DIR = None
 _WORKER_METADATA = None
@@ -92,6 +94,7 @@ def _safe_settings(config, args, dataset):
         'experiment': 'rally',
         'evaluation_unit': 'physical_rally',
         'instruction_mode': args.instruction_mode,
+        'instruction_variant': getattr(args, 'instruction_variant', 'original'),
         'seed': args.seed,
         'device': args.device,
         'limit': args.limit,
@@ -231,6 +234,51 @@ def _evaluation_records(algorithm, dataset, instruction_mode='no_instruct'):
     ]
 
 
+def _apply_instruction_variant(records, instruction_variant):
+    if instruction_variant not in INSTRUCTION_VARIANTS:
+        raise ValueError(f'Unsupported instruction variant: {instruction_variant}')
+
+    transformed_records = copy.deepcopy(records)
+    for record in transformed_records:
+        for player, profile in (record.get('player_profiles') or {}).items():
+            if profile is None:
+                if instruction_variant == 'original':
+                    continue
+                raise ValueError(f'Missing tactical profile for {player!r}')
+            variants = profile.pop('instruction_variants', None) or {}
+            profile.update({
+                'instruction_variant': instruction_variant,
+                'variant_source': profile.get('instruction_source'),
+                'target_cluster_id': None,
+                'variant_seed': None,
+            })
+            if instruction_variant == 'original':
+                continue
+            variant = variants.get(instruction_variant)
+            if not isinstance(variant, dict):
+                raise ValueError(
+                    f'Missing {instruction_variant!r} instruction variant for {player!r}'
+                )
+            for field in ('label', 'description', 'instruction'):
+                value = variant.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f'Invalid {instruction_variant!r} {field} for {player!r}'
+                    )
+            profile.update({
+                'original_label': profile.get('label'),
+                'original_description': profile.get('description'),
+                'original_instruction': profile.get('instruction'),
+                'label': variant['label'].strip(),
+                'description': variant['description'].strip(),
+                'instruction': variant['instruction'].strip(),
+                'variant_source': variant.get('source'),
+                'target_cluster_id': variant.get('target_cluster_id'),
+                'variant_seed': variant.get('seed'),
+            })
+    return transformed_records
+
+
 def _create_parallel_evaluator(algorithm, kwargs):
     if algorithm == 'pure_llm':
         from Scripts.single_player_eval.evaluators.pure_llm_evaluator import PureLLMEvaluator
@@ -332,6 +380,10 @@ def parse_args():
     instruction.add_argument('--instruction-mode', choices=['instruct', 'no_instruct'])
     instruction.add_argument('--instruct', dest='instruction_mode', action='store_const', const='instruct')
     instruction.add_argument('--no-instruct', dest='instruction_mode', action='store_const', const='no_instruct')
+    parser.add_argument(
+        '--instruction-variant',
+        choices=sorted(INSTRUCTION_VARIANTS),
+    )
     parser.add_argument('--resume-run', help='Existing run_NNN directory to resume')
     parser.add_argument('--model-path')
     parser.add_argument('--output-dir')
@@ -444,12 +496,15 @@ def _run_baseline(args, config, dataset):
 def _run_parallel_llm(args, config, dataset):
     records = _evaluation_records(args.algorithm, dataset, args.instruction_mode)
     skipped_missing_profiles = len(dataset['test']) - len(records)
+    records = _apply_instruction_variant(records, args.instruction_variant)
     if args.limit is not None:
         records = records[:args.limit]
 
     settings = _safe_settings(config, args, dataset)
     config_fingerprint = _fingerprint(settings)
     output_label = f'rally_{args.instruction_mode}'
+    if args.instruction_mode == 'instruct' and args.instruction_variant != 'original':
+        output_label = f'{output_label}_{args.instruction_variant}'
 
     if args.resume_run:
         run_dir = os.path.abspath(args.resume_run)
@@ -599,6 +654,12 @@ def main():
         requested_instruction_mode,
         evaluation.get('instruction_mode', 'no_instruct'),
     )
+    args.instruction_variant = (
+        args.instruction_variant
+        or evaluation.get('instruction_variant', 'original')
+    )
+    if args.instruction_mode != 'instruct' and args.instruction_variant != 'original':
+        raise ValueError('--instruction-variant requires --instruction-mode instruct')
     stage2 = retrieval.get('stage2', {})
     args.conditioned_top_k = (
         args.conditioned_top_k

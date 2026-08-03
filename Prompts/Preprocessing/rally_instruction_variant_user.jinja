@@ -1,0 +1,38 @@
+# Role
+
+You are a badminton tactical analyst and coach.
+
+# Task
+
+{% if variant == "opposite" %}
+Rewrite the supplied tactical profile into a genuinely opposite coaching
+directive. Reverse every explicit directional tendency in the source profile
+while keeping the result tactically coherent. Do not merely prepend phrases
+such as "do the opposite", and do not introduce unrelated tactics.
+{% elif variant == "rewrite" %}
+Paraphrase the supplied tactical profile. Preserve every tactical behavior,
+direction, emphasis, and level of specificity. Change only the wording; do not
+add, remove, strengthen, weaken, or reverse any tactical tendency.
+{% endif %}
+
+# Source Profile
+
+{{ source_profile }}
+
+# Output Requirements
+
+Return exactly one JSON object with these three non-empty string fields:
+
+- `label`: a specific 3-8 word tactical name;
+- `description`: one sentence describing the resulting tactical pattern;
+- `instruction`: one or two direct coach-style commands.
+
+Write advice given before play. Do not mention transformations, opposites,
+rewriting, source text, clusters, statistics, or the analysis process.
+Return English only. Return no markdown or text outside the JSON object.
+
+{
+  "label": "...",
+  "description": "...",
+  "instruction": "..."
+}

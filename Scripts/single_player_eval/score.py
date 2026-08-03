@@ -500,10 +500,13 @@ def discover_completed_runs(run_root):
 
 def validate_runs(runs):
     reference = runs[0]
-    comparable_fields = ('algorithm', 'experiment', 'instruction_mode')
+    comparable_fields = (
+        'algorithm', 'experiment', 'instruction_mode', 'instruction_variant',
+    )
     for run in runs[1:]:
         for field in comparable_fields:
-            if run['manifest'].get(field) != reference['manifest'].get(field):
+            default = 'original' if field == 'instruction_variant' else None
+            if run['manifest'].get(field, default) != reference['manifest'].get(field, default):
                 raise ValueError(f'Runs disagree on manifest field {field!r}')
         if run['keys'] != reference['keys']:
             raise ValueError('Runs do not contain the same physical rally keys')

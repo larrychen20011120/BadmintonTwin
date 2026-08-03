@@ -82,6 +82,7 @@ def _profile_metadata(profiles, fold):
                 "description": cluster.get("description"),
                 "instruction": cluster.get("instruction"),
                 "instruction_source": cluster.get("instruction_source"),
+                "instruction_variants": cluster.get("instruction_variants", {}),
                 "in_train_support": assignment.get("in_train_support"),
             }
     return metadata

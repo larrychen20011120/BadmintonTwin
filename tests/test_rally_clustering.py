@@ -7,10 +7,12 @@ from jinja2 import Environment, StrictUndefined
 
 from Preprocessing.rally_clustering import (
     _valid_instruction_response,
+    add_instruction_variants,
     candidate_ks,
     centroid_feature_payload,
     fit_player_profile,
     generate_cluster_instruction,
+    generate_instruction_variant,
     select_elbow_k,
 )
 from Preprocessing.rally_feature import CLUSTER_FEATURE_COLUMNS, extract_rally_features
@@ -18,6 +20,9 @@ from Preprocessing.rally_feature import CLUSTER_FEATURE_COLUMNS, extract_rally_f
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RALLY_PROFILE_PROMPT = PROJECT_ROOT / "Prompts" / "Preprocessing" / "rally_profile_user.jinja"
+INSTRUCTION_VARIANT_PROMPT = (
+    PROJECT_ROOT / "Prompts" / "Preprocessing" / "rally_instruction_variant_user.jinja"
+)
 
 
 def make_feature_row(rally_number, cluster_id):
@@ -405,6 +410,85 @@ class RallyProfilePromptTest(unittest.TestCase):
             with self.subTest(field=field):
                 invalid = {**detailed, field: " "}
                 self.assertFalse(_valid_instruction_response(invalid))
+
+    def test_opposite_fallback_reverses_centroid_directions(self):
+        center_z = {feature: 0.0 for feature in CLUSTER_FEATURE_COLUMNS}
+        center_z["attack_shot_ratio"] = 1.2
+        center_z["signed_side_bias"] = -0.8
+        cluster = {
+            "center_z": center_z,
+            "label": "Right-side attack",
+            "description": "Attack more and favor the right side.",
+            "instruction": "Use more attacking shots and favor right-side targets.",
+        }
+        template = Environment(undefined=StrictUndefined).from_string(
+            INSTRUCTION_VARIANT_PROMPT.read_text(encoding="utf-8")
+        )
+
+        result, source = generate_instruction_variant(
+            cluster,
+            "opposite",
+            None,
+            template,
+        )
+
+        self.assertEqual(source, "deterministic")
+        self.assertIn("use attacking shots less frequently", result["instruction"])
+        self.assertIn("shift targeting toward the right side", result["instruction"])
+
+    def test_rewrite_prompt_preserves_structured_generation_contract(self):
+        cluster = {
+            "center_z": {feature: 0.0 for feature in CLUSTER_FEATURE_COLUMNS},
+            "label": "Right-side attack",
+            "description": "Attack more and favor the right side.",
+            "instruction": "Use more attacking shots and favor right-side targets.",
+        }
+        template = Environment(undefined=StrictUndefined).from_string(
+            INSTRUCTION_VARIANT_PROMPT.read_text(encoding="utf-8")
+        )
+        llm = FakeLLM()
+
+        result, source = generate_instruction_variant(
+            cluster,
+            "rewrite",
+            llm,
+            template,
+        )
+
+        self.assertEqual(source, "llm")
+        self.assertEqual(result["instruction"], "Use more attacking shots and favor right-side targets.")
+        self.assertIn("Change only the wording", llm.user_prompt)
+        self.assertIn('"label": "Right-side attack"', llm.user_prompt)
+
+    def test_random_other_is_deterministic_and_never_selects_source_cluster(self):
+        clusters = []
+        for cluster_id in range(3):
+            clusters.append({
+                "cluster_id": cluster_id,
+                "center_z": {feature: 0.0 for feature in CLUSTER_FEATURE_COLUMNS},
+                "label": f"Mode {cluster_id}",
+                "description": f"Description {cluster_id}",
+                "instruction": f"Instruction {cluster_id}",
+            })
+        profile = {"clusters": clusters}
+        template = Environment(undefined=StrictUndefined).from_string(
+            INSTRUCTION_VARIANT_PROMPT.read_text(encoding="utf-8")
+        )
+
+        add_instruction_variants("Player A", profile, None, template, random_seed=17)
+        first_targets = [
+            cluster["instruction_variants"]["random_other"]["target_cluster_id"]
+            for cluster in clusters
+        ]
+
+        add_instruction_variants("Player A", profile, None, template, random_seed=17)
+        second_targets = [
+            cluster["instruction_variants"]["random_other"]["target_cluster_id"]
+            for cluster in clusters
+        ]
+        self.assertEqual(first_targets, second_targets)
+        for cluster, target in zip(clusters, first_targets):
+            self.assertNotEqual(cluster["cluster_id"], target)
 
 
 if __name__ == "__main__":

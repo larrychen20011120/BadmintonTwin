@@ -661,6 +661,104 @@ def generate_cluster_instruction(
     ), "deterministic_fallback"
 
 
+def generate_instruction_variant(
+    cluster,
+    variant,
+    llm,
+    user_template,
+    fallback_min_abs_z=0.5,
+    fallback_max_tendencies=5,
+):
+    if variant not in {"opposite", "rewrite"}:
+        raise ValueError(f"Unsupported instruction variant: {variant}")
+
+    original = {
+        key: cluster.get(key)
+        for key in ("label", "description", "instruction")
+    }
+    if not _valid_instruction_response(original):
+        raise ValueError("Cluster must have a valid instruction before variants are generated")
+
+    if variant == "opposite":
+        opposite_features = centroid_feature_payload({
+            feature: -float(cluster["center_z"][feature])
+            for feature in CLUSTER_FEATURE_COLUMNS
+        })
+        fallback = _fallback_instruction(
+            opposite_features,
+            fallback_min_abs_z,
+            fallback_max_tendencies,
+        )
+        fallback_source = "deterministic_fallback"
+    else:
+        fallback = original
+        fallback_source = "original_fallback"
+
+    if llm is None:
+        source = "deterministic" if variant == "opposite" else "original"
+        return {key: fallback[key].strip() for key in fallback}, source
+
+    user_prompt = user_template.render(
+        variant=variant,
+        source_profile=json.dumps(original, ensure_ascii=False, indent=2),
+    )
+    response = llm.get_verified_response(
+        schema=None,
+        user_prompt=user_prompt,
+        validator=_valid_instruction_response,
+    )
+    data = response[0] if isinstance(response, tuple) else response
+    if _valid_instruction_response(data):
+        return {key: data[key].strip() for key in data}, "llm"
+    return {key: fallback[key].strip() for key in fallback}, fallback_source
+
+
+def add_instruction_variants(
+    player_name,
+    profile,
+    llm,
+    user_template,
+    random_seed=42,
+    fallback_min_abs_z=0.5,
+    fallback_max_tendencies=5,
+):
+    clusters = sorted(profile.get("clusters", []), key=lambda item: int(item["cluster_id"]))
+    if len(clusters) < 2:
+        raise ValueError(f"Player {player_name!r} needs at least two clusters for random_other")
+
+    for cluster in clusters:
+        variants = {}
+        for variant in ("opposite", "rewrite"):
+            instruction, source = generate_instruction_variant(
+                cluster,
+                variant,
+                llm,
+                user_template,
+                fallback_min_abs_z,
+                fallback_max_tendencies,
+            )
+            variants[variant] = {**instruction, "source": source}
+
+        candidates = [
+            candidate for candidate in clusters
+            if int(candidate["cluster_id"]) != int(cluster["cluster_id"])
+        ]
+        seed_payload = f"{random_seed}:{player_name}:{cluster['cluster_id']}".encode("utf-8")
+        candidate_index = int.from_bytes(
+            hashlib.sha256(seed_payload).digest()[:8], "big"
+        ) % len(candidates)
+        target = candidates[candidate_index]
+        variants["random_other"] = {
+            "label": target["label"],
+            "description": target["description"],
+            "instruction": target["instruction"],
+            "source": "same_player_cluster",
+            "target_cluster_id": int(target["cluster_id"]),
+            "seed": int(random_seed),
+        }
+        cluster["instruction_variants"] = variants
+
+
 def _project_path(path):
     return path if os.path.isabs(path) else os.path.join(PROJECT_ROOT, path)
 
@@ -708,6 +806,12 @@ def main():
     prompt_root = os.path.join(PROJECT_ROOT, "Prompts", "Preprocessing")
     with open(os.path.join(prompt_root, "rally_profile_user.jinja"), "r", encoding="utf-8") as handle:
         user_template = Environment(undefined=StrictUndefined).from_string(handle.read())
+    with open(
+        os.path.join(prompt_root, "rally_instruction_variant_user.jinja"),
+        "r",
+        encoding="utf-8",
+    ) as handle:
+        variant_template = Environment(undefined=StrictUndefined).from_string(handle.read())
 
     players = sorted(split["eligible_players"])
     profiles = {}
@@ -752,8 +856,21 @@ def main():
             cluster.update(instruction)
             cluster["instruction_source"] = source
 
+    for player_name, profile in profiles.items():
+        if profile["status"] != "clustered":
+            continue
+        add_instruction_variants(
+            player_name,
+            profile,
+            llm,
+            variant_template,
+            int(settings.get("instruction_variant_seed", 42)),
+            float(settings.get("fallback_min_abs_z", 0.5)),
+            int(settings.get("fallback_max_tendencies", 5)),
+        )
+
     artifact = {
-        "schema_version": 3,
+        "schema_version": 4,
         "feature_version": 3,
         "split_sha256": _file_digest(split_path),
         "feature_names": CLUSTER_FEATURE_COLUMNS,
