@@ -1,6 +1,4 @@
-"""
-Pure LLM Evaluator for Single Player.
-"""
+"""Physical-rally evaluator for the zero-shot PureLLM baseline."""
 
 import json
 import pandas as pd
@@ -12,47 +10,49 @@ from Utils.helper import state_col, action_col
 
 
 class PureLLMEvaluator(NaiveRAGEvaluator):
-    """Single-player evaluator for the retrieval-free LLM baseline."""
+    """Evaluate each physical rally without retrieval or profile instructions."""
 
-    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
+    def __init__(self, player_name=None, device='cuda', skip_first_n=0,
                  enable_tracing=True, save_trajectories=False,
-                 style_shift_instruction_mode='auto', verbose_style_shift=False,
-                 output_experiment=None):
+                 output_experiment=None, all_rallies=False):
         BaseEvaluator.__init__(
             self,
             player_name,
-            experiment,
+            'rally',
             device,
             skip_first_n,
             save_trajectories=save_trajectories,
-            style_shift_instruction_mode=style_shift_instruction_mode,
-            verbose_style_shift=verbose_style_shift,
-            output_experiment=output_experiment,
+            style_shift_instruction_mode='off',
+            output_experiment=output_experiment or 'rally_no_instruct',
         )
 
         self.enable_tracing = enable_tracing
+        self.all_rallies = all_rallies
+        self.instruction_mode = 'no_instruct'
 
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
 
-        if self.player_name not in self.player2index:
+        if self.player_name is not None and self.player_name not in self.player2index:
             raise ValueError(f"Player '{self.player_name}' not found in player map")
 
-        self.player_id = self.player2index[self.player_name]
+        self.player_id = (
+            self.player2index[self.player_name] if self.player_name is not None else None
+        )
 
         self.df = pd.read_csv(self.merged_csv_path)
         target_cols = state_col + action_col
         self.df = self.df.dropna(subset=target_cols).reset_index(drop=True)
 
         self.agents = {}
-        self.agent = self._get_agent(self.player_name)
+        self.agent = self._get_agent(self.player_name) if self.player_name is not None else None
 
         self.print_runtime_parameters(
             "pure_llm",
             include_llm=True,
             extra_rows=[
-                ("prompt_variant", self.prompt_variant),
                 ("prompt_mode", "zero_shot"),
+                ("evaluation_unit", "physical_rally"),
                 ("prompt_dir", "Prompts/New/pure_llm"),
             ],
         )
@@ -68,7 +68,6 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
             base_url=llm_config.get('base_url'),
             host_url=llm_config.get('host_url'),
             enable_tracing=self.enable_tracing,
-            prompt_variant=self.prompt_variant,
         )
         print(f"[PureLLM] Agent created for {player_name}")
         return agent

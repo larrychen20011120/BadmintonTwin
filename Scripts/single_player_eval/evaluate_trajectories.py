@@ -9,14 +9,14 @@ Computes comprehensive metrics including:
 
 Usage:
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/twin/trajectories/Kento_MOMOTA_norm.pkl \\
+        --trajectory-dir Experiments/twin/trajectories/rally_no_instruct/run_001/rallies \\
         --output-dir Experiments/twin/results/single_player/ \\
         --metrics all \\
         --visualize
 
     # Compute specific metrics only
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/bc/trajectories/Viktor_AXELSEN_norm.pkl \\
+        --trajectory-dir Experiments/bc/trajectories/rally_no_instruct/run_001/rallies \\
         --metrics dtw edit_distance shot_similarity \\
         --output-dir results/
 
@@ -36,9 +36,9 @@ import glob
 import json
 import math
 import os
+from pathlib import Path
 import re
 import sys
-import pickle
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
@@ -51,6 +51,7 @@ _project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 sys.path.insert(0, _project_path)
 
 from Utils.runtime_report import print_runtime_box
+from Scripts.single_player_eval.trajectory_store import load_trajectories as load_trajectory_path
 
 from Utils.helper import edit_distance, normalized_dtw_ndim_distance
 from Utils.badminton_config import EN_SHOT2INDEX, INDEX2EN_SHOT, area_groups
@@ -193,10 +194,39 @@ RAW_AREA_BOUNDS = {
 # =============================================================================
 
 def load_trajectories(trajectory_file: str) -> List[Dict]:
-    """Load trajectory pickle file."""
-    with open(trajectory_file, 'rb') as f:
-        trajectories = pickle.load(f)
-    return trajectories
+    """Load rally JSON data or a legacy trajectory pickle."""
+    return load_trajectory_path(trajectory_file)
+
+
+def trajectory_players(trajectory: Dict) -> List[str]:
+    """Return metric-view players without duplicating the physical trajectory."""
+    target_player = trajectory.get('target_player')
+    if target_player:
+        return [str(target_player)]
+
+    players = trajectory.get('players')
+    if isinstance(players, list):
+        return list(dict.fromkeys(str(player) for player in players if player))
+
+    inferred = []
+    for sequence_name in ('gt_sequence', 'pred_sequence'):
+        for step in trajectory.get(sequence_name, []):
+            player = step.get('player')
+            if player and player not in inferred:
+                inferred.append(player)
+    return inferred
+
+
+def as_player_view(trajectory: Dict, player: str) -> Dict:
+    """Create a shallow target-player metric view of one physical trajectory."""
+    view = dict(trajectory)
+    view['target_player'] = player
+    players = trajectory_players(trajectory)
+    view['opponent_player'] = next(
+        (candidate for candidate in players if candidate != player),
+        trajectory.get('opponent_player'),
+    )
+    return view
 
 
 def coord2area(norm_x: float, norm_y: float) -> int:
@@ -587,7 +617,17 @@ class SequenceMetrics:
 # =============================================================================
 
 def parse_trajectory_filename(path: str) -> Dict[str, Any]:
-    """Parse generation metadata from a trajectory pickle filename."""
+    """Parse generation metadata from a run directory or legacy filename."""
+    path_obj = Path(path)
+    if path_obj.is_dir() and path_obj.name == 'rallies':
+        run_dir = path_obj.parent
+        run_match = re.fullmatch(r'run_(?P<generation>\d+)', run_dir.name)
+        if run_match:
+            return {
+                'trajectory_base': str(run_dir.parent),
+                'generation': int(run_match.group('generation')),
+            }
+
     stem = os.path.splitext(os.path.basename(path))[0]
     generation_match = re.match(r'^(?P<base>.+)_gen(?P<generation>\d+)$', stem)
     if generation_match:
@@ -610,9 +650,17 @@ def parse_trajectory_filename(path: str) -> Dict[str, Any]:
 
 
 def discover_trajectory_files(trajectory_dir: str, latest_only: bool = False) -> List[str]:
-    """Discover trajectory pickle files under an experiment trajectory directory."""
-    pattern = os.path.join(trajectory_dir, '**', '*.pkl')
-    files = sorted(glob.glob(pattern, recursive=True))
+    """Discover JSON run units and legacy pickle files under a directory."""
+    pickle_pattern = os.path.join(trajectory_dir, '**', '*.pkl')
+    files = sorted(glob.glob(pickle_pattern, recursive=True))
+
+    rally_pattern = os.path.join(trajectory_dir, '**', 'rallies', '*.json')
+    rally_dirs = {os.path.dirname(path) for path in glob.glob(rally_pattern, recursive=True)}
+    if os.path.basename(os.path.normpath(trajectory_dir)) == 'rallies':
+        direct_json = glob.glob(os.path.join(trajectory_dir, '*.json'))
+        if direct_json:
+            rally_dirs.add(os.path.normpath(trajectory_dir))
+    files.extend(sorted(rally_dirs))
 
     if not latest_only:
         return files
@@ -2406,7 +2454,7 @@ def evaluate_trajectories(trajectory_file: str,
     Main evaluation function.
     
     Args:
-        trajectory_file: Path to trajectory pickle file
+        trajectory_file: Path to one rally JSON, a rally directory, or a legacy pickle.
         output_dir: Directory for output files
         metrics: List of metrics to compute (None = all)
         visualize: Whether to generate visualizations
@@ -2428,6 +2476,12 @@ def evaluate_trajectories(trajectory_file: str,
     print("Loading trajectories...")
     trajectories = load_trajectories(trajectory_file)
     print(f"  Loaded {len(trajectories)} rallies")
+    if target_player_only and any(
+        not trajectory.get('target_player') and trajectory_players(trajectory)
+        for trajectory in trajectories
+    ):
+        print('  Shared physical trajectories detected; evaluating both players.')
+        target_player_only = False
     
     # Extract sequences
     print("Extracting sequences...")
@@ -2721,6 +2775,12 @@ RALLY_LEVEL_COLUMNS = [
 
 RALLY_SKIP_LEVEL_COLUMNS = RALLY_LEVEL_COLUMNS
 
+INSTRUCTION_LEVEL_COLUMNS = [
+    'trajectory_file', 'target_player', 'generation', 'cluster_id',
+    'instruction_label', 'instruction', 'num_rallies',
+    'num_gt_shots', 'num_pred_shots',
+] + [f'mean_{column}' for column in SEQUENCE_METRIC_COLUMNS]
+
 DISTRIBUTION_METRIC_COLUMNS = [
     'shot_conditioned_landing_js', 'shot_distribution_js', 'rally_length_js',
     'state_conditioned_move_js', 'state_conditioned_shot_js', 'state_conditioned_landing_js',
@@ -2743,13 +2803,23 @@ EXPERIMENT_SUMMARY_COLUMNS = [
     'num_gt_shots', 'num_pred_shots',
 ] + [f'mean_{column}' for column in SUMMARY_METRIC_COLUMNS]
 
+PHYSICAL_RALLY_COLUMNS = [
+    'trajectory_file', 'generation', 'match_id', 'set', 'rally',
+    'num_gt_shots', 'num_pred_shots', 'simulation_ended_early',
+] + SEQUENCE_METRIC_COLUMNS
+
+PHYSICAL_MATCH_COLUMNS = [
+    'trajectory_file', 'generation', 'match_id', 'num_rallies',
+    'num_gt_shots', 'num_pred_shots', 'early_end_rate',
+] + DISTRIBUTION_METRIC_COLUMNS
+
 
 def evaluate_trajectory_directory(trajectory_dir: str,
                                   output_dir: str,
                                   latest_only: bool = False,
                                   target_player_only: bool = True,
                                   print_max_rows: int = 50) -> Dict:
-    """Evaluate every trajectory pickle in a directory as one experiment."""
+    """Evaluate every JSON run or legacy trajectory pickle as one experiment."""
     print('=' * 80)
     print('Experiment Trajectory Evaluation')
     print('=' * 80)
@@ -2761,7 +2831,7 @@ def evaluate_trajectory_directory(trajectory_dir: str,
 
     trajectory_files = discover_trajectory_files(trajectory_dir, latest_only=latest_only)
     if not trajectory_files:
-        raise ValueError(f'No trajectory pickle files found under: {trajectory_dir}')
+        raise ValueError(f'No trajectory JSON runs or pickle files found under: {trajectory_dir}')
 
     print(f'Found {len(trajectory_files)} trajectory files')
 
@@ -2775,57 +2845,119 @@ def evaluate_trajectory_directory(trajectory_dir: str,
     match_groups = defaultdict(list)
     match_sequence_values = defaultdict(lambda: defaultdict(list))
     match_sequence_values_skip = defaultdict(lambda: defaultdict(list))
+    physical_rally_rows = []
+    physical_rally_skip_rows = []
+    physical_match_groups = defaultdict(list)
+    physical_match_sequence_values = defaultdict(lambda: defaultdict(list))
+    physical_match_sequence_values_skip = defaultdict(lambda: defaultdict(list))
 
     for trajectory_file in trajectory_files:
         trajectories = load_trajectories(trajectory_file)
         parsed = parse_trajectory_filename(trajectory_file)
-        trajectory_name = os.path.basename(trajectory_file)
-        generation = parsed['generation']
+        trajectory_name = (
+            os.path.basename(os.path.dirname(trajectory_file))
+            if os.path.basename(trajectory_file) == 'rallies'
+            else os.path.basename(trajectory_file)
+        )
+        generation = (
+            int(trajectories[0].get('generation', parsed['generation']))
+            if trajectories else parsed['generation']
+        )
 
         for traj in trajectories:
-            target_player = traj.get('target_player', '')
             match_id = traj.get('match_id', '')
-            key = (trajectory_name, target_player, generation, match_id)
-            match_groups[key].append(traj)
-
-            sequence_values = sequence_metrics_for_trajectories([traj], target_player_only)
-            row = {
+            physical_key = (trajectory_name, generation, match_id)
+            physical_match_groups[physical_key].append(traj)
+            physical_values = sequence_metrics_for_trajectories([traj], False)
+            physical_row = {
                 'trajectory_file': trajectory_name,
-                'target_player': target_player,
+                'target_player': '',
                 'generation': generation,
                 'match_id': match_id,
                 'set': traj.get('set', ''),
                 'rally': traj.get('rally', ''),
-                'opponent_player': traj.get('opponent_player', ''),
+                'opponent_player': '',
                 'num_gt_shots': len(traj.get('gt_sequence', [])),
                 'num_pred_shots': len(traj.get('pred_sequence', [])),
                 'simulation_ended_early': bool(traj.get('simulation_ended_early', False)),
-                **sequence_values,
+                **physical_values,
             }
-            rally_rows.append(row)
+            physical_rally_rows.append(physical_row)
             for metric_name in SEQUENCE_METRIC_COLUMNS:
-                match_sequence_values[key][metric_name].append(row[metric_name])
+                physical_match_sequence_values[physical_key][metric_name].append(
+                    physical_row[metric_name]
+                )
 
-            # Skip-first-shot version
-            sequence_values_skip = sequence_metrics_for_trajectories([traj], target_player_only, skip_n=skip_n)
-            # Get shot counts after skipping
-            data_skip = extract_sequences([traj], target_player_only=target_player_only, skip_n=skip_n)
-            row_skip = {
+            physical_values_skip = sequence_metrics_for_trajectories([traj], False, skip_n=2)
+            physical_data_skip = extract_sequences([traj], target_player_only=False, skip_n=2)
+            physical_row_skip = {
                 'trajectory_file': trajectory_name,
-                'target_player': target_player,
+                'target_player': '',
                 'generation': generation,
                 'match_id': match_id,
                 'set': traj.get('set', ''),
                 'rally': traj.get('rally', ''),
-                'opponent_player': traj.get('opponent_player', ''),
-                'num_gt_shots': len(data_skip['all_shot_gt']),
-                'num_pred_shots': len(data_skip['all_shot_pred']),
+                'opponent_player': '',
+                'num_gt_shots': len(physical_data_skip['all_shot_gt']),
+                'num_pred_shots': len(physical_data_skip['all_shot_pred']),
                 'simulation_ended_early': bool(traj.get('simulation_ended_early', False)),
-                **sequence_values_skip,
+                **physical_values_skip,
             }
-            rally_skip_rows.append(row_skip)
+            physical_rally_skip_rows.append(physical_row_skip)
             for metric_name in SEQUENCE_METRIC_COLUMNS:
-                match_sequence_values_skip[key][metric_name].append(row_skip[metric_name])
+                physical_match_sequence_values_skip[physical_key][metric_name].append(
+                    physical_row_skip[metric_name]
+                )
+
+            for player in trajectory_players(traj):
+                player_traj = as_player_view(traj, player)
+                player_profile = (traj.get('player_profiles') or {}).get(player) or {}
+                key = (trajectory_name, player, generation, match_id)
+                match_groups[key].append(player_traj)
+                sequence_values = sequence_metrics_for_trajectories([player_traj], True)
+                player_data = extract_sequences([player_traj], target_player_only=True)
+                row = {
+                    'trajectory_file': trajectory_name,
+                    'target_player': player,
+                    'generation': generation,
+                    'match_id': match_id,
+                    'set': traj.get('set', ''),
+                    'rally': traj.get('rally', ''),
+                    'opponent_player': player_traj.get('opponent_player', ''),
+                    'cluster_id': player_profile.get('cluster_id'),
+                    'instruction_label': player_profile.get('label'),
+                    'instruction': player_profile.get('instruction'),
+                    'num_gt_shots': len(player_data['all_shot_gt']),
+                    'num_pred_shots': len(player_data['all_shot_pred']),
+                    'simulation_ended_early': bool(traj.get('simulation_ended_early', False)),
+                    **sequence_values,
+                }
+                rally_rows.append(row)
+                for metric_name in SEQUENCE_METRIC_COLUMNS:
+                    match_sequence_values[key][metric_name].append(row[metric_name])
+
+                sequence_values_skip = sequence_metrics_for_trajectories(
+                    [player_traj], True, skip_n=1
+                )
+                data_skip = extract_sequences(
+                    [player_traj], target_player_only=True, skip_n=1
+                )
+                row_skip = {
+                    'trajectory_file': trajectory_name,
+                    'target_player': player,
+                    'generation': generation,
+                    'match_id': match_id,
+                    'set': traj.get('set', ''),
+                    'rally': traj.get('rally', ''),
+                    'opponent_player': player_traj.get('opponent_player', ''),
+                    'num_gt_shots': len(data_skip['all_shot_gt']),
+                    'num_pred_shots': len(data_skip['all_shot_pred']),
+                    'simulation_ended_early': bool(traj.get('simulation_ended_early', False)),
+                    **sequence_values_skip,
+                }
+                rally_skip_rows.append(row_skip)
+                for metric_name in SEQUENCE_METRIC_COLUMNS:
+                    match_sequence_values_skip[key][metric_name].append(row_skip[metric_name])
 
     match_rows = []
     for key, trajectories in sorted(match_groups.items(), key=lambda item: item[0]):
@@ -2837,6 +2969,26 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         match_rows.append({
             'trajectory_file': trajectory_name,
             'target_player': target_player,
+            'generation': generation,
+            'match_id': match_id,
+            'num_rallies': len(trajectories),
+            'num_gt_shots': int(len(data['all_shot_gt'])),
+            'num_pred_shots': int(len(data['all_shot_pred'])),
+            'early_end_rate': early_end_count / max(len(trajectories), 1),
+            **distribution_values,
+        })
+
+    physical_match_rows = []
+    for key, trajectories in sorted(physical_match_groups.items(), key=lambda item: item[0]):
+        trajectory_name, generation, match_id = key
+        data = extract_sequences(trajectories, target_player_only=False)
+        distribution_values = distribution_metrics_for_trajectories(trajectories, False)
+        early_end_count = sum(
+            1 for trajectory in trajectories if trajectory.get('simulation_ended_early', False)
+        )
+        physical_match_rows.append({
+            'trajectory_file': trajectory_name,
+            'target_player': '',
             'generation': generation,
             'match_id': match_id,
             'num_rallies': len(trajectories),
@@ -2890,6 +3042,38 @@ def evaluate_trajectory_directory(trajectory_dir: str,
             'num_gt_shots': sum(int(row.get('num_gt_shots', 0)) for row in related_match_rows),
             'num_pred_shots': sum(int(row.get('num_pred_shots', 0)) for row in related_match_rows),
             'early_end_rate': early_end_count / max(num_rallies, 1),
+            **{
+                f'mean_{metric_name}': finite_mean([row.get(metric_name) for row in rows])
+                for metric_name in SEQUENCE_METRIC_COLUMNS
+            },
+        })
+
+    instruction_groups = defaultdict(list)
+    for rally_row in rally_rows:
+        key = (
+            rally_row['trajectory_file'],
+            rally_row['target_player'],
+            rally_row['generation'],
+            rally_row.get('cluster_id'),
+            rally_row.get('instruction_label'),
+            rally_row.get('instruction'),
+        )
+        instruction_groups[key].append(rally_row)
+
+    instruction_rows = []
+    for key in sorted(instruction_groups, key=lambda item: tuple(str(value) for value in item)):
+        trajectory_name, player, generation, cluster_id, label, instruction = key
+        rows = instruction_groups[key]
+        instruction_rows.append({
+            'trajectory_file': trajectory_name,
+            'target_player': player,
+            'generation': generation,
+            'cluster_id': cluster_id,
+            'instruction_label': label,
+            'instruction': instruction,
+            'num_rallies': len(rows),
+            'num_gt_shots': sum(int(row.get('num_gt_shots', 0)) for row in rows),
+            'num_pred_shots': sum(int(row.get('num_pred_shots', 0)) for row in rows),
             **{
                 f'mean_{metric_name}': finite_mean([row.get(metric_name) for row in rows])
                 for metric_name in SEQUENCE_METRIC_COLUMNS
@@ -2952,19 +3136,19 @@ def evaluate_trajectory_directory(trajectory_dir: str,
 
     sequence_match_means = {
         metric_name: [
-            finite_mean(match_sequence_values[key][metric_name])
-            for key in sorted(match_groups.keys())
+            finite_mean(physical_match_sequence_values[key][metric_name])
+            for key in sorted(physical_match_groups.keys())
         ]
         for metric_name in SEQUENCE_METRIC_COLUMNS
     }
     sequence_match_means_skip = {
         metric_name: [
-            finite_mean(match_sequence_values_skip[key][metric_name])
-            for key in sorted(match_groups.keys())
+            finite_mean(physical_match_sequence_values_skip[key][metric_name])
+            for key in sorted(physical_match_groups.keys())
         ]
         for metric_name in SEQUENCE_METRIC_COLUMNS
     }
-    match_weights = [row['num_rallies'] for row in match_rows]
+    match_weights = [row['num_rallies'] for row in physical_match_rows]
 
     summary_rows = []
     summary_rows_skip = []
@@ -2972,18 +3156,18 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         row = {
             'average_type': average_type,
             'num_trajectory_files': len(trajectory_files),
-            'num_matches': len(match_rows),
-            'num_rallies': len(rally_rows),
-            'num_gt_shots': sum(int(match_row['num_gt_shots']) for match_row in match_rows),
-            'num_pred_shots': sum(int(match_row['num_pred_shots']) for match_row in match_rows),
+            'num_matches': len(physical_match_rows),
+            'num_rallies': len(physical_rally_rows),
+            'num_gt_shots': sum(int(match_row['num_gt_shots']) for match_row in physical_match_rows),
+            'num_pred_shots': sum(int(match_row['num_pred_shots']) for match_row in physical_match_rows),
         }
         row_skip = {
             'average_type': average_type,
             'num_trajectory_files': len(trajectory_files),
-            'num_matches': len(match_rows),
-            'num_rallies': len(rally_skip_rows),
-            'num_gt_shots': sum(int(row.get('num_gt_shots', 0)) for row in rally_skip_rows),
-            'num_pred_shots': sum(int(row.get('num_pred_shots', 0)) for row in rally_skip_rows),
+            'num_matches': len(physical_match_rows),
+            'num_rallies': len(physical_rally_skip_rows),
+            'num_gt_shots': sum(int(item.get('num_gt_shots', 0)) for item in physical_rally_skip_rows),
+            'num_pred_shots': sum(int(item.get('num_pred_shots', 0)) for item in physical_rally_skip_rows),
         }
 
         if average_type == 'match_average':
@@ -2991,19 +3175,19 @@ def evaluate_trajectory_directory(trajectory_dir: str,
                 row[f'mean_{metric_name}'] = finite_mean(sequence_match_means[metric_name])
                 row_skip[f'mean_{metric_name}'] = finite_mean(sequence_match_means_skip[metric_name])
             for metric_name in SUMMARY_METRIC_COLUMNS[len(SEQUENCE_METRIC_COLUMNS):]:
-                row[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in match_rows])
-                row_skip[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in match_rows])
+                row[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in physical_match_rows])
+                row_skip[f'mean_{metric_name}'] = finite_mean([match_row.get(metric_name) for match_row in physical_match_rows])
         else:
             for metric_name in SEQUENCE_METRIC_COLUMNS:
-                row[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in rally_rows])
-                row_skip[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in rally_skip_rows])
+                row[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in physical_rally_rows])
+                row_skip[f'mean_{metric_name}'] = finite_mean([rally_row.get(metric_name) for rally_row in physical_rally_skip_rows])
             for metric_name in SUMMARY_METRIC_COLUMNS[len(SEQUENCE_METRIC_COLUMNS):]:
                 row[f'mean_{metric_name}'] = finite_mean(
-                    [match_row.get(metric_name) for match_row in match_rows],
+                    [match_row.get(metric_name) for match_row in physical_match_rows],
                     weights=match_weights,
                 )
                 row_skip[f'mean_{metric_name}'] = finite_mean(
-                    [match_row.get(metric_name) for match_row in match_rows],
+                    [match_row.get(metric_name) for match_row in physical_match_rows],
                     weights=match_weights,
                 )
 
@@ -3015,6 +3199,9 @@ def evaluate_trajectory_directory(trajectory_dir: str,
     match_csv = os.path.join(output_dir, 'match_level_metrics.csv')
     rally_skip_csv = os.path.join(output_dir, 'rally_skip_level_metrics.csv')
     summary_csv = os.path.join(output_dir, 'experiment_summary.csv')
+    physical_rally_csv = os.path.join(output_dir, 'physical_rally_metrics.csv')
+    physical_match_csv = os.path.join(output_dir, 'physical_match_metrics.csv')
+    instruction_csv = os.path.join(output_dir, 'instruction_level_metrics.csv')
     rally_table_path = os.path.join(output_dir, 'rally_level_metrics_table.txt')
     match_table_path = os.path.join(output_dir, 'match_level_metrics_table.txt')
     rally_skip_table_path = os.path.join(output_dir, 'rally_skip_level_metrics_table.txt')
@@ -3024,6 +3211,9 @@ def evaluate_trajectory_directory(trajectory_dir: str,
     write_csv_rows(match_csv, player_match_rows, MATCH_LEVEL_COLUMNS)
     write_csv_rows(rally_skip_csv, player_rally_skip_rows, RALLY_SKIP_LEVEL_COLUMNS)
     write_csv_rows(summary_csv, summary_rows, EXPERIMENT_SUMMARY_COLUMNS)
+    write_csv_rows(physical_rally_csv, physical_rally_rows, PHYSICAL_RALLY_COLUMNS)
+    write_csv_rows(physical_match_csv, physical_match_rows, PHYSICAL_MATCH_COLUMNS)
+    write_csv_rows(instruction_csv, instruction_rows, INSTRUCTION_LEVEL_COLUMNS)
 
     rally_metric_specs = [
         ('LandDTW', 'mean_land_dtw', 'mean_land_dtw'),
@@ -3078,6 +3268,9 @@ def evaluate_trajectory_directory(trajectory_dir: str,
         'match_level_metrics': player_match_rows,
         'rally_skip_level_metrics': player_rally_skip_rows,
         'experiment_summary': summary_rows,
+        'physical_rally_metrics': physical_rally_rows,
+        'physical_match_metrics': physical_match_rows,
+        'instruction_level_metrics': instruction_rows,
         'rally_level_table': rally_table_path,
         'match_level_table': match_table_path,
         'rally_skip_level_table': rally_skip_table_path,
@@ -3094,6 +3287,9 @@ def evaluate_trajectory_directory(trajectory_dir: str,
     print(f'Match-level CSV: {match_csv}')
     print(f'Rally-skip-level CSV: {rally_skip_csv}')
     print(f'Experiment summary CSV: {summary_csv}')
+    print(f'Physical rally CSV: {physical_rally_csv}')
+    print(f'Physical match CSV: {physical_match_csv}')
+    print(f'Instruction-level CSV: {instruction_csv}')
     print(f'Rally-level table: {rally_table_path}')
     print(f'Match-level table: {match_table_path}')
     print(f'Rally-skip-level table: {rally_skip_table_path}')
@@ -3186,7 +3382,7 @@ def evaluate_trajectory_directory_best_of(trajectory_dir: str,
 
     trajectory_files = discover_trajectory_files(trajectory_dir, latest_only=False)
     if not trajectory_files:
-        raise ValueError(f'No trajectory pickle files found under: {trajectory_dir}')
+        raise ValueError(f'No trajectory JSON runs or pickle files found under: {trajectory_dir}')
 
     print(f'Found {len(trajectory_files)} trajectory files')
 
@@ -3199,8 +3395,15 @@ def evaluate_trajectory_directory_best_of(trajectory_dir: str,
     for trajectory_file in trajectory_files:
         trajectories = load_trajectories(trajectory_file)
         parsed = parse_trajectory_filename(trajectory_file)
-        trajectory_name = os.path.basename(trajectory_file)
-        generation = parsed['generation']
+        trajectory_name = (
+            os.path.basename(os.path.dirname(trajectory_file))
+            if os.path.basename(trajectory_file) == 'rallies'
+            else os.path.basename(trajectory_file)
+        )
+        generation = (
+            int(trajectories[0].get('generation', parsed['generation']))
+            if trajectories else parsed['generation']
+        )
 
         for traj in trajectories:
             rally_key = (
@@ -3436,39 +3639,39 @@ def main():
 Examples:
     # Evaluate all metrics with visualizations
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/twin/trajectories/Kento_MOMOTA_norm.pkl \\
+        --trajectory-dir Experiments/twin/trajectories/rally_no_instruct/run_001/rallies \\
         --output-dir results/ \\
         --metrics all \\
         --visualize
 
     # Compute only sequence metrics
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/bc/trajectories/Viktor_AXELSEN_norm.pkl \\
+        --trajectory-dir Experiments/bc/trajectories/rally_no_instruct/run_001/rallies \\
         --metrics dtw edit_distance lcs_ratio shot_similarity
 
     # Evaluate only selected distribution metrics
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/twin/trajectories/An_Se_Young_norm.pkl \\
+        --trajectory-dir Experiments/twin/trajectories/rally_no_instruct/run_001/rallies \\
         --metrics distribution \\
         --output-dir results/distribution/
 
     # Include both players (not just target player)
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/pure_llm/trajectories/norm/Akane_YAMAGUCHI_norm_gen001.pkl \\
+        --trajectory-dir Experiments/pure_llm/trajectories/rally_no_instruct/run_001/rallies \\
         --all-players
 
     # Evaluate all PureLLM trajectories for all players
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-dir Experiments/pure_llm/trajectories/norm \\
-        --output-dir Experiments/pure_llm/results/trajectory_analysis/norm \\
+        --trajectory-dir Experiments/pure_llm/trajectories/rally_no_instruct \\
+        --output-dir Experiments/pure_llm/results/trajectory_analysis/rally_no_instruct \\
         --latest-only \\
         --all-players \\
         --no-visualize
 
     # Evaluate every trajectory in an experiment directory
     python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-dir Experiments/twin/trajectories/norm \\
-        --output-dir Experiments/twin/results/trajectory_analysis/norm \\
+        --trajectory-dir Experiments/twin/trajectories/rally_no_instruct \\
+        --output-dir Experiments/twin/results/trajectory_analysis/rally_no_instruct \\
         --latest-only \\
         --no-visualize
 
@@ -3490,9 +3693,9 @@ Supported Metrics:
     )
     
     parser.add_argument('--trajectory-file', type=str,
-                        help='Path to one trajectory pickle file')
+                        help='Path to one rally JSON or legacy trajectory pickle')
     parser.add_argument('--trajectory-dir', type=str,
-                        help='Directory containing trajectory pickle files for experiment-level analysis')
+                        help='Directory containing run_NNN/rallies JSON output or legacy pickles')
     parser.add_argument('--output-dir', type=str, default='./evaluation_results',
                         help='Output directory for results and visualizations')
     parser.add_argument('--metrics', nargs='+', 
@@ -3506,7 +3709,7 @@ Supported Metrics:
     parser.add_argument('--all-players', action='store_true',
                         help='Evaluate all players in trajectories (not just target player)')
     parser.add_argument('--latest-only', action='store_true',
-                        help='In --trajectory-dir mode, only evaluate the latest generation for each player trajectory')
+                        help='In --trajectory-dir mode, only evaluate the latest run for each experiment')
     parser.add_argument('--best-of-generations', action='store_true',
                         help='In --trajectory-dir mode, select the best generation per ground-truth rally '
                              '(minimizing (move_dtw + land_dtw + (1 - lcs_ratio)) / 3), then report '

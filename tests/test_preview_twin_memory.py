@@ -8,6 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import pandas as pd
 import yaml
 
+from Agent.twin import TwinDatabase
 from Scripts.preview_twin_memory import build_parser, build_preview, main, select_rally
 from Utils.helper import action_col, state_col
 
@@ -57,6 +58,23 @@ class PreviewTwinMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provide --set"):
             select_rally(dataframe, 7, 3)
 
+    def test_memory_annotation_accepts_only_range_and_phase(self):
+        rally = make_rally()
+        segments = {
+            aspect: [{"range": [1, 3], "phase": "Sustained control phase"}]
+            for aspect in (
+                "my_tactical_pattern",
+                "my_tempo_movement_dynamics",
+                "opponent_tactical_pattern",
+                "opponent_tempo_movement_dynamics",
+            )
+        }
+        annotation = {"aspect_segments": segments}
+        self.assertTrue(TwinDatabase._validate_rally_annotation(annotation, rally))
+
+        segments["my_tactical_pattern"][0]["evidence_strokes"] = [1, 3]
+        self.assertFalse(TwinDatabase._validate_rally_annotation(annotation, rally))
+
     def test_fallback_preview_uses_target_player_strokes(self):
         rally, set_number = select_rally(make_rally(), 7, 3, 2)
         preview = build_preview(
@@ -74,11 +92,15 @@ class PreviewTwinMemoryTest(unittest.TestCase):
         self.assertIn("My tactical pattern:", memory["semantic_text"])
         self.assertEqual(
             memory["my_tactical_pattern"],
-            "Full-rally fallback phase. Full-rally fallback narrative based on available numeric stroke evidence.",
+            "Full-rally fallback phase",
         )
         self.assertNotIn("Phase:", memory["my_tactical_pattern"])
         self.assertNotIn("Narrative:", memory["my_tactical_pattern"])
-        self.assertIn("Full-rally fallback phase", preview["annotation"]["aspect_segments"]["my_tactical_pattern"][0]["phase_name"])
+        segment = preview["annotation"]["aspect_segments"]["my_tactical_pattern"][0]
+        self.assertEqual(segment, {
+            "range": [1, 3],
+            "phase": "Full-rally fallback phase",
+        })
         self.assertIn("Annotate one completed badminton rally", preview["llm_user_prompt"])
 
     def test_main_can_write_json_without_llm(self):

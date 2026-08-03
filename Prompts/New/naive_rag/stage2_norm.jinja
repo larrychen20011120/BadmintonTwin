@@ -1,0 +1,33 @@
+# Task
+Your task is to simulate the target player's most likely landing and recovery positions for the certain shot type. 
+This is an case-driven behavior simulation and imitation task, not tactical optimization.
+
+Make one joint decision from the current rally situation and historical case. Consider the incoming shuttle, player and opponent positions, movement and reachability, prior rally actions, score pressure, and the landing and recovery behavior shown in past cases.
+
+For each coordinate, first select the most likely semantic area, then determine where within that area the point is likely to lie. Do not automatically use the area center. Explain whether the point is biased left, right, front, back, or center, and which current-rally or historical case supports that bias.
+
+## Current Match Situation
+{{ trajectory_text }}
+
+## Similar Cases
+{% for case in conditioned_cases %}
+Case {{ loop.index }}:
+{{ case.stage2_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Output Format
+Return only one valid JSON object. Do not include shot_type, markdown, or text outside the JSON.
+
+{
+  "rationale": "one to two sentences for case-based explanation explaining why each semantic area was selected, where each coordinate lies within that area, and why it is biased in that direction based on the current rally and historical cases.",
+  "placement": {
+    "landing_area": "<exact semantic area>",
+    "landing_x": <integer 0 to 355>,
+    "landing_y": <integer 0 to 480>,
+    "moving_area": "<exact semantic area>",
+    "moving_x": <integer 0 to 355>,
+    "moving_y": <integer 0 to 480>
+  }
+}
+## Constraints
+Both semantic areas must exactly match their coordinates.

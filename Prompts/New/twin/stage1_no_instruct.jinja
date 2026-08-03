@@ -1,0 +1,42 @@
+# Task
+Your task is to simulate the return outcome and shot type.
+This is an evidence-driven behavior simulation and imitation task, not tactical optimization.
+
+Decide whether the player returns the shuttle legally or misses. For a legal return, predict only the shot type. Make one joint decision from the current rally situation and the historical evidence. Consider the incoming shot, player and opponent positions, movement and reachability, prior rally actions, score pressure, and the behavior shown in past cases.
+
+## Current Match Situation
+{{ trajectory_text }}
+
+## Current Twin Semantic Query
+{{ semantic_query_text }}
+
+## Successful Return Evidence
+{% for case in normal_cases %}
+Case {{ loop.index }}:
+{{ case.stage1_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Missed Return Evidence
+{% for case in miss_cases %}
+Case {{ loop.index }}:
+{{ case.stage1_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Legal Shot Types
+For a serve, choose only Serve short or Serve long.
+For a non-serve return, choose only Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, or Drop.
+
+## Output Format
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
+For a legal returned shot:
+{
+  "rationale": "one to two sentences for evidence-based explanation",
+  "outcome": "returned",
+  "shot_type": "<one exact allowed shot type>"
+}
+For a missed shot or serve fault:
+{
+  "rationale": "one to two sentences for evidence-based explanation",
+  "outcome": "missed",
+  "shot_type": null
+}

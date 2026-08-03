@@ -2,20 +2,10 @@
 """
 Run single-player evaluators over every player in the test split.
 
-Each player trajectory is saved with a per-player generation index, so rerunning
-the same player produces Player_norm_gen002.pkl, Player_norm_gen003.pkl, etc.
+Each execution creates one run directory and saves one JSON object per rally
+simulation under its ``rallies`` directory.
 
-Examples:
-    python Scripts/single_player_eval/eval_all_players.py \
-        --algorithm pure_llm \
-        --experiment norm \
-        --workers 1
-
-    python Scripts/single_player_eval/eval_all_players.py \
-        --algorithm pure_llm \
-        --experiment shifted \
-        --style-shift-instruction auto \
-        --workers 1
+PureLLM uses physical-rally evaluation through eval_all_rallies.py.
 """
 
 import argparse
@@ -23,7 +13,6 @@ import concurrent.futures
 import json
 import multiprocessing
 import os
-import re
 import sys
 import time
 import traceback
@@ -35,10 +24,11 @@ if PROJECT_PATH not in sys.path:
 
 
 RAG_ALGORITHMS = ('naive_rag', 'timerag', 'twin')
-LLM_ALGORITHMS = ('pure_llm', 'naive_rag', 'timerag', 'twin')
+LLM_ALGORITHMS = ('naive_rag', 'timerag', 'twin')
 
 from Utils.llm import LLM
 from Utils.runtime_report import algorithm_runtime_rows, llm_rows, print_runtime_box
+from Scripts.single_player_eval.trajectory_store import create_run_directory, save_manifest
 
 
 def load_config():
@@ -61,11 +51,6 @@ def load_test_players(experiment):
     return sorted(split.get('test', {}).keys())
 
 
-def safe_player_name(player_name):
-    """Match the evaluator filename convention while keeping labels readable."""
-    return player_name.replace(' ', '_')
-
-
 def default_output_dir(algorithm, experiment):
     return os.path.join('Experiments', algorithm, 'trajectories', experiment)
 
@@ -77,37 +62,6 @@ def output_experiment_label(experiment, style_shift_instruction_mode):
     if style_shift_instruction_mode == 'auto':
         return 'shifted_with_instruction'
     return 'shifted_without_instruction'
-
-
-def trajectory_base_name(player_name, experiment):
-    return f"{safe_player_name(player_name)}_{experiment}"
-
-
-def next_generation(output_dir, player_name, experiment):
-    """Return the next generation number for this player trajectory name."""
-    if not os.path.isdir(output_dir):
-        return 1
-
-    base_name = trajectory_base_name(player_name, experiment)
-    escaped_base = re.escape(base_name)
-    generation_pattern = re.compile(rf"^{escaped_base}_gen(\d+)\.pkl$")
-    legacy_exact = f"{base_name}.pkl"
-    legacy_indexed_pattern = re.compile(rf"^\d{{4}}_{escaped_base}\.pkl$")
-
-    generations = []
-    for filename in os.listdir(output_dir):
-        match = generation_pattern.match(filename)
-        if match:
-            generations.append(int(match.group(1)))
-        elif filename == legacy_exact or legacy_indexed_pattern.match(filename):
-            generations.append(1)
-
-    return max(generations, default=0) + 1
-
-
-def build_output_path(output_dir, player_name, experiment, generation):
-    filename = f"{trajectory_base_name(player_name, experiment)}_gen{generation:03d}.pkl"
-    return os.path.join(output_dir, filename)
 
 
 def build_evaluator_kwargs(args, task_index):
@@ -179,6 +133,7 @@ def _run_player_task(task):
             **task['evaluator_kwargs'],
         )
         evaluator.trajectory_output_path = task['output_path']
+        evaluator.trajectory_run_metadata = task['run_metadata']
 
         trajectories = evaluator.simulate()
         result['status'] = 'success'
@@ -194,12 +149,12 @@ def _run_player_task(task):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Run single-player evaluation for all test players in parallel and save generation-numbered trajectories.'
+        description='Run all test players and save one rally JSON per simulation in a run directory.'
     )
     parser.add_argument(
         '--algorithm',
         required=True,
-        choices=['bc', 'rallynetv2', 'naive_rag', 'pure_llm', 'timerag', 'twin', 'random', 'shuttlenet'],
+        choices=['bc', 'rallynetv2', 'naive_rag', 'timerag', 'twin', 'random', 'shuttlenet'],
         help='Evaluator algorithm to run.'
     )
     parser.add_argument(
@@ -228,7 +183,7 @@ def parse_args():
     )
     parser.add_argument(
         '--output-dir',
-        help='Directory for generation-numbered trajectory pickle files.'
+        help='Root directory for run_NNN/rallies/*.json trajectory output.'
     )
     parser.add_argument(
         '--players',
@@ -274,7 +229,7 @@ def parse_args():
         '--top-k',
         type=int,
         default=None,
-        help='Classic RAG retrieval top-k for naive_rag/timerag/twin. Ignored by pure_llm. Defaults to config retrieval.classic_top_k.'
+        help='Classic RAG retrieval top-k for naive_rag/timerag/twin. Defaults to config retrieval.classic_top_k.'
     )
     parser.add_argument(
         '--window-size',
@@ -303,7 +258,7 @@ def parse_args():
         '--style-shift-instruction',
         default='auto',
         choices=['auto', 'off'],
-        help=('Style-shift instruction mode for pure_llm/naive_rag/timerag/twin: '
+        help=('Style-shift instruction mode for naive_rag/timerag/twin: '
               'auto uses the shifted prompt and injects instructions; '
               'off uses the normal prompt without instructions.')
     )
@@ -318,6 +273,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.algorithm in ('bc', 'shuttlenet', 'naive_rag', 'timerag', 'twin'):
+        raise ValueError(
+            f'{args.algorithm} uses physical-rally evaluation. Run '
+            'Scripts/single_player_eval/eval_all_rallies.py instead.'
+        )
     if args.workers < 1:
         raise ValueError('--workers must be >= 1')
 
@@ -380,12 +340,20 @@ def main():
         raise ValueError('No players selected for evaluation')
 
     args.output_experiment = output_experiment_label(args.experiment, args.style_shift_instruction)
-    output_dir = args.output_dir or default_output_dir(args.algorithm, args.output_experiment)
-    os.makedirs(output_dir, exist_ok=True)
+    output_root = args.output_dir or default_output_dir(args.algorithm, args.output_experiment)
+    run_dir, generation = create_run_directory(output_root)
+    rally_output_dir = os.path.join(run_dir, 'rallies')
+    run_metadata = {
+        'algorithm': args.algorithm,
+        'experiment': args.experiment,
+        'output_experiment': args.output_experiment,
+        'generation': generation,
+        'style_shift_instruction_mode': args.style_shift_instruction,
+    }
+    save_manifest(run_dir, {**run_metadata, 'status': 'running'})
 
     tasks = []
     for index, player in enumerate(players, start=1):
-        generation = next_generation(output_dir, player, args.output_experiment)
         tasks.append({
             'index': index,
             'player': player,
@@ -395,7 +363,8 @@ def main():
             'output_experiment': args.output_experiment,
             'device': args.device,
             'skip_first_n': args.skip_first_n,
-            'output_path': build_output_path(output_dir, player, args.output_experiment, generation),
+            'output_path': rally_output_dir,
+            'run_metadata': run_metadata,
             'evaluator_kwargs': build_evaluator_kwargs(args, index),
         })
 
@@ -408,8 +377,8 @@ def main():
     print(f"Style-shift instruction: {args.style_shift_instruction}")
     print(f"Players: {len(tasks)}")
     print(f"Workers: {args.workers}")
-    print(f"Output dir: {output_dir}")
-    print('Filename pattern: Player_experiment_genNNN.pkl')
+    print(f"Run dir: {run_dir}")
+    print('Output pattern: rallies/match_*_set_*_rally_*_target_*.json')
     print('=' * 80)
 
     results = []
@@ -464,16 +433,25 @@ def main():
         'verbose_style_shift': args.verbose_style_shift,
         'workers': args.workers,
         'device': args.device,
-        'output_dir': output_dir,
+        'output_dir': run_dir,
         'total_players': len(results),
         'success_count': success_count,
         'failed_count': failed_count,
         'results': results,
     }
 
-    summary_path = os.path.join(output_dir, 'summary.json')
-    with open(summary_path, 'w') as f:
+    summary_path = os.path.join(run_dir, 'summary.json')
+    with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+    save_manifest(run_dir, {
+        **run_metadata,
+        'status': 'completed' if failed_count == 0 else 'completed_with_errors',
+        'total_players': len(results),
+        'success_count': success_count,
+        'failed_count': failed_count,
+        'num_rallies': sum(item['num_rallies'] for item in results),
+    })
 
     print('=' * 80)
     print(f"Success: {success_count}, Failed: {failed_count}")

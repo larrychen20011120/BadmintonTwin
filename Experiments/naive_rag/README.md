@@ -1,12 +1,12 @@
 # NaiveRAG Evaluation
 
-這個目錄包含 NaiveRAG Agent 的評估程式碼。
+這個目錄包含 two-stage NaiveRAG Agent 的評估資料與輸出。
 
 ## 檔案結構
 
 - `Agent/naive_rag.py` - NaiveRAG Agent 實現
 - `Agent/eval_naive_rag.py` - 評估腳本
-- `Experiments/naive_rag/data/` - 訓練資料庫（由統一資料準備入口生成）
+- `Experiments/naive_rag/data/rally/` - 每位選手的 rally-level 訓練資料庫
 - `Experiments/naive_rag/results/` - 評估結果輸出目錄
 
 ## 準備工作
@@ -14,45 +14,40 @@
 首先，使用統一資料準備入口生成 NaiveRAG 資料庫：
 
 ```bash
-python Scripts/prepare_all_data.py --naive-rag
+uv run python Scripts/prepare_all_data.py --naive-rag
 ```
 
-這會在 `Experiments/naive_rag/data/` 目錄下生成每個選手的資料庫檔案（`*_db.pkl`）。
+這會依 `(match_id, set, rally)` 精確選取 train rallies，並在
+`Experiments/naive_rag/data/rally/` 生成每個選手的 `*_db.pkl`。
 
 ## 運行評估
 
 ### 基本使用
 
 ```bash
-python Agent/eval_naive_rag.py
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm naive_rag --workers 4 --conditioned-top-k 10 \
+  --instruction-mode no_instruct
 ```
-
-這會使用預設參數在 testing data 上評估 NaiveRAG Agent。
 
 ### 進階選項
 
-```bash
-python Agent/eval_naive_rag.py \
-    --test_split Data/intermediate_data/train_test_split.json \
-    --merged_csv Data/intermediate_data/merged.csv \
-    --player_map Data/intermediate_data/player_index_map.json \
-    --database_dir Experiments/naive_rag/data \
-    --top_k 5 \
-    --skip_first_n 0 \
-    --output Experiments/naive_rag/results/naive_rag_eval_results.json
-```
+每個 physical rally 會立即原子寫入一個 JSON；中斷後可用
+`--resume-run <run_NNN>` 只補跑缺失或失敗的 rallies。
 
-### 參數說明
+### Two-stage 流程
 
-- `--test_split`: Train/test split JSON 檔案路徑
-- `--merged_csv`: 合併後的 CSV 資料路徑
-- `--player_map`: 選手名稱到 ID 的對應檔案路徑
-- `--database_dir`: NaiveRAG 資料庫目錄（預設: `Experiments/naive_rag/data`）
-- `--top_k`: 檢索相似經驗的數量（預設: 5）
-- `--skip_first_n`: 在每個 rally 中跳過前 N 個 shot（預設: 0）
-- `--model_name`: LLM 模型名稱（預設: `Qwen/Qwen2.5-7B-Instruct`）
-- `--port`: LLM 伺服器端口（預設: 16000）
-- `--output`: 評估結果輸出檔案路徑
+Stage 1 依 config 分別檢索 normal/miss evidence，LLM 只決定
+miss/return 與球種。若為 return，Stage 2 先按預測球種過濾 DB，再以
+`--conditioned-top-k` 控制 placement evidence 數量。每個非 missed shot
+會呼叫 LLM 兩次；missed shot 只呼叫一次。
+
+使用的 prompts：
+
+- `Prompts/New/naive_rag/stage1_norm.jinja`
+- `Prompts/New/naive_rag/stage1_instruct.jinja`
+- `Prompts/New/naive_rag/stage2_norm.jinja`
+- `Prompts/New/naive_rag/stage2_instruct.jinja`
 
 ## 評估指標
 

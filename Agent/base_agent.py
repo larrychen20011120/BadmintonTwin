@@ -16,6 +16,16 @@ class BaseAgent:
         "moving_y",
     }
     PROMPT_AREA_NAMES = frozenset(area_groups) - {"Out of Bounds"}
+    RAG_STAGE1_KEYS = {"rationale", "outcome", "shot_type"}
+    RAG_STAGE2_KEYS = {"rationale", "placement"}
+    RAG_PLACEMENT_KEYS = {
+        "landing_area",
+        "landing_x",
+        "landing_y",
+        "moving_area",
+        "moving_x",
+        "moving_y",
+    }
 
     def __init__(self, player_name, is_infernce=True):
 
@@ -212,6 +222,98 @@ class BaseAgent:
     def validate_prompt_action_response(cls, response):
         parsed, _ = cls.parse_prompt_action(response)
         return parsed is not None
+
+    @classmethod
+    def parse_rag_stage1_response(cls, response, launch=False, available_types=None):
+        """Validate the reachability/shot-type decision from RAG stage 1."""
+        if not isinstance(response, dict) or set(response) != cls.RAG_STAGE1_KEYS:
+            return None
+        rationale = response.get("rationale")
+        outcome = response.get("outcome")
+        if not isinstance(rationale, str) or outcome not in {"returned", "missed"}:
+            return None
+        if outcome == "missed":
+            if response.get("shot_type") is not None:
+                return None
+            return {
+                "rationale": rationale,
+                "outcome": outcome,
+                "shot_type": 11,
+            }
+
+        try:
+            shot_type = shot_type_to_index(response.get("shot_type"))
+        except (TypeError, ValueError):
+            return None
+        legal_types = {1, 10} if launch else set(range(2, 10))
+        if shot_type not in legal_types:
+            return None
+        if available_types is not None and shot_type not in set(available_types):
+            return None
+        return {
+            "rationale": rationale,
+            "outcome": outcome,
+            "shot_type": shot_type,
+        }
+
+    @classmethod
+    def validate_rag_stage1_response(cls, response, launch=False, available_types=None):
+        return cls.parse_rag_stage1_response(
+            response,
+            launch=launch,
+            available_types=available_types,
+        ) is not None
+
+    @classmethod
+    def parse_rag_stage2_response(cls, response):
+        """Validate placement output while keeping the stage-1 shot immutable."""
+        if not isinstance(response, dict) or set(response) != cls.RAG_STAGE2_KEYS:
+            return None
+        rationale = response.get("rationale")
+        placement = response.get("placement")
+        if not isinstance(rationale, str) or not isinstance(placement, dict):
+            return None
+        if set(placement) != cls.RAG_PLACEMENT_KEYS:
+            return None
+
+        coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
+        coordinates = [placement[key] for key in coordinate_keys]
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in coordinates):
+            return None
+        landing_x, landing_y, moving_x, moving_y = coordinates
+        if not (0 <= landing_x <= 355 and 0 <= moving_x <= 355):
+            return None
+        if not (0 <= landing_y <= 480 and 0 <= moving_y <= 480):
+            return None
+        if placement.get("landing_area") != cls.prompt_area_name(landing_x, landing_y):
+            return None
+        if placement.get("moving_area") != cls.prompt_area_name(moving_x, moving_y):
+            return None
+
+        normalized_landing = cls.prompt_to_normalized_coordinate(landing_x, landing_y)
+        normalized_moving = cls.prompt_to_normalized_coordinate(moving_x, moving_y)
+        return {
+            "rationale": rationale,
+            "landing_area": placement["landing_area"],
+            "landing_x": normalized_landing[0],
+            "landing_y": normalized_landing[1],
+            "moving_area": placement["moving_area"],
+            "moving_x": normalized_moving[0],
+            "moving_y": normalized_moving[1],
+        }
+
+    @classmethod
+    def validate_rag_stage2_response(cls, response):
+        return cls.parse_rag_stage2_response(response) is not None
+
+    @staticmethod
+    def get_verified_response_or_none(llm, **kwargs):
+        """Turn provider/transport failures into the agent's deterministic fallback path."""
+        try:
+            return llm.get_verified_response(**kwargs)
+        except Exception as exc:
+            print(f"Warning: LLM request failed: {type(exc).__name__}: {exc}")
+            return None, "", {"error": type(exc).__name__}
 
     def action(self, state, info, launch):
         normalized_action = self.predict(state, info, launch)

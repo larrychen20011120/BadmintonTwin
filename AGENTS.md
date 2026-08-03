@@ -17,26 +17,25 @@ The server uses an isolated CUDA 12.9 vLLM environment. Requires GPU with
 
 **Data Preprocessing (One-time):**
 ```bash
-uv run python Preprocessing/data.py        # Merges shuttleset + shuttleset22 → Data/intermediate_data/merged.csv
-uv run python Preprocessing/style_shift.py # Identifies style-shifted matches → Data/intermediate_data/style_shift.json
-uv run python Preprocessing/split.py       # Train/test split → Data/intermediate_data/transformed_matches.json
+uv run python Preprocessing/data.py
+uv run python Preprocessing/rally_split.py
+uv run python Preprocessing/rally_clustering.py
 ```
 
 ## Running Experiments
 
-**Full Pipeline (automated):**
+**RallyNet physical-rally pipeline:**
 ```bash
-uv run python Scripts/run_full_pipeline.py --experiment norm      # Normal matches
-uv run python Scripts/run_full_pipeline.py --experiment shifted   # Style-shifted matches
-uv run python Scripts/run_full_pipeline.py --all                  # Both experiments
+uv run python Scripts/prepare_all_data.py --rallynet
+uv run python Scripts/train_rallynet.py --stage all
+uv run python Scripts/single_player_eval/eval_all_rallies.py --algorithm rallynet
 ```
 
-**Individual Agent Evaluation:**
+**Physical-rally evaluation:**
 ```bash
-# BC (Behavior Cloning) - see Scripts/eval_bc.py
-uv run python Agent/eval_rallynet.py     # RallyNet evaluation
-uv run python Agent/eval_naive_rag.py    # Naive RAG baseline
-uv run python Agent/eval_rallynetv2.py   # RallyNet v2 evaluation
+uv run python Scripts/single_player_eval/eval_all_rallies.py --algorithm bc
+uv run python Scripts/single_player_eval/eval_all_rallies.py --algorithm rallynet
+uv run python Scripts/single_player_eval/eval_all_rallies.py --algorithm naive_rag
 ```
 
 ## Architecture
@@ -51,21 +50,21 @@ uv run python Agent/eval_rallynetv2.py   # RallyNet v2 evaluation
 **Key Directory Structure:**
 ```
 Agent/              - Agent implementations (bc.py, rallynet.py, naive_rag.py, etc.)
-Experiments/        - Experiment outputs organized by method (bc/, naive_rag/, rallynetv2/, random/)
-Preprocessing/      - Data pipeline scripts (data.py, style_shift.py, split.py)
+Experiments/        - Experiment outputs organized by method
+Preprocessing/      - Data and physical-rally preprocessing scripts
 Utils/              - LLM wrapper (port 16000), badminton_config.py, helpers
 Prompts/Agent/      - Jinja2 templates for LLM prompts
 Schemas/Agent/      - JSON schemas for structured LLM output
 Scripts/            - Training/evaluation scripts and config.yaml
-Data/intermediate_data/ - Processed match data (merged.csv, transformed_matches.json)
+Data/intermediate_data/ - Processed match and rally data
 ```
 
 ## Configuration
 
 **Central Config:** `Scripts/config.yaml`
-- Defines paths for all experiments (BC, NaiveRAG, Random)
-- BC training params: epochs=100, batch_size=64, lr=0.001
-- NaiveRAG params: port=16000, top_k=5
+- Defines data, model, and result paths for all methods
+- `rallynet_training` owns all RallyNet BC and SDE hyperparameters
+- `rallynet` controls inference seed, sampling, and error threshold
 
 ## Environment & Actions
 
@@ -100,15 +99,13 @@ Data/intermediate_data/ - Processed match data (merged.csv, transformed_matches.
 
 **Player mappings:** `Data/intermediate_data/player_index_map.json`
 
-## Training BC Models
+## Training Models
 
 ```bash
-uv run python Scripts/train_bc.py \
-  --experiment norm \
-  --epochs 100 \
-  --batch_size 64
+uv run python Scripts/train_bc.py
+uv run python Scripts/train_rallynet.py --stage all
 ```
-Weights saved to: `Experiments/bc/weight/{norm,shifted}_model.pth`
+RallyNet weights are saved to `Experiments/rallynet/weight/rally_model.pth`.
 
 ## Important File References
 

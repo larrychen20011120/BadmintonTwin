@@ -49,24 +49,49 @@ Focus on the opponent's exchange rhythm, directional coverage demand, recovery p
 Do not obtain this segmentation by reversing or copying the target player's movement segments
 
 ## Annotation Rules
+- This rally spans exactly from `ball_round={{ first_ball_round }}` through `ball_round={{ last_ball_round }}`.
+- For every aspect, the first segment must start at `{{ first_ball_round }}` and the final segment must end at `{{ last_ball_round }}`. Do not omit the final missed shot or any opponent stroke.
 - Segment ranges use inclusive `ball_round` values.
 - Segment each aspect independently across the full rally.
 - Within each aspect, segments must be ordered, non-overlapping, gap-free, and cover the rally from the first to the final stroke.
-- Use one phase when no meaningful high-level change occurs.
-- Start a new phase only when the dominant pattern of that aspect clearly changes.
-- Do not split phases for isolated shot changes or minor local variations.
+- Use one phase only when the dominant pattern remains stable throughout the complete rally.
+- Actively identify meaningful turning points before producing the JSON.
+- Start a new phase when the dominant tactical state, pressure ownership, court-control pattern, movement demand, recovery quality, or reachability state clearly changes.
+- A new phase should normally be visible across at least two consecutive relevant actions. A clear attack-to-defence, defence-to-counterattack, or stable-to-late-recovery transition may start immediately.
+- Do not split phases for an isolated shot that does not change the broader pattern.
+- Do not merge clearly different phases merely to minimize the number of segments.
+- Long rallies may contain multiple phases, but do not create artificial boundaries when no meaningful change exists.
 - Different aspects may use different phase boundaries.
 - When movement or recovery quality changes, start the new tempo/movement phase at the first stroke where the change becomes observable.
 - Describe sustained patterns, spatial-control attempts, pressure patterns, or meaningful tactical transitions.
-- Each narrative should be one concise, phase-level sentence.
+- Each `phase` must be a concise phrase or one short sentence of at most 20 words.
+- Every phase object must contain exactly `range` and `phase`. Do not add evidence, transition reasons, narratives, or other fields.
 - Mention specific target areas only when they form a tactically meaningful pattern.
 - Use only evidence supported by the completed rally.
 - Do not infer personality, confidence, true fatigue, injury, or other hidden states.
 - Do not write shot-by-shot captions or explain the meaning of every stroke.
 - Do not mention real player names. Use only "the target player" and "the opponent".
-- The rally summary should be high-level and anonymized.
 
+For tactical aspects, consider a new phase when control changes between attack, defence, neutral reset, or counterattack; pressure ownership changes; the dominant control area changes; or a different construction pattern becomes sustained.
 
+For tempo and movement aspects, consider a new phase when recovery changes between stable, delayed, stretched, or failed; movement pressure changes between manageable and accumulating; coverage direction changes; or reachability risk changes clearly.
+
+Illustrative phase-change example for a rally spanning strokes 1-12:
+
+```json
+[
+  {
+    "range": [1, 6],
+    "phase": "Defensive resets under rear-court pressure"
+  },
+  {
+    "range": [7, 12],
+    "phase": "The target player shifts into sustained counterattacking pressure."
+  }
+]
+```
+
+This example demonstrates a meaningful phase change only. Use the actual rally boundaries and do not force the same number of phases.
 
 ## Required JSON
 
@@ -74,20 +99,31 @@ Return only one valid JSON object with:
 
 ```json
 {
-  "rally_summary": "one concise tactical summary of this completed rally",
   "aspect_segments": {
     "my_tactical_pattern": [
       {
-        "range": [1, 4],
-        "phase_name": "Net-front control attempt",
-        "narrative": "The target player keeps the shuttle low near the net to seek front-court control and invite a lift.",
-        "transition_reason": "brief high-level reason why this phase continues or changes",
-        "evidence_strokes": [1, 4]
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "The target player sustains net-front control with repeated low returns."
       }
     ],
-    "my_tempo_movement_dynamics": [],
-    "opponent_tactical_pattern": [],
-    "opponent_tempo_movement_dynamics": []
+    "my_tempo_movement_dynamics": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "Stable recovery under moderate front-back movement pressure"
+      }
+    ],
+    "opponent_tactical_pattern": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "Defensive lifting followed by rear-court pressure"
+      }
+    ],
+    "opponent_tempo_movement_dynamics": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "The opponent recovers increasingly late under directional pressure."
+      }
+    ]
   }
 }
 ```

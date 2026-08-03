@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
 import shutil
@@ -14,10 +15,66 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Utils.helper import action_col, state_col
+from Preprocessing.rally_data import filter_rally_rows, load_rally_dataset, rally_key
+from Utils.artifact_names import player_database_filename
 
 
-def load_preparation_data(merged_csv, split_path, player_map_path):
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _publish_prepared_directory(staging_dir, output_dir):
+    """Replace a live database directory only after a complete successful build."""
+    output_dir = os.path.abspath(output_dir)
+    backup_dir = None
+    if os.path.exists(output_dir):
+        backup_dir = tempfile.mkdtemp(
+            prefix=f'.{os.path.basename(output_dir)}_backup_',
+            dir=os.path.dirname(output_dir),
+        )
+        os.rmdir(backup_dir)
+        os.replace(output_dir, backup_dir)
+    try:
+        os.replace(staging_dir, output_dir)
+    except Exception:
+        if backup_dir and os.path.exists(backup_dir) and not os.path.exists(output_dir):
+            os.replace(backup_dir, output_dir)
+        raise
+    finally:
+        if backup_dir and os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def load_preparation_data(merged_csv, split_path, player_map_path, profiles_path=None,
+                          drop_incomplete_rows=True):
     """Load and filter the shared inputs used by the baseline data builders."""
+    split_content = load_rally_dataset(split_path, profiles_path)
+    with open(player_map_path, 'r') as f:
+        player2index = json.load(f)
+
+    df = pd.read_csv(merged_csv)
+    required_cols = state_col + action_col + ['match_id', 'server']
+    missing_cols = sorted(set(required_cols) - set(df.columns))
+    if missing_cols:
+        raise ValueError(f"Missing required columns in {merged_csv}: {missing_cols}")
+
+    base_cols = list(required_cols)
+    for optional_col in ('set', 'moving_distance', 'getpoint_player'):
+        if optional_col in df.columns:
+            base_cols.append(optional_col)
+    df = df[base_cols]
+    if drop_incomplete_rows:
+        df = df.dropna(subset=state_col + action_col)
+    df = df.reset_index(drop=True)
+    return df, split_content, player2index
+
+
+def load_match_preparation_data(merged_csv, split_path, player_map_path):
+    """Load match-level inputs still used by non-BC/ShuttleNet methods."""
     with open(split_path, 'r') as f:
         split_content = json.load(f)
     with open(player_map_path, 'r') as f:
@@ -62,20 +119,23 @@ def prepare_bc_data(df, split_content, player2index, output_dir):
             # Contains names, map to IDs
             df['player'] = df['player'].map(player2index)
     
-    for player_name, match_ids in split_content["train"].items():
-        if player_name not in player2index:
-            print(f"Warning: {player_name} not in player_index_map, skipping")
-            continue
-        
-        player_id = player2index[player_name]
-        selected_df = df[(df['player'] == player_id) & (df['match_id'].isin(match_ids))]
-        
-        if len(selected_df) == 0:
-            print(f"Warning: No data found for {player_name}, skipping")
-            continue
-            
-        state_data.extend(selected_df[state_col].values)
-        action_data.extend(selected_df[action_col].values)
+    selected_df = filter_rally_rows(df, split_content["train"])
+    if selected_df.empty:
+        raise ValueError("No BC rows matched the rally-level training split")
+    if selected_df['player'].isna().any():
+        raise ValueError("BC training rows contain players missing from player_index_map")
+
+    state_data.extend(selected_df[state_col].values)
+    action_data.extend(selected_df[action_col].values)
+
+    expected_keys = {rally_key(record) for record in split_content['train']}
+    matched_keys = set(
+        selected_df[['match_id', 'set', 'rally']]
+        .astype(int)
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    )
+    skipped_keys = sorted(expected_keys - matched_keys)
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -87,10 +147,22 @@ def prepare_bc_data(df, split_content, player2index, output_dir):
         pickle.dump(np.array(state_data), f)
     with open(action_path, 'wb') as f:
         pickle.dump(np.array(action_data), f)
+    with open(os.path.join(output_dir, 'preparation_summary.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'physical_train_rallies_in_split': len(expected_keys),
+            'physical_train_rallies_matched': len(matched_keys),
+            'physical_train_rallies_skipped': len(skipped_keys),
+            'skipped_rally_keys': [
+                {'match_id': key[0], 'set': key[1], 'rally': key[2]}
+                for key in skipped_keys
+            ],
+            'training_samples': len(state_data),
+        }, f, ensure_ascii=False, indent=2)
     
     print(f"BC data saved to {output_dir}")
     print(f"  - train_state.pkl: {len(state_data)} samples")
     print(f"  - train_action.pkl: {len(action_data)} samples")
+    print(f"  - physical rallies: {len(matched_keys)}/{len(expected_keys)} matched")
 
 
 def prepare_naive_rag_data(df, split_content, player2index, output_dir):
@@ -105,17 +177,29 @@ def prepare_naive_rag_data(df, split_content, player2index, output_dir):
     
     Output:
         - {player_name}_db.pkl: One database file per player
+        - preparation_manifest.json: rally split provenance and build counts
     """
     # Import here to avoid circular import issues
     from Agent.naive_rag import NaiveRAGDatabase
+    retrieval_features = [
+        'player_location_x', 'player_location_y',
+        'hit_x', 'hit_y',
+        'opponent_location_x', 'opponent_location_y',
+        'ball_distance_x', 'ball_distance_y',
+    ]
     
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(os.path.dirname(output_dir), exist_ok=True)
+    staging_dir = tempfile.mkdtemp(
+        prefix=f'.{os.path.basename(output_dir)}_build_',
+        dir=os.path.dirname(output_dir),
+    )
     
     # Define all columns needed by NaiveRAGDatabase
     # These are based on state_col and action_col from Utils.helper
     required_cols = [
         'player',  # Must be player names, not IDs
-        'match_id',
+        'match_id', 'set',
         # state_col columns
         'rally', 'ball_round', 'player_score', 'opponent_score', 'score_status',
         'player_location_x', 'player_location_y',
@@ -151,22 +235,28 @@ def prepare_naive_rag_data(df, split_content, player2index, output_dir):
     # Filter to only include required columns that exist
     df_filtered = df[available_cols].copy()
     
-    # Build database for each player in training set
-    train_players = split_content.get('train', {})
+    train_records = split_content.get('train', [])
+    test_records = split_content.get('test', [])
+    required_players = sorted({
+        player
+        for record in train_records + test_records
+        for player in record.get('players', [])
+    })
     successful_builds = 0
     failed_players = []
+    player_summaries = {}
     
-    for player_name, match_ids in tqdm(train_players.items(), desc="Building NaiveRAG databases"):
+    for player_name in tqdm(required_players, desc="Building NaiveRAG databases"):
         if player_name not in player2index:
             print(f"Warning: {player_name} not in player_index_map, skipping")
             failed_players.append(player_name)
             continue
         
         player_id = player2index[player_name]
-        match_ids = [int(match_id) for match_id in match_ids]
-        
-        # Keep only this player's train matches; NaiveRAGDatabase filters target-player rows internally.
-        player_match_df = df_filtered[df_filtered['match_id'].isin(match_ids)].copy()
+        player_records = [
+            record for record in train_records if player_name in record.get('players', [])
+        ]
+        player_match_df = filter_rally_rows(df_filtered, player_records)
         player_data = player_match_df[player_match_df['player'] == player_name].copy()
         
         if len(player_data) == 0:
@@ -175,22 +265,60 @@ def prepare_naive_rag_data(df, split_content, player2index, output_dir):
             continue
         
         try:
-            database = NaiveRAGDatabase(player_match_df, player_name, player_id)
+            build_metadata = {
+                'dataset': 'rally',
+                'split_sha256': split_content.get('split_sha256'),
+                'profiles_sha256': split_content.get('profiles_sha256'),
+                'train_rally_keys': [list(rally_key(record)) for record in player_records],
+                'train_rally_count': len(player_records),
+                'training_sample_count': len(player_data),
+                'retrieval_features': retrieval_features,
+            }
+            database = NaiveRAGDatabase(
+                player_match_df,
+                player_name,
+                player_id,
+                build_metadata=build_metadata,
+            )
             
             # Save database
-            safe_name = player_name.replace(" ", "_").replace(".", "")
-            output_path = os.path.join(output_dir, f"{safe_name}_db.pkl")
+            output_path = os.path.join(staging_dir, player_database_filename(player_name))
             database.save(output_path)
             successful_builds += 1
+            player_summaries[player_name] = {
+                'database_file': os.path.basename(output_path),
+                'database_sha256': _file_sha256(output_path),
+                'train_rally_count': len(player_records),
+                'training_sample_count': len(player_data),
+            }
         except Exception as e:
             print(f"Error building database for {player_name}: {e}")
             failed_players.append(player_name)
             continue
     
+    with open(os.path.join(staging_dir, 'preparation_manifest.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'schema_version': 3,
+            'algorithm': 'naive_rag',
+            'database_schema_version': NaiveRAGDatabase.schema_version,
+            'verbalization_schema_version': NaiveRAGDatabase.verbalization_schema_version,
+            'retrieval_architecture': 'two_stage_v1',
+            'retrieval_features': retrieval_features,
+            'dataset': 'rally',
+            'split_sha256': split_content.get('split_sha256'),
+            'profiles_sha256': split_content.get('profiles_sha256'),
+            'physical_train_rallies': len(train_records),
+            'physical_test_rallies': len(test_records),
+            'players': player_summaries,
+        }, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+
+    if failed_players:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise RuntimeError(f"Failed to build NaiveRAG databases for: {failed_players}")
+    _publish_prepared_directory(staging_dir, output_dir)
     print(f"\nSuccessfully built {successful_builds} NaiveRAG databases")
     print(f"All databases saved to: {output_dir}")
-    if failed_players:
-        raise RuntimeError(f"Failed to build NaiveRAG databases for: {failed_players}")
     return successful_builds
 
 
@@ -210,15 +338,26 @@ def prepare_timerag_data(df, split_content, player2index, output_dir, window_siz
     """
     # Import here to avoid circular import issues
     from Agent.timerag import TimeRAGDatabase
+    retrieval_features = [
+        'player_location_x', 'player_location_y',
+        'hit_x', 'hit_y',
+        'opponent_location_x', 'opponent_location_y',
+        'ball_distance_x', 'ball_distance_y',
+    ]
     
     # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(os.path.dirname(output_dir), exist_ok=True)
+    staging_dir = tempfile.mkdtemp(
+        prefix=f'.{os.path.basename(output_dir)}_build_',
+        dir=os.path.dirname(output_dir),
+    )
     
     # Define all columns needed by TimeRAGDatabase
     # Note: 'set' column is optional and may not be present in all datasets
     required_cols = [
         'player',  # Must be player names, not IDs
-        'match_id',
+        'match_id', 'set',
         # state_col columns
         'rally', 'ball_round', 'player_score', 'opponent_score', 'score_status',
         'player_location_x', 'player_location_y',
@@ -227,7 +366,7 @@ def prepare_timerag_data(df, split_content, player2index, output_dir, window_siz
         # action_col columns
         'landing_x', 'landing_y', 'player_type', 'moving_x', 'moving_y'
     ]
-    optional_cols = ['set']
+    optional_cols = []
     
     # Check if all required columns are present
     available_cols = [c for c in required_cols + optional_cols if c in df.columns]
@@ -256,22 +395,28 @@ def prepare_timerag_data(df, split_content, player2index, output_dir, window_siz
     # Filter to only include required columns that exist
     df_filtered = df[available_cols].copy()
     
-    # Build database for each player in training set
-    train_players = split_content.get('train', {})
+    train_records = split_content.get('train', [])
+    test_records = split_content.get('test', [])
+    required_players = sorted({
+        player
+        for record in train_records + test_records
+        for player in record.get('players', [])
+    })
     successful_builds = 0
     failed_players = []
+    player_summaries = {}
     
-    for player_name, match_ids in tqdm(train_players.items(), desc=f"Building TimeRAG databases (window_size={window_size})"):
+    for player_name in tqdm(required_players, desc=f"Building TimeRAG databases (window_size={window_size})"):
         if player_name not in player2index:
             print(f"Warning: {player_name} not in player_index_map, skipping")
             failed_players.append(player_name)
             continue
         
         player_id = player2index[player_name]
-        match_ids = [int(match_id) for match_id in match_ids]
-        
-        # Include both players' rows from this player's train matches so windows preserve full rally context.
-        player_match_df = df_filtered[df_filtered['match_id'].isin(match_ids)].copy()
+        player_records = [
+            record for record in train_records if player_name in record.get('players', [])
+        ]
+        player_match_df = filter_rally_rows(df_filtered, player_records)
         player_data = player_match_df[player_match_df['player'] == player_name].copy()
         
         if len(player_data) == 0:
@@ -280,23 +425,64 @@ def prepare_timerag_data(df, split_content, player2index, output_dir, window_siz
             continue
         
         try:
-            database = TimeRAGDatabase(player_match_df, player_name, player_id, window_size=window_size)
+            build_metadata = {
+                'dataset': 'rally',
+                'split_sha256': split_content.get('split_sha256'),
+                'profiles_sha256': split_content.get('profiles_sha256'),
+                'train_rally_keys': [list(rally_key(record)) for record in player_records],
+                'train_rally_count': len(player_records),
+                'training_sample_count': len(player_data),
+                'window_size': window_size,
+                'retrieval_features': retrieval_features,
+            }
+            database = TimeRAGDatabase(
+                player_match_df,
+                player_name,
+                player_id,
+                window_size=window_size,
+                build_metadata=build_metadata,
+            )
             
             # Save database
-            safe_name = player_name.replace(" ", "_").replace(".", "")
-            output_path = os.path.join(output_dir, f"{safe_name}_db.pkl")
+            output_path = os.path.join(staging_dir, player_database_filename(player_name))
             database.save(output_path)
             successful_builds += 1
+            player_summaries[player_name] = {
+                'database_file': os.path.basename(output_path),
+                'database_sha256': _file_sha256(output_path),
+                'train_rally_count': len(player_records),
+                'window_count': len(database.windows),
+            }
         except Exception as e:
             print(f"Error building database for {player_name}: {e}")
             traceback.print_exc()
             failed_players.append(player_name)
             continue
     
+    with open(os.path.join(staging_dir, 'preparation_manifest.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'schema_version': 3,
+            'algorithm': 'timerag',
+            'database_schema_version': TimeRAGDatabase.schema_version,
+            'verbalization_schema_version': TimeRAGDatabase.verbalization_schema_version,
+            'retrieval_architecture': 'two_stage_v1',
+            'retrieval_features': retrieval_features,
+            'dataset': 'rally',
+            'split_sha256': split_content.get('split_sha256'),
+            'profiles_sha256': split_content.get('profiles_sha256'),
+            'window_size': window_size,
+            'physical_train_rallies': len(train_records),
+            'physical_test_rallies': len(test_records),
+            'players': player_summaries,
+        }, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+
+    if failed_players:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise RuntimeError(f"Failed to build TimeRAG databases for: {failed_players}")
+    _publish_prepared_directory(staging_dir, output_dir)
     print(f"\nSuccessfully built {successful_builds} TimeRAG databases")
     print(f"All databases saved to: {output_dir}")
-    if failed_players:
-        raise RuntimeError(f"Failed to build TimeRAG databases for: {failed_players}")
     return successful_builds
 
 
@@ -318,7 +504,7 @@ def prepare_twin_data(
         split_content: Train/test split dict
         player2index: Player name to ID mapping
         output_dir: Directory to save output files
-        use_llm: Whether to annotate rallies with the LLM or use fallback narratives
+        use_llm: Whether to annotate rallies with the LLM or use fallback phases
         max_rallies_per_player: Optional smoke-test cap; None means all train rallies
         twin_workers: Number of players to build in parallel
         llm_config_path: Config file used to initialize each worker's LLM client
@@ -381,27 +567,50 @@ def prepare_twin_data(
     # Filter to only include required columns that exist
     df_filtered = df[available_cols].copy()
 
-    train_players = split_content.get('train', {})
+    train_records = list(split_content.get('train', []))
+    test_records = list(split_content.get('test', []))
+    required_players = sorted({
+        player
+        for record in train_records + test_records
+        for player in record.get('players', [])
+    })
     successful_builds = 0
     failed_players = []
+    player_summaries = {}
     twin_workers = max(1, int(twin_workers or 1))
 
-    def build_player_database(player_name, match_ids):
+    def build_player_database(player_name):
         player_name = str(player_name).strip()
         if player_name not in player2index:
-            return False, f"Warning: {player_name} not in player_index_map, skipping"
+            return False, None, f"Warning: {player_name} not in player_index_map, skipping"
 
         player_id = player2index[player_name]
-        match_ids = [int(match_id) for match_id in match_ids]
+        player_records = [
+            record for record in train_records if player_name in record.get('players', [])
+        ]
 
-        # Include both players' rows from the target player's train matches so
+        # Include both players' rows from the target player's train rallies so
         # rally-level LLM annotations see the full exchange. Only target-player
         # strokes are converted into memories inside TwinDatabase.
-        player_match_df = df_filtered[df_filtered['match_id'].isin(match_ids)].copy()
+        player_match_df = filter_rally_rows(df_filtered, player_records)
+        incomplete_keys = set(
+            player_match_df.loc[
+                player_match_df[state_col + action_col].isna().any(axis=1),
+                ['match_id', 'set', 'rally'],
+            ]
+            .astype(int)
+            .itertuples(index=False, name=None)
+        )
+        if incomplete_keys:
+            player_records = [
+                record for record in player_records
+                if rally_key(record) not in incomplete_keys
+            ]
+            player_match_df = filter_rally_rows(df_filtered, player_records)
         player_data = player_match_df[player_match_df['player'] == player_name].copy()
 
         if len(player_data) == 0:
-            return False, f"Warning: No data found for {player_name}, skipping"
+            return False, None, f"Warning: No rally-level train data found for {player_name}, skipping"
 
         try:
             database = TwinDatabase(
@@ -420,44 +629,57 @@ def prepare_twin_data(
                 database.build_with_fallback(max_rallies=max_rallies_per_player)
 
             database.build_metadata = {
+                'dataset': 'rally',
+                'split_sha256': split_content.get('split_sha256'),
+                'profiles_sha256': split_content.get('profiles_sha256'),
                 'use_llm': bool(use_llm),
                 'max_rallies_per_player': max_rallies_per_player,
-                'expected_match_ids': sorted(match_ids),
+                'train_rally_keys': [list(rally_key(record)) for record in player_records],
+                'train_rally_count': len(player_records),
+                'skipped_incomplete_rally_keys': [list(key) for key in sorted(incomplete_keys)],
                 'target_source_row_count': int(len(player_data)),
                 'memory_count': int(len(database.memories)),
             }
 
-            # Save database
-            safe_name = player_name.replace(" ", "_").replace(".", "")
-            output_path = os.path.join(staging_dir, f"{safe_name}_db.pkl")
+            output_path = os.path.join(staging_dir, player_database_filename(player_name))
             database.save(output_path)
-            return True, None
+            summary = {
+                'database_file': os.path.basename(output_path),
+                'database_sha256': _file_sha256(output_path),
+                'train_rally_count': len(player_records),
+                'skipped_incomplete_rally_count': len(incomplete_keys),
+                'training_sample_count': int(len(player_data)),
+                'memory_count': int(len(database.memories)),
+            }
+            return True, summary, None
         except Exception as e:
-            return False, f"Error building database for {player_name}: {e}\n{traceback.format_exc()}"
+            return False, None, f"Error building database for {player_name}: {e}\n{traceback.format_exc()}"
 
-    items = list(train_players.items())
     if twin_workers == 1:
-        for player_name, match_ids in tqdm(items, desc="Building Twin aspect-memory databases"):
-            ok, message = build_player_database(player_name, match_ids)
+        for player_name in tqdm(required_players, desc="Building Twin aspect-memory databases"):
+            ok, summary, message = build_player_database(player_name)
             if ok:
                 successful_builds += 1
+                player_summaries[player_name] = summary
             elif message:
                 print(message)
                 failed_players.append(player_name)
     else:
         with ThreadPoolExecutor(max_workers=twin_workers) as executor:
             futures = {
-                executor.submit(build_player_database, player_name, match_ids): player_name
-                for player_name, match_ids in items
+                executor.submit(build_player_database, player_name): player_name
+                for player_name in required_players
             }
             for future in tqdm(as_completed(futures), total=len(futures), desc="Building Twin aspect-memory databases"):
                 try:
-                    ok, message = future.result()
+                    ok, summary, message = future.result()
                 except Exception as exc:
                     ok = False
+                    summary = None
                     message = f"Error building database for {futures[future]}: {exc}\n{traceback.format_exc()}"
                 if ok:
                     successful_builds += 1
+                    player_summaries[futures[future]] = summary
                 elif message:
                     print(message)
                     failed_players.append(futures[future])
@@ -469,22 +691,39 @@ def prepare_twin_data(
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise RuntimeError('Twin memory preparation produced no player databases')
 
-    backup_dir = None
-    try:
-        if os.path.exists(output_dir):
-            backup_dir = tempfile.mkdtemp(prefix='.twin_memory_backup_', dir=output_parent)
-            os.rmdir(backup_dir)
-            os.replace(output_dir, backup_dir)
-        os.replace(staging_dir, output_dir)
-    except Exception:
-        if backup_dir is not None and os.path.exists(backup_dir) and not os.path.exists(output_dir):
-            os.replace(backup_dir, output_dir)
-        raise
-    finally:
-        if os.path.exists(staging_dir):
-            shutil.rmtree(staging_dir, ignore_errors=True)
-        if backup_dir is not None and os.path.exists(backup_dir):
-            shutil.rmtree(backup_dir, ignore_errors=True)
+    memory_prompt = os.path.join(project_path, 'Prompts', 'New', 'twin', 'memory_user.jinja')
+    system_prompt = os.path.join(project_path, 'Prompts', 'New', 'simulate_system.md')
+    from Utils.llm import LLM
+
+    llm_settings = LLM.resolve_effective_settings(config_path=llm_config_path)
+    safe_llm_settings = {
+        'provider': llm_settings.get('provider'),
+        'llm_type': llm_settings.get('llm_type'),
+        'model_name': llm_settings.get('model_name'),
+        'generation_params': llm_settings.get('generation_params'),
+        'deterministic_active': llm_settings.get('deterministic_active'),
+    }
+    with open(os.path.join(staging_dir, 'preparation_manifest.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'schema_version': 1,
+            'algorithm': 'twin',
+            'database_schema_version': TwinDatabase.schema_version,
+            'retrieval_architecture': 'twin_aspect_two_stage_v1',
+            'dataset': 'rally',
+            'split_sha256': split_content.get('split_sha256'),
+            'profiles_sha256': split_content.get('profiles_sha256'),
+            'memory_prompt_sha256': _file_sha256(memory_prompt),
+            'system_prompt_sha256': _file_sha256(system_prompt),
+            'llm': safe_llm_settings if use_llm else None,
+            'use_llm': bool(use_llm),
+            'max_rallies_per_player': max_rallies_per_player,
+            'physical_train_rallies': len(train_records),
+            'physical_test_rallies': len(test_records),
+            'players': player_summaries,
+        }, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+
+    _publish_prepared_directory(staging_dir, output_dir)
 
     print(f"\nSuccessfully built {successful_builds} Twin databases")
     print(f"All databases saved to: {output_dir}")
@@ -508,7 +747,12 @@ def prepare_twin_embeddings(
     embedding_dimension=None,
 ):
     """Build model-specific embedding caches from canonical Twin memories."""
-    from Agent.twin import TwinDatabase, TwinEmbeddingCache, load_embedding_model
+    from Agent.twin import (
+        TwinDatabase,
+        TwinEmbeddingCache,
+        embedding_cache_paths,
+        twin_memory_digest,
+    )
 
     if not os.path.isdir(memory_dir):
         raise FileNotFoundError(f"Twin memory directory does not exist: {memory_dir}")
@@ -522,6 +766,7 @@ def prepare_twin_embeddings(
     built = 0
     skipped = 0
     loaded_model = embedding_model
+    player_summaries = {}
 
     for filename in tqdm(database_files, desc='Building Twin embedding caches'):
         database_path = os.path.join(memory_dir, filename)
@@ -542,6 +787,24 @@ def prepare_twin_embeddings(
                     provider=embedding_provider,
                     embedding_dimension=embedding_dimension,
                 )
+                array_path, metadata_path = embedding_cache_paths(
+                    cache_dir,
+                    database.player_name,
+                    embedding_model_name,
+                    embedding_revision,
+                    normalize_embeddings,
+                    embedding_dtype,
+                    embedding_provider,
+                    embedding_dimension,
+                )
+                player_summaries[database.player_name] = {
+                    'database_file': filename,
+                    'memory_digest': twin_memory_digest(database.memories),
+                    'embedding_file': os.path.relpath(array_path, cache_dir),
+                    'embedding_sha256': _file_sha256(array_path),
+                    'metadata_file': os.path.relpath(metadata_path, cache_dir),
+                    'metadata_sha256': _file_sha256(metadata_path),
+                }
                 skipped += 1
                 continue
             except (FileNotFoundError, KeyError, OSError, ValueError):
@@ -551,10 +814,9 @@ def prepare_twin_embeddings(
             if embedding_model_loader is not None:
                 loaded_model = embedding_model_loader()
             else:
-                loaded_model = load_embedding_model(
-                    embedding_model_name,
-                    embedding_device,
-                    embedding_revision,
+                raise ValueError(
+                    'Twin embedding preparation requires embedding_model or '
+                    'embedding_model_loader'
                 )
         cache = TwinEmbeddingCache.build(
             database,
@@ -567,11 +829,56 @@ def prepare_twin_embeddings(
             provider=embedding_provider,
             embedding_dimension=embedding_dimension,
         )
-        cache.save(cache_dir)
+        array_path, metadata_path = cache.save(cache_dir)
+        player_summaries[database.player_name] = {
+            'database_file': filename,
+            'memory_digest': cache.memory_digest,
+            'embedding_file': os.path.relpath(array_path, cache_dir),
+            'embedding_sha256': _file_sha256(array_path),
+            'metadata_file': os.path.relpath(metadata_path, cache_dir),
+            'metadata_sha256': _file_sha256(metadata_path),
+        }
         built += 1
 
     if selected_players and built + skipped == 0:
         raise ValueError(f"No Twin memories matched players: {sorted(selected_players)}")
+    first_database = TwinDatabase.load(os.path.join(memory_dir, database_files[0]))
+    first_array_path, _ = embedding_cache_paths(
+        cache_dir,
+        first_database.player_name,
+        embedding_model_name,
+        embedding_revision,
+        normalize_embeddings,
+        embedding_dtype,
+        embedding_provider,
+        embedding_dimension,
+    )
+    model_dir = os.path.dirname(first_array_path)
+    os.makedirs(model_dir, exist_ok=True)
+    manifest_path = os.path.join(model_dir, 'preparation_manifest.json')
+    if selected_players and os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                previous_manifest = json.load(f)
+            previous_players = previous_manifest.get('players', {})
+            if isinstance(previous_players, dict):
+                player_summaries = {**previous_players, **player_summaries}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'schema_version': 1,
+            'algorithm': 'twin',
+            'dataset': 'rally',
+            'provider': embedding_provider,
+            'model_name': embedding_model_name,
+            'revision': embedding_revision,
+            'dimension': embedding_dimension,
+            'normalize_embeddings': bool(normalize_embeddings),
+            'dtype': embedding_dtype,
+            'players': player_summaries,
+        }, f, ensure_ascii=False, indent=2)
+        f.write('\n')
     print(f"Twin embeddings ready: {built} built, {skipped} already valid")
     print(f"Embedding caches saved to: {cache_dir}")
     return {'built': built, 'skipped': skipped}

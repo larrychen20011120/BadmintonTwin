@@ -623,8 +623,7 @@ def train_model(args):
         gmm_num=args.gmm_num
     ).to(device)
 
-    class_weights = compute_shot_type_weights(method='uniform').to(device)
-    ce_loss = nn.CrossEntropyLoss(weight=class_weights)
+    ce_loss = nn.CrossEntropyLoss()
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -803,7 +802,7 @@ if __name__ == "__main__":
         print("="*50)
         train_model(args)
     elif args.mode == 'eval':
-        print("="*50)
-        print("BC Model Evaluation Mode")
-        print("="*50)
-        eval_model(args)
+        raise RuntimeError(
+            'Use Scripts/single_player_eval/eval_all_rallies.py --algorithm bc '
+            '--no-instruct for physical-rally evaluation.'
+        )

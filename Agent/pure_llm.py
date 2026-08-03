@@ -20,11 +20,9 @@ class PureLLMAgent(BaseAgent):
 
     def __init__(self, player_name, model_name=None,
                  api_key=None, host=None, port=None,
-                 base_url=None, host_url=None, enable_tracing=True,
-                 prompt_variant="norm"):
+                 base_url=None, host_url=None, enable_tracing=True):
         super().__init__(player_name)
 
-        self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("pure_llm", player_name, enable_tracing)
         self.trajectory = []
         self._current_rally = None
@@ -41,23 +39,31 @@ class PureLLMAgent(BaseAgent):
 
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "pure_llm")
-        template_names = {
-            "norm": "user.jinja",
-            "shifted": "shifted_user.jinja",
-        }
-        if prompt_variant not in template_names:
-            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
-        user_template_name = template_names[prompt_variant]
 
-        with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
-            self.system_prompt = f.read()
-
-        with open(os.path.join(prompt_dir, user_template_name), "r") as f:
+        with open(os.path.join(prompt_dir, "user.jinja"), "r") as f:
             self.user_template = Template(f.read())
 
     @staticmethod
     def _parse_llm_action(response):
         return BaseAgent.parse_prompt_action(response)
+
+    def _normalize_history_for_player(self, history):
+        """Mark each shared-history stroke from this agent's viewpoint."""
+        normalized = []
+        for stroke in history or []:
+            stroke_data = dict(stroke)
+            player = stroke_data.get('player')
+            if player is not None:
+                stroke_data['is_target_turn'] = str(player) == str(self.player_name)
+            else:
+                stroke_data['is_target_turn'] = bool(
+                    stroke_data.get('is_target_turn', True)
+                )
+            stroke_data['turn_role'] = (
+                'target' if stroke_data['is_target_turn'] else 'opponent'
+            )
+            normalized.append(stroke_data)
+        return normalized
 
     def predict(self, state, info, launch):
         """Predict the next action using only the current/within-rally context."""
@@ -79,6 +85,9 @@ class PureLLMAgent(BaseAgent):
             coord2area(opponent_location_x, opponent_location_y), 'Unknown')
 
         state_dict = {
+            'player': info.get('current_player_name', self.player_name),
+            'is_target_turn': True,
+            'turn_role': 'target',
             'rally': info.get('rally', 0),
             'ball_round': info['round'][-1] if info.get('round') else 1,
             'player_score': player_score,
@@ -109,23 +118,25 @@ class PureLLMAgent(BaseAgent):
             self.trajectory = []
         self.trajectory.append(state_dict)
 
-        state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
+        rally_history = info.get('rally_history')
+        if rally_history is not None:
+            state_history = self._normalize_history_for_player(rally_history)
+        else:
+            state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
         context = self.verbalizer.build_prompt_context_nl(
             state_dict, [], launch=launch, state_history=state_history)
-        context['style_shift_instruction'] = info.get('style_shift_instruction', '')
 
         user_prompt = self.user_template.render(**context)
 
         t0 = time.time()
         response, raw_llm_output, usage = self.llm.get_verified_response(
-            system_prompt=self.system_prompt,
             user_prompt=user_prompt,
             max_trials=5,
             validator=BaseAgent.validate_prompt_action_response,
         )
         t1 = time.time()
         self.tracer.log_generation(
-            self.system_prompt, user_prompt, response,
+            "", user_prompt, response,
             latency_ms=int((t1 - t0) * 1000),
             raw_llm_output=raw_llm_output,
             usage=usage,

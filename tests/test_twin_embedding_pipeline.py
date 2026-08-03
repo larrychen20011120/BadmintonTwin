@@ -10,12 +10,14 @@ import pandas as pd
 from Agent.twin import (
     TwinDatabase,
     TwinEmbeddingCache,
+    embedding_cache_paths,
+    embedding_prefix,
     embedding_model_key,
 )
 from Agent.base_agent import BaseAgent
 from Preprocessing.data_preparation import prepare_twin_data, prepare_twin_embeddings
 from Scripts.prepare_twin_embeddings import build_parser
-from Scripts.prepare_all_data import twin_memory_is_complete
+from Utils.artifact_names import player_database_filename
 from Utils.helper import action_col, state_col
 
 
@@ -109,7 +111,7 @@ class TwinEmbeddingPipelineTest(unittest.TestCase):
 
             with open(path, 'rb') as f:
                 payload = pickle.load(f)
-            self.assertEqual(payload['schema_version'], 4)
+            self.assertEqual(payload['schema_version'], TwinDatabase.schema_version)
             self.assertNotIn('semantic_embeddings', payload)
             self.assertNotIn('embedding_model_name', payload)
 
@@ -161,6 +163,38 @@ class TwinEmbeddingPipelineTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'stale'):
                 TwinEmbeddingCache.load(directory, database, 'fake/model')
 
+    def test_action_change_invalidates_cache(self):
+        database = make_database()
+        cache = TwinEmbeddingCache.build(database, FakeEmbeddingModel(), 'fake/model')
+        database.memories[0]['landing_x'] = 0.9
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            cache.validate(database)
+
+    def test_embedding_array_checksum_is_verified(self):
+        database = make_database()
+        model = FakeEmbeddingModel()
+        cache = TwinEmbeddingCache.build(database, model, 'fake/model')
+        with tempfile.TemporaryDirectory() as directory:
+            cache.save(directory)
+            array_path, _ = embedding_cache_paths(directory, database.player_name, 'fake/model')
+            replacement = np.ones_like(cache.embeddings)
+            with open(array_path, 'wb') as handle:
+                np.save(handle, replacement, allow_pickle=False)
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                TwinEmbeddingCache.load(directory, database, 'fake/model')
+
+    def test_embedding_prefix_depends_on_model_contract(self):
+        self.assertEqual(embedding_prefix('BAAI/bge-large-en-v1.5', 'document'), '')
+        self.assertIn(
+            'Represent this sentence',
+            embedding_prefix('BAAI/bge-large-en-v1.5', 'query'),
+        )
+        self.assertEqual(
+            embedding_prefix('nomic-ai/nomic-embed-text-v1', 'document'),
+            'search_document: ',
+        )
+        self.assertEqual(embedding_prefix('openai/text-embedding-3-small', 'query'), '')
+
     def test_action_verbalization_does_not_change_embedding_digest(self):
         database = make_database()
         cache = TwinEmbeddingCache.build(database, FakeEmbeddingModel(), 'fake/model')
@@ -200,36 +234,12 @@ class TwinEmbeddingPipelineTest(unittest.TestCase):
             self.assertEqual(first, {'built': 1, 'skipped': 0})
             self.assertEqual(second, {'built': 0, 'skipped': 1})
 
-    def test_memory_completeness_rejects_stale_player_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory_dir = os.path.join(directory, 'memory')
-            os.makedirs(memory_dir)
-            split_path = os.path.join(directory, 'split.json')
-            with open(split_path, 'w') as f:
-                json.dump({'train': {'Test Player': [1]}}, f)
-            make_database().save(os.path.join(memory_dir, 'Test_Player_db.pkl'))
-            self.assertTrue(twin_memory_is_complete(split_path, memory_dir))
-
-            database_with_extra_match = make_database()
-            extra_memory = dict(database_with_extra_match.memories[0])
-            extra_memory['memory_id'] = '2:1:1:1'
-            extra_memory['match_id'] = 2
-            database_with_extra_match.memories.append(extra_memory)
-            database_with_extra_match.build_metadata['target_source_row_count'] = 3
-            database_with_extra_match.build_metadata['memory_count'] = 3
-            database_with_extra_match._build_memory_stores()
-            database_with_extra_match.save(os.path.join(memory_dir, 'Test_Player_db.pkl'))
-            self.assertFalse(twin_memory_is_complete(split_path, memory_dir))
-
-            make_database().save(os.path.join(memory_dir, 'Test_Player_db.pkl'))
-            make_database('Stale Player').save(os.path.join(memory_dir, 'Stale_Player_db.pkl'))
-            self.assertFalse(twin_memory_is_complete(split_path, memory_dir))
-
     def test_memory_build_atomically_replaces_stale_player_files(self):
         row = {column: 0.0 for column in state_col + action_col}
         row.update({
             'player': 'Test Player',
             'match_id': 1,
+            'set': 1,
             'rally': 1,
             'ball_round': 1,
             'opponent_type': 2,
@@ -242,17 +252,75 @@ class TwinEmbeddingPipelineTest(unittest.TestCase):
 
             prepare_twin_data(
                 pd.DataFrame([row]),
-                {'train': {'Test Player': [1]}},
+                {
+                    'train': [{
+                        'match_id': 1,
+                        'set': 1,
+                        'rally': 1,
+                        'players': ['Test Player'],
+                    }],
+                    'test': [],
+                    'split_sha256': 'split-digest',
+                    'profiles_sha256': 'profiles-digest',
+                },
                 {'Test Player': 7},
                 output_dir,
                 use_llm=False,
             )
 
-            self.assertEqual(os.listdir(output_dir), ['Test_Player_db.pkl'])
-            loaded = TwinDatabase.load(os.path.join(output_dir, 'Test_Player_db.pkl'))
-            self.assertEqual(loaded.build_metadata['expected_match_ids'], [1])
+            database_file = player_database_filename('Test Player')
+            self.assertEqual(sorted(os.listdir(output_dir)), [database_file, 'preparation_manifest.json'])
+            loaded = TwinDatabase.load(os.path.join(output_dir, database_file))
+            self.assertEqual(loaded.build_metadata['dataset'], 'rally')
+            self.assertEqual(loaded.build_metadata['train_rally_keys'], [[1, 1, 1]])
+            self.assertEqual(loaded.build_metadata['split_sha256'], 'split-digest')
             self.assertIn('action_verbalization', loaded.memories[0])
             self.assertIn('"landing_x": 177', loaded.memories[0]['action_verbalization'])
+            with open(os.path.join(output_dir, 'preparation_manifest.json')) as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest['dataset'], 'rally')
+            self.assertIn('Test Player', manifest['players'])
+
+    def test_memory_build_skips_an_entire_incomplete_rally(self):
+        valid = {column: 0.0 for column in state_col + action_col}
+        valid.update({
+            'player': 'Test Player',
+            'match_id': 1,
+            'set': 1,
+            'rally': 1,
+            'ball_round': 1,
+            'opponent_type': 0,
+            'player_type': 1,
+        })
+        incomplete = dict(valid)
+        incomplete.update({'rally': 2, 'landing_x': np.nan})
+        records = [
+            {'match_id': 1, 'set': 1, 'rally': rally, 'players': ['Test Player']}
+            for rally in (1, 2)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = os.path.join(directory, 'memory')
+            prepare_twin_data(
+                pd.DataFrame([valid, incomplete]),
+                {
+                    'train': records,
+                    'test': [],
+                    'split_sha256': 'split-digest',
+                    'profiles_sha256': 'profiles-digest',
+                },
+                {'Test Player': 7},
+                output_dir,
+                use_llm=False,
+            )
+            database = TwinDatabase.load(os.path.join(
+                output_dir, player_database_filename('Test Player')
+            ))
+            self.assertEqual(database.build_metadata['train_rally_keys'], [[1, 1, 1]])
+            self.assertEqual(
+                database.build_metadata['skipped_incomplete_rally_keys'],
+                [[1, 1, 2]],
+            )
+            self.assertEqual({memory['rally'] for memory in database.memories}, {1})
 
 
 if __name__ == '__main__':

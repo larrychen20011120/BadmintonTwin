@@ -18,7 +18,6 @@ from Utils.runtime_report import print_runtime_box
 
 
 CONFIG_PATH = os.path.join(project_path, 'Scripts', 'config.yaml')
-SUPPORTED_EXPERIMENTS = ('norm', 'shifted')
 
 
 def resolve_path(path):
@@ -36,8 +35,6 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description='Build Twin embeddings using the model configured in Scripts/config.yaml',
     )
-    parser.add_argument('--norm', action='store_true', help='Build norm embedding caches')
-    parser.add_argument('--shifted', action='store_true', help='Build shifted embedding caches')
     parser.add_argument('--players', nargs='+', help='Only build caches for these exact player names')
     parser.add_argument('--force', action='store_true', help='Rebuild caches even when they are valid')
     return parser
@@ -45,10 +42,6 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
-    experiments = [name for name in SUPPORTED_EXPERIMENTS if getattr(args, name)]
-    if not experiments:
-        experiments = list(SUPPORTED_EXPERIMENTS)
-
     try:
         config = load_config()
         twin_paths = config['paths']['twin']
@@ -61,9 +54,8 @@ def main():
         batch_size = embedding_settings['batch_size']
         dtype = embedding_settings['dtype']
         normalize_embeddings = embedding_settings['normalize_embeddings']
-        for experiment in experiments:
-            if experiment not in twin_paths['memory'] or experiment not in twin_paths['embeddings']:
-                raise ValueError(f'Missing Twin paths for experiment: {experiment}')
+        memory_dir = resolve_path(twin_paths['data'])
+        cache_dir = resolve_path(twin_paths['embeddings'])
     except (KeyError, TypeError, ValueError, OSError) as exc:
         print(f'Configuration error: {exc}', file=sys.stderr)
         return 2
@@ -75,7 +67,7 @@ def main():
         'Runtime Parameters: prepare_twin_embeddings',
         [
             ('config', CONFIG_PATH),
-            ('experiments', experiments),
+            ('dataset', 'rally'),
             ('embedding_provider', provider),
             ('embedding_model', model_name),
             ('embedding_revision', revision),
@@ -90,7 +82,6 @@ def main():
         ],
     )
 
-    failures = []
     shared_model = None
 
     def get_embedding_model():
@@ -99,34 +90,29 @@ def main():
             shared_model = create_embedding_client(embedding_settings)
         return shared_model
 
-    for experiment in experiments:
-        memory_dir = resolve_path(twin_paths['memory'][experiment])
-        cache_dir = resolve_path(twin_paths['embeddings'][experiment])
-        print(f'\nPreparing Twin embeddings: {experiment}')
-        print(f'Memory: {memory_dir}')
-        print(f'Cache:  {cache_dir}')
-        try:
-            prepare_twin_embeddings(
-                memory_dir,
-                cache_dir,
-                model_name,
-                embedding_device=device,
-                embedding_batch_size=batch_size,
-                embedding_revision=revision,
-                normalize_embeddings=normalize_embeddings,
-                embedding_dtype=dtype,
-                players=args.players,
-                force=args.force,
-                embedding_model_loader=get_embedding_model,
-                embedding_provider=provider,
-                embedding_dimension=dimension,
-            )
-        except Exception as exc:
-            failures.append((experiment, str(exc)))
-
-    for experiment, error in failures:
-        print(f'FAILED {experiment}: {error}', file=sys.stderr)
-    return 1 if failures else 0
+    print('\nPreparing Twin embeddings: rally')
+    print(f'Memory: {memory_dir}')
+    print(f'Cache:  {cache_dir}')
+    try:
+        prepare_twin_embeddings(
+            memory_dir,
+            cache_dir,
+            model_name,
+            embedding_device=device,
+            embedding_batch_size=batch_size,
+            embedding_revision=revision,
+            normalize_embeddings=normalize_embeddings,
+            embedding_dtype=dtype,
+            players=args.players,
+            force=args.force,
+            embedding_model_loader=get_embedding_model,
+            embedding_provider=provider,
+            embedding_dimension=dimension,
+        )
+    except Exception as exc:
+        print(f'FAILED rally: {exc}', file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

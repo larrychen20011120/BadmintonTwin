@@ -3,9 +3,8 @@
 ShuttleNet training script.
 
 Usage:
-    python Scripts/train_shuttlenet.py --experiment norm
-    python Scripts/train_shuttlenet.py --experiment shifted
-    python Scripts/train_shuttlenet.py --experiment norm --epochs 20 --batch-size 128
+    python Scripts/train_shuttlenet.py
+    python Scripts/train_shuttlenet.py --epochs 20 --batch-size 128
 """
 
 import argparse
@@ -30,17 +29,14 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def resolve_experiment_paths(config, experiment_type, data_dir=None, output_path=None):
-    if experiment_type not in ('norm', 'shifted'):
-        raise ValueError(f'Unsupported experiment type: {experiment_type}')
-
-    split_path = config['paths'][f'{experiment_type}_split']
-    data_dir = data_dir or config['paths']['shuttlenet']['data'][experiment_type]
-    output_path = output_path or config['paths']['shuttlenet']['models'][experiment_type]
+def resolve_training_paths(config, data_dir=None, output_path=None):
+    split_path = config['paths']['rally_split']
+    data_dir = data_dir or config['paths']['shuttlenet']['data']
+    output_path = output_path or config['paths']['shuttlenet']['model']
     return split_path, data_dir, output_path
 
 
-def train_shuttlenet(experiment_type, epochs=None, batch_size=None, lr=None,
+def train_shuttlenet(epochs=None, batch_size=None, lr=None,
                      output_name=None, data_dir=None, encode_length=None,
                      max_ball_round=None, shot_dim=None, area_dim=None,
                      player_dim=None, encode_dim=None, area_num=None,
@@ -52,9 +48,8 @@ def train_shuttlenet(experiment_type, epochs=None, batch_size=None, lr=None,
     if output_name:
         output_path = os.path.join(config['paths']['shuttlenet']['weight_dir'], output_name)
 
-    split_path, data_dir, output_path = resolve_experiment_paths(
+    split_path, data_dir, output_path = resolve_training_paths(
         config,
-        experiment_type,
         data_dir=data_dir,
         output_path=output_path,
     )
@@ -79,7 +74,7 @@ def train_shuttlenet(experiment_type, epochs=None, batch_size=None, lr=None,
         algorithm_runtime_rows(
             config,
             'shuttlenet',
-            experiment=experiment_type,
+            experiment='rally',
             device=device,
             epochs=epochs,
             batch_size=batch_size,
@@ -95,7 +90,7 @@ def train_shuttlenet(experiment_type, epochs=None, batch_size=None, lr=None,
     )
 
     print('=' * 70)
-    print(f'ShuttleNet 模型訓練 - {experiment_type.upper()}')
+    print('ShuttleNet 模型訓練 - RALLY')
     print('=' * 70)
     print(f'資料來源: {data_dir}')
     print(f'輸出模型: {output_path}')
@@ -111,7 +106,6 @@ def train_shuttlenet(experiment_type, epochs=None, batch_size=None, lr=None,
     cmd = [
         'python', shuttlenet_script,
         '--mode', 'train',
-        '--experiment', experiment_type,
         '--merged_csv', config['paths']['merged_csv'],
         '--player_map', config['paths']['player_map'],
         '--split', split_path,
@@ -147,14 +141,14 @@ def list_available_data():
     config = load_config()
     print('\n可用的 ShuttleNet 訓練資料:')
     print('-' * 70)
-    for exp_type, data_dir in config['paths']['shuttlenet']['data'].items():
-        sample_path = os.path.join(data_dir, 'train_samples.pkl')
-        if os.path.exists(sample_path):
-            with open(sample_path, 'rb') as f:
-                payload = pickle.load(f)
-            print(f"  ✓ {exp_type:10s}: {len(payload.get('samples', []))} samples - {data_dir}")
-        else:
-            print(f'  ✗ {exp_type:10s}: 資料不存在 - {data_dir}')
+    data_dir = config['paths']['shuttlenet']['data']
+    sample_path = os.path.join(data_dir, 'train_samples.pkl')
+    if os.path.exists(sample_path):
+        with open(sample_path, 'rb') as f:
+            payload = pickle.load(f)
+        print(f"  ✓ rally: {len(payload.get('samples', []))} samples - {data_dir}")
+    else:
+        print(f'  ✗ rally: 資料不存在 - {data_dir}')
     print('-' * 70)
 
 
@@ -183,14 +177,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例:
-  python Scripts/train_shuttlenet.py --experiment norm
-  python Scripts/train_shuttlenet.py --experiment shifted
-  python Scripts/train_shuttlenet.py --experiment norm --epochs 20 --batch-size 128
+   python Scripts/train_shuttlenet.py
+   python Scripts/train_shuttlenet.py --epochs 20 --batch-size 128
   python Scripts/train_shuttlenet.py --list-data
   python Scripts/train_shuttlenet.py --list-models
         """,
     )
-    parser.add_argument('--experiment', choices=['norm', 'shifted'], help='實驗類型')
     parser.add_argument('--epochs', type=int, help='訓練 epoch 數')
     parser.add_argument('--batch-size', type=int, help='批次大小')
     parser.add_argument('--lr', type=float, help='學習率')
@@ -217,13 +209,7 @@ def main():
     if args.list_models:
         list_trained_models()
         return 0
-    if not args.experiment:
-        parser.print_help()
-        print('\n❌ 錯誤: 必須指定 --experiment，或使用 --list-data / --list-models')
-        return 1
-
     success = train_shuttlenet(
-        experiment_type=args.experiment,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,

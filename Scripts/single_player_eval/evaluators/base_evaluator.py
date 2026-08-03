@@ -49,6 +49,7 @@ class BaseEvaluator(ABC):
         self.skip_first_n = skip_first_n
         self.save_trajectories = save_trajectories
         self.trajectory_output_path = None
+        self.trajectory_run_metadata = {}
         self.style_shift_instruction_mode = style_shift_instruction_mode
         self.prompt_variant = resolve_prompt_variant(
             experiment,
@@ -62,9 +63,14 @@ class BaseEvaluator(ABC):
         self.config = self._load_config()
         
         # 設定路徑
-        self.test_split_path = self.config['paths'][f'{experiment}_split']
+        self.test_split_path = (
+            self.config['paths']['rally_split']
+            if experiment == 'rally'
+            else self.config['paths'][f'{experiment}_split']
+        )
         self.merged_csv_path = self.config['paths']['merged_csv']
         self.player_map_path = self.config['paths']['player_map']
+        self.rally_profiles_path = self.config['paths'].get('rally_profiles')
 
     def print_runtime_parameters(self, algorithm, extra_rows=None, include_llm=False, **effective):
         rows = algorithm_runtime_rows(
@@ -124,20 +130,6 @@ class BaseEvaluator(ABC):
             )
         
         return test_data[self.player_name]
-
-    def get_player_max_sequence_length(self, player_name=None):
-        """Return the maximum number of shots by a player in one rally."""
-        player_name = player_name or self.player_name
-        player_df = self.df[self.df['player'] == player_name]
-        if len(player_df) == 0:
-            return 0
-
-        group_cols = ['match_id']
-        if 'set' in player_df.columns:
-            group_cols.append('set')
-        group_cols.append('rally')
-
-        return int(player_df.groupby(group_cols).size().max())
 
     def build_rollout_info(self, match_id, rally_num, current_state, action=None):
         """Build agent info from rollout state instead of ground-truth rows."""
@@ -285,15 +277,30 @@ class BaseEvaluator(ABC):
         pass
     
     def _save_trajectories_if_needed(self, rally_trajectories):
-        """Save rally trajectory dicts to pickle if --save-trajectories is set."""
+        """Save one JSON object per rally if --save-trajectories is set."""
         if not self.save_trajectories:
             return
-        from Scripts.single_player_eval.trajectory_store import save_trajectories
-
-        safe_name = self.player_name.replace(' ', '_')
-        algo = self.get_algorithm_name()
-        output_path = self.trajectory_output_path or os.path.join(
-            'Experiments', algo, 'trajectories',
-            f"{safe_name}_{self.output_experiment}.pkl"
+        from Scripts.single_player_eval.trajectory_store import (
+            create_run_directory,
+            save_manifest,
+            save_trajectories,
         )
-        save_trajectories(rally_trajectories, output_path)
+
+        algo = self.get_algorithm_name()
+        metadata = {
+            'algorithm': algo,
+            'experiment': self.experiment,
+            'output_experiment': self.output_experiment,
+            **self.trajectory_run_metadata,
+        }
+        output_dir = self.trajectory_output_path
+        if output_dir is None:
+            output_root = os.path.join(
+                'Experiments', algo, 'trajectories', self.output_experiment
+            )
+            run_dir, generation = create_run_directory(output_root)
+            output_dir = os.path.join(run_dir, 'rallies')
+            metadata['generation'] = generation
+            save_manifest(run_dir, metadata)
+
+        save_trajectories(rally_trajectories, output_dir, metadata)

@@ -164,6 +164,43 @@ class MissedTrajectoryTest(unittest.TestCase):
 
 
 class LLMActionValidationTest(unittest.TestCase):
+    def test_two_stage_contract_locks_shot_type_and_validates_areas(self):
+        returned = {
+            "rationale": "Reachable and consistent with Clear evidence.",
+            "outcome": "returned",
+            "shot_type": "Clear",
+        }
+        parsed = BaseAgent.parse_rag_stage1_response(
+            returned, launch=False, available_types={2, 9}
+        )
+        self.assertEqual(parsed["shot_type"], 2)
+        self.assertIsNone(BaseAgent.parse_rag_stage1_response(
+            {**returned, "shot_type": "Serve short"},
+            launch=False,
+            available_types={1, 2},
+        ))
+        self.assertEqual(
+            BaseAgent.parse_rag_stage1_response({
+                "rationale": "Unreachable.",
+                "outcome": "missed",
+                "shot_type": None,
+            })["shot_type"],
+            11,
+        )
+
+        placement = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.15, -0.25)
+        placement.pop("shot_type")
+        stage2 = BaseAgent.parse_rag_stage2_response({
+            "rationale": "Conditioned placement.",
+            "placement": placement,
+        })
+        self.assertIsNotNone(stage2)
+        placement["moving_area"] = "Front Center"
+        self.assertIsNone(BaseAgent.parse_rag_stage2_response({
+            "rationale": "Invalid area.",
+            "placement": placement,
+        }))
+
     def test_invalid_action_is_retried_before_return(self):
         invalid_action = BaseAgent.build_prompt_action(2, 0.2, 0.3, -0.1, -0.2)
         invalid_action["landing_x"] = float(invalid_action["landing_x"])

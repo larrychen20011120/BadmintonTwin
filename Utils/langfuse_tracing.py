@@ -41,14 +41,26 @@ def _get_langfuse_client():
     return _global_tracer
 
 
-def simplify_naive_rag_experiences(experiences):
-    """NaiveRAG: Show complete state snapshot for each retrieved case.
+def simplify_naive_rag_experiences(experiences, stage=None):
+    """NaiveRAG: Show only the case description exposed to this stage.
 
-    Each case is a single historical point: where the player stood, what the
-    opponent hit, where the ball landed, and how the player responded.
+    Stage 1 omits landing and recovery. Stage 2 contains the complete action.
     """
     simplified = []
     for exp in experiences:
+        verbalization = exp.get("case_verbalization", {})
+        description = verbalization.get(f"{stage}_description") if stage else None
+        if stage is not None:
+            simplified.append({
+                "record_id": exp.get("record_id"),
+                "similarity": round(exp.get("similarity", 0), 4),
+                "distance": round(exp.get("distance", 0), 4),
+                f"{stage}_description": (
+                    description or "Stage-specific description unavailable."
+                ),
+            })
+            continue
+
         player_type_val = exp.get("player_type")
         player_type_name = INDEX2EN_SHOT.get(int(player_type_val), "?") if player_type_val is not None else "?"
         ps = exp.get("player_score")
@@ -72,14 +84,26 @@ def simplify_naive_rag_experiences(experiences):
     return simplified
 
 
-def simplify_timerag_windows(windows):
-    """TimeRAG: Show time-window evolution (t-window_size .. t) for each retrieved window.
+def simplify_timerag_windows(windows, stage=None):
+    """TimeRAG: Show only the window description exposed to this stage.
 
-    Each window captures a sequence of consecutive states leading to an action.
-    Padding steps (before the rally started) are marked explicitly.
+    Stage 1 keeps completed history but hides the final placement decision.
     """
     simplified = []
     for win in windows:
+        verbalization = win.get("case_verbalization", {})
+        description = verbalization.get(f"{stage}_description") if stage else None
+        if stage is not None:
+            simplified.append({
+                "window_id": win.get("window_id"),
+                "similarity": round(win.get("similarity", 0), 4),
+                "distance": round(win.get("distance", 0), 4),
+                f"{stage}_description": (
+                    description or "Stage-specific description unavailable."
+                ),
+            })
+            continue
+
         window_steps = []
         for i, ws in enumerate(win.get("window_states", [])):
             if ws.get("padding"):
@@ -118,36 +142,19 @@ def simplify_timerag_windows(windows):
 
 
 def simplify_twin_segments(segments):
-    """Twin (I-MSDP): Show multi-scale trajectory segments with step-by-step chain.
-
-    Each segment is a contiguous suffix of length `scale` steps from a historical
-    rally, showing the full decision chain: what the opponent hit, where the ball
-    landed, and how the player responded at each step.
-    """
-    simplified = []
-    for seg in segments:
-        trajectory = []
-        for i, step in enumerate(seg.get("steps", [])):
-            ps = step.get("player_score")
-            os_ = step.get("opponent_score")
-            trajectory.append({
-                "step": i + 1,
-                "opponent_hit": step.get("opponent_type_name", "?"),
-                "ball_landing_at": step.get("hit_position_area", "?"),
-                "player_at": step.get("player_location_area", "?"),
-                "player_responded": step.get("player_type_name", "?"),
-                "player_hit_to": step.get("landing_area", "?"),
-                "player_moved_to": step.get("movement_area", "?"),
-                "score": f"{int(ps)}-{int(os_)}" if ps is not None and os_ is not None else "?-?",
-            })
-
-        simplified.append({
-            "scale": seg.get("scale", 0),
-            "similarity": round(seg.get("similarity", 0), 4),
-            "distance": round(seg.get("total_distance", 0), 4),
-            "trajectory": trajectory,
-        })
-    return simplified
+    """Summarize current aspect-memory retrieval results."""
+    return [
+        {
+            "memory_id": memory.get("memory_id"),
+            "shot_type": memory.get("player_type"),
+            "outcome": memory.get("outcome_type"),
+            "score": round(memory.get("score", 0), 4),
+            "state_similarity": round(memory.get("state_similarity", 0), 4),
+            "semantic_similarity": round(memory.get("semantic_similarity", 0), 4),
+            "semantic_text": memory.get("semantic_text", ""),
+        }
+        for memory in segments
+    ]
 
 
 class BadmintonTracer:
@@ -201,7 +208,7 @@ class BadmintonTracer:
             print(f"[Langfuse] start_trace error: {e}")
             return None
 
-    def log_retrieval(self, query, results, result_type, latency_ms=0):
+    def log_retrieval(self, query, results, result_type, latency_ms=0, stage=None):
         if not self.enabled or self._active_trace is None:
             return
 
@@ -214,16 +221,16 @@ class BadmintonTracer:
             }
 
             if result_type == "naive_rag":
-                simplified = simplify_naive_rag_experiences(results)
+                simplified = simplify_naive_rag_experiences(results, stage=stage)
             elif result_type == "timerag":
-                simplified = simplify_timerag_windows(results)
+                simplified = simplify_timerag_windows(results, stage=stage)
             elif result_type == "twin":
                 simplified = simplify_twin_segments(results)
             else:
                 simplified = results
 
             span = self._active_trace.start_observation(
-                name="retrieval",
+                name=f"{stage}-retrieval" if stage else "retrieval",
                 input={"query": query_simple},
                 output={"count": len(simplified), "cases": simplified},
                 metadata={"latency_ms": latency_ms, "type": result_type},
@@ -232,7 +239,8 @@ class BadmintonTracer:
         except Exception as e:
             print(f"[Langfuse] log_retrieval error: {e}")
 
-    def log_generation(self, system_prompt, user_prompt, response, latency_ms=0, raw_llm_output="", usage=None):
+    def log_generation(self, system_prompt, user_prompt, response, latency_ms=0,
+                       raw_llm_output="", usage=None, stage=None):
         if not self.enabled or self._active_trace is None:
             return
 
@@ -241,13 +249,15 @@ class BadmintonTracer:
             if usage:
                 metadata["usage"] = usage
 
+            prompt_messages = []
+            if system_prompt:
+                prompt_messages.append({"role": "system", "content": system_prompt})
+            prompt_messages.append({"role": "user", "content": user_prompt})
+
             gen = self._active_trace.start_observation(
-                name="llm-generation",
+                name=f"{stage}-generation" if stage else "llm-generation",
                 as_type="generation",
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                input=prompt_messages,
                 output={
                     "parsed": response,
                     "raw_output": raw_llm_output or "",

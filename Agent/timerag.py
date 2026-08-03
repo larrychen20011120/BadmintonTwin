@@ -136,7 +136,7 @@ class TimeRAGVerbalizer:
         return lines
 
     def build_window_verbalization(self, win):
-        """Build the rank-independent text stored with one database window."""
+        """Build stage-specific rank-independent text for one database window."""
         ws_list = win.get('window_states', [])
         act = win.get('action', {})
 
@@ -153,14 +153,15 @@ class TimeRAGVerbalizer:
         if not valid_ws:
             return {
                 'num_shots': 0,
-                'description': "No valid window states."
+                'stage1_description': "No valid window states.",
+                'stage2_description': "No valid window states.",
             }
 
-        first_ws = valid_ws[0]
-        rally = int(first_ws.get('rally', 0))
-        first_ball_round = int(first_ws.get('ball_round', 1))
-        ps = int(first_ws.get('player_score', 0))
-        os = int(first_ws.get('opponent_score', 0))
+        decision_ws = valid_ws[-1]
+        rally = int(decision_ws.get('rally', 0))
+        decision_ball_round = int(decision_ws.get('ball_round', 1))
+        ps = int(decision_ws.get('player_score', 0))
+        os = int(decision_ws.get('opponent_score', 0))
         score_diff = ps - os
         if score_diff > 0:
             score_text = f"I lead by {score_diff} points."
@@ -169,15 +170,15 @@ class TimeRAGVerbalizer:
         else:
             score_text = "The score is tied."
 
-        shots_played = first_ball_round - 1
+        shots_played = decision_ball_round - 1
         if shots_played == 0:
-            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {first_ball_round}. This is the first shot of the rally."
+            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {decision_ball_round}. This is the first shot of the rally."
         else:
-            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {first_ball_round}. {shots_played} shots have been played in this rally."
+            header = f"Current score: {ps}-{os}. {score_text}\nMatch Context: Rally {rally}, currently at Shot {decision_ball_round}. {shots_played} shots have been played in this rally."
 
-        lines = [header, ""]
+        stage2_lines = [header, ""]
         for ws in valid_ws:
-            lines.extend(self._format_stroke_lines(ws))
+            stage2_lines.extend(self._format_stroke_lines(ws))
 
         shot_type = int(act.get('player_type', 0))
         if shot_type > 0:
@@ -188,27 +189,56 @@ class TimeRAGVerbalizer:
                 act.get('moving_x'),
                 act.get('moving_y'),
             )
-            lines.append(BaseAgent.format_prompt_action(prompt_action))
+            stage2_lines.append(BaseAgent.format_prompt_action(prompt_action))
+
+        stage1_lines = [header, ""]
+        for state in valid_ws[:-1]:
+            stage1_lines.extend(self._format_stroke_lines(state))
+        pending = dict(decision_ws)
+        pending['player_type'] = 0
+        stage1_lines.extend(self._format_stroke_lines(pending, is_current=True))
+        if shot_type == 11:
+            stage1_lines.append("Outcome: Missed; no legal shot was completed.")
+        else:
+            stage1_lines.append(f"Outcome: Returned with {self._shot_name(shot_type)}.")
 
         return {
             'num_shots': len(valid_ws),
-            'description': "\n".join(lines)
+            'stage1_description': "\n".join(stage1_lines),
+            'stage2_description': "\n".join(stage2_lines),
         }
 
-    def format_window_turn_based(self, win, idx):
-        """Attach the runtime retrieval rank to a precomputed window."""
+    def format_stage2_case(self, win, idx):
+        """Attach runtime retrieval data to a cached Stage 2 window."""
         verbalization = win.get('case_verbalization')
         if verbalization is None:
             verbalization = self.build_window_verbalization(win)
         return {
             'index': idx,
             'num_shots': verbalization['num_shots'],
-            'description': verbalization['description'],
+            'stage2_description': verbalization['stage2_description'],
         }
 
-    def build_cases_list(self, windows):
-        """Build a list of formatted windows in turn-based format."""
-        return [self.format_window_turn_based(win, i) for i, win in enumerate(windows, 1)]
+    def build_stage2_cases(self, windows):
+        """Build complete-action windows for Stage 2 placement generation."""
+        return [self.format_stage2_case(win, i) for i, win in enumerate(windows, 1)]
+
+    def format_stage1_case(self, window, idx):
+        """Render a temporal case while hiding the final placement decision."""
+        verbalization = window.get('case_verbalization')
+        if verbalization is None:
+            verbalization = self.build_window_verbalization(window)
+        return {
+            'index': idx,
+            'case_id': int(window['window_id']),
+            'stage1_description': verbalization['stage1_description'],
+        }
+
+    def build_stage1_cases(self, windows):
+        return [
+            self.format_stage1_case(window, idx)
+            for idx, window in enumerate(windows, 1)
+        ]
 
     def build_trajectory_text(self, state_history, current_state):
         """Build natural turn-based trajectory text for current rally."""
@@ -235,7 +265,7 @@ class TimeRAGVerbalizer:
 
     def build_prompt_context_nl(self, state_dict, windows, launch=False, window_size=3, state_history=None):
         """Build full prompt context dict for Jinja2."""
-        formatted_cases = self.build_cases_list(windows)
+        formatted_cases = self.build_stage2_cases(windows)
 
         if state_history and len(state_history) > 0:
             full_history = state_history + [state_dict]
@@ -276,7 +306,7 @@ class TimeRAGVerbalizer:
         )
         context.update({
             'normal_cases': context['cases'],
-            'miss_cases': self.build_cases_list(miss_windows),
+            'miss_cases': self.build_stage2_cases(miss_windows),
             'normal_top_k': len(normal_windows),
             'miss_top_k': len(miss_windows),
         })
@@ -295,11 +325,11 @@ class TimeRAGDatabase:
     Each window contains consecutive ball-round states from both players with
     action_t as the target player's decision to predict.
     """
-    schema_version = 7
-    verbalization_schema_version = 2
+    schema_version = 10
+    verbalization_schema_version = 3
     missed_coordinate_keys = ('landing_x', 'landing_y', 'moving_x', 'moving_y')
     
-    def __init__(self, df, player_name, player_id, window_size=3):
+    def __init__(self, df, player_name, player_id, window_size=3, build_metadata=None):
         """
         Initialize database with windowed data for a specific player.
         
@@ -312,9 +342,21 @@ class TimeRAGDatabase:
         self.player_name = player_name
         self.player_id = player_id
         self.window_size = window_size
+        self.build_metadata = dict(build_metadata or {
+            'dataset': 'rally',
+            'split_sha256': 'ad-hoc',
+            'profiles_sha256': None,
+            'window_size': window_size,
+        })
         
         # Keep the full rally data so each window can include both players.
         self.data = df.copy()
+        self.data['ball_distance_x'] = (
+            self.data['hit_x'].astype(float) - self.data['player_location_x'].astype(float)
+        )
+        self.data['ball_distance_y'] = (
+            self.data['hit_y'].astype(float) - self.data['player_location_y'].astype(float)
+        )
         miss_mask = self.data['player_type'].astype(int) == 11
         self.data.loc[miss_mask, list(self.missed_coordinate_keys)] = np.nan
         
@@ -322,7 +364,8 @@ class TimeRAGDatabase:
         self.continuous_keys = [
             'player_location_x', 'player_location_y',
             'hit_x', 'hit_y',
-            'opponent_location_x', 'opponent_location_y'
+            'opponent_location_x', 'opponent_location_y',
+            'ball_distance_x', 'ball_distance_y',
         ]
         
         # Define discrete features for each state (for Hamming distance)
@@ -333,7 +376,8 @@ class TimeRAGDatabase:
         
         # Define metadata keys
         self.metadata_keys = [
-            'rally', 'ball_round', 'player_score', 'opponent_score', 'score_status',
+            'match_id', 'set', 'rally', 'ball_round',
+            'player_score', 'opponent_score', 'score_status',
             'ball_distance', 'ball_distance_x', 'ball_distance_y',
             'opponent_move_x', 'opponent_move_y'
         ]
@@ -342,6 +386,7 @@ class TimeRAGDatabase:
         self.windows = []
         self.windows_continuous = []  # [n_windows, window_size, n_continuous]
         self.windows_discrete = []    # [n_windows, window_size, n_discrete]
+        self.windows_valid_masks = [] # [n_windows, window_size]
         self.windows_actions = []     # [n_windows, n_action_features]
         self.windows_metadata = []    # List of dicts
         
@@ -376,14 +421,16 @@ class TimeRAGDatabase:
 
         return 1.0 if bool(self._state_value(state, 'is_target_turn', True)) else 0.0
 
-    def build_feature_window(self, window_states):
+    def build_feature_window(self, window_states, include_mask=False):
         """Convert a padded state window into retrieval feature arrays."""
         window_continuous = np.zeros((self.window_size, len(self.continuous_keys)), dtype=np.float32)
         window_discrete = np.zeros((self.window_size, len(self.discrete_keys)), dtype=np.float32)
+        valid_mask = np.zeros(self.window_size, dtype=bool)
 
         for w, state in enumerate(window_states[-self.window_size:]):
-            if state is None:
+            if state is None or bool(state.get('padding', False)):
                 continue
+            valid_mask[w] = True
 
             for j, key in enumerate(self.continuous_keys):
                 window_continuous[w, j] = self._safe_float(self._state_value(state, key, 0.0))
@@ -391,14 +438,16 @@ class TimeRAGDatabase:
             for j, key in enumerate(self.discrete_keys):
                 window_discrete[w, j] = self._safe_float(self._state_value(state, key, 0.0))
 
+        if include_mask:
+            return window_continuous, window_discrete, valid_mask
         return window_continuous, window_discrete
     
     def _build_windows(self):
         """Build total-ball-round windows from full rally data."""
-        group_cols = ['match_id']
-        if 'set' in self.data.columns:
-            group_cols.append('set')
-        group_cols.append('rally')
+        missing = sorted({'match_id', 'set', 'rally'} - set(self.data.columns))
+        if missing:
+            raise ValueError(f"TimeRAG data is missing rally key columns: {missing}")
+        group_cols = ['match_id', 'set', 'rally']
         grouped = self.data.groupby(group_cols)
 
         for group_key, rally_df in grouped:
@@ -406,7 +455,7 @@ class TimeRAGDatabase:
                 group_key = (group_key,)
             match_id = group_key[0]
             rally_num = group_key[-1]
-            set_num = group_key[1] if 'set' in self.data.columns and len(group_key) > 2 else None
+            set_num = group_key[1]
             rally_df = rally_df.sort_values('ball_round').reset_index(drop=True)
             
             # Skip rallies that are too short
@@ -451,14 +500,16 @@ class TimeRAGDatabase:
                     'opponent_score': float(current_row['opponent_score']),
                     'score_status': float(current_row['player_score']) - float(current_row['opponent_score'])
                 }
-                if set_num is not None:
-                    metadata['set'] = int(set_num)
+                metadata['set'] = int(set_num)
 
                 window_continuous, window_discrete = self.build_feature_window(window_states)
                 
                 self.windows.append(window_states)
                 self.windows_continuous.append(window_continuous)
                 self.windows_discrete.append(window_discrete)
+                self.windows_valid_masks.append(
+                    np.asarray([state is not None for state in window_states], dtype=bool)
+                )
                 self.windows_actions.append(action)
                 self.windows_metadata.append(metadata)
         
@@ -466,6 +517,7 @@ class TimeRAGDatabase:
         if len(self.windows_continuous) > 0:
             self.windows_continuous = np.array(self.windows_continuous)  # [n_windows, window_size, n_continuous]
             self.windows_discrete = np.array(self.windows_discrete)      # [n_windows, window_size, n_discrete]
+            self.windows_valid_masks = np.array(self.windows_valid_masks, dtype=bool)
 
         self._build_window_stores()
 
@@ -515,7 +567,7 @@ class TimeRAGDatabase:
         
         return continuous_dist + discrete_dist
     
-    def _compute_window_dtw_distance(self, query_continuous, query_discrete):
+    def _compute_window_dtw_distance(self, query_continuous, query_discrete, query_valid_mask=None):
         """
         Compute DTW distance between query window and all database windows.
         
@@ -528,6 +580,10 @@ class TimeRAGDatabase:
         """
         n_windows = len(self.windows)
         distances = np.zeros(n_windows)
+        if query_valid_mask is None:
+            query_valid_mask = np.ones(self.window_size, dtype=bool)
+        else:
+            query_valid_mask = np.asarray(query_valid_mask, dtype=bool)
         
         for w in range(n_windows):
             # Compute DTW distance for this window
@@ -538,6 +594,13 @@ class TimeRAGDatabase:
             # But we compute accumulated distance
             dtw_dist = 0.0
             for t in range(self.window_size):
+                query_valid = bool(query_valid_mask[t])
+                database_valid = bool(self.windows_valid_masks[w][t])
+                if not query_valid and not database_valid:
+                    continue
+                if query_valid != database_valid:
+                    dtw_dist += 1.0
+                    continue
                 point_dist = self._compute_point_distance(
                     query_continuous[t], query_discrete[t],
                     db_continuous[t], db_discrete[t]
@@ -626,7 +689,8 @@ class TimeRAGDatabase:
             for window_id in range(len(self.windows))
         ]
     
-    def _retrieve_from_indices(self, query_window_continuous, query_window_discrete, indices, top_k=5):
+    def _retrieve_from_indices(self, query_window_continuous, query_window_discrete,
+                               indices, top_k=5, query_valid_mask=None):
         """
         Retrieve top-k similar windows using DTW distance.
 
@@ -642,7 +706,11 @@ class TimeRAGDatabase:
         query_continuous = np.array(query_window_continuous, dtype=np.float32)
         query_discrete = np.array(query_window_discrete, dtype=np.float32)
 
-        distances = self._compute_window_dtw_distance(query_continuous, query_discrete)
+        distances = self._compute_window_dtw_distance(
+            query_continuous,
+            query_discrete,
+            query_valid_mask=query_valid_mask,
+        )
         if len(indices) == 0 or len(distances) == 0:
             return []
 
@@ -661,27 +729,32 @@ class TimeRAGDatabase:
 
         return results
 
-    def retrieve(self, query_window_continuous, query_window_discrete, top_k=5):
+    def retrieve(self, query_window_continuous, query_window_discrete, top_k=5,
+                 query_valid_mask=None):
         """Retrieve top-k similar windows using the classic all-window store."""
         return self._retrieve_from_indices(
             query_window_continuous,
             query_window_discrete,
             self.window_stores.get('classic', list(range(len(self.windows_actions)))),
             top_k=top_k,
+            query_valid_mask=query_valid_mask,
         )
 
-    def retrieve_dual(self, query_window_continuous, query_window_discrete, normal_top_k=8, miss_top_k=5):
+    def retrieve_dual(self, query_window_continuous, query_window_discrete,
+                      normal_top_k=8, miss_top_k=5, query_valid_mask=None):
         normal_windows = self._retrieve_from_indices(
             query_window_continuous,
             query_window_discrete,
             self.window_stores.get('normal', []),
             top_k=normal_top_k,
+            query_valid_mask=query_valid_mask,
         )
         miss_windows = self._retrieve_from_indices(
             query_window_continuous,
             query_window_discrete,
             self.window_stores.get('miss', []),
             top_k=miss_top_k,
+            query_valid_mask=query_valid_mask,
         )
         nearest_normal = normal_windows[0] if normal_windows else {}
         nearest_miss = miss_windows[0] if miss_windows else {}
@@ -701,6 +774,107 @@ class TimeRAGDatabase:
             }
         }
 
+    def compute_distances(self, query_window_continuous, query_window_discrete,
+                          query_valid_mask=None):
+        """Compute one canonical distance vector for all player windows."""
+        query_continuous = np.asarray(query_window_continuous, dtype=np.float32)
+        query_discrete = np.asarray(query_window_discrete, dtype=np.float32)
+        return self._compute_window_dtw_distance(
+            query_continuous, query_discrete, query_valid_mask=query_valid_mask
+        )
+
+    def _retrieve_from_distances(self, distances, indices, top_k):
+        candidate_indices = np.asarray(list(indices), dtype=int)
+        if len(candidate_indices) == 0 or len(distances) == 0 or top_k <= 0:
+            return []
+        order = np.lexsort((candidate_indices, distances[candidate_indices]))
+        selected = candidate_indices[order[:top_k]]
+        results = []
+        for window_id in selected:
+            window_data = self._build_static_window_data(int(window_id))
+            window_data['case_verbalization'] = dict(
+                self.window_verbalizations[int(window_id)]
+            )
+            window_data['distance'] = float(distances[int(window_id)])
+            window_data['similarity'] = float(np.exp(-distances[int(window_id)]))
+            results.append(window_data)
+        return results
+
+    @staticmethod
+    def _legal_return_types(launch):
+        return {1, 10} if launch else set(range(2, 10))
+
+    def available_shot_types(self, launch=False):
+        legal = self._legal_return_types(launch)
+        present = {
+            int(float(action.get('player_type', 0)))
+            for action in self.windows_actions
+        }
+        return tuple(sorted(legal & present))
+
+    def retrieve_stage1(
+        self,
+        query_window_continuous,
+        query_window_discrete,
+        normal_top_k=10,
+        miss_top_k=5,
+        launch=False,
+        query_valid_mask=None,
+    ):
+        distances = self.compute_distances(
+            query_window_continuous,
+            query_window_discrete,
+            query_valid_mask=query_valid_mask,
+        )
+        legal = self._legal_return_types(launch)
+        normal_ids = [
+            window_id
+            for window_id, action in enumerate(self.windows_actions)
+            if int(float(action.get('player_type', 0))) in legal
+        ]
+        miss_ids = self.window_stores.get('miss', [])
+        return {
+            'normal_cases': self._retrieve_from_distances(
+                distances, normal_ids, normal_top_k
+            ),
+            'miss_cases': self._retrieve_from_distances(
+                distances, miss_ids, miss_top_k
+            ),
+            'distances': distances,
+        }
+
+    def retrieve_by_shot_type(
+        self,
+        query_window_continuous,
+        query_window_discrete,
+        shot_type,
+        top_k=10,
+        distances=None,
+        query_valid_mask=None,
+    ):
+        shot_type = int(shot_type)
+        if shot_type == 11:
+            raise ValueError('Missed shot does not have placement evidence')
+        if distances is None:
+            distances = self.compute_distances(
+                query_window_continuous,
+                query_window_discrete,
+                query_valid_mask=query_valid_mask,
+            )
+        coordinate_keys = ('landing_x', 'landing_y', 'moving_x', 'moving_y')
+        indices = [
+            window_id
+            for window_id, action in enumerate(self.windows_actions)
+            if int(float(action.get('player_type', 0))) == shot_type
+            and all(
+                action.get(key) is not None
+                and np.isfinite(float(action[key]))
+                and -1.0 <= float(action[key]) <= 1.0
+                for key in coordinate_keys
+            )
+        ]
+        return self._retrieve_from_distances(distances, indices, top_k)
+
     def validate(self):
         if self.schema_version != type(self).schema_version:
             raise ValueError(f"Unsupported TimeRAG schema version: {self.schema_version}")
@@ -709,6 +883,12 @@ class TimeRAGDatabase:
                 f"Unsupported TimeRAG verbalization schema version: "
                 f"{self.verbalization_schema_version}"
             )
+        if self.build_metadata.get('dataset') != 'rally':
+            raise ValueError("TimeRAG database was not built from the rally dataset")
+        if not self.build_metadata.get('split_sha256'):
+            raise ValueError("TimeRAG database is missing rally split provenance")
+        if self.build_metadata.get('window_size') != self.window_size:
+            raise ValueError("TimeRAG build metadata window_size does not match the database")
         if not isinstance(self.window_size, int) or self.window_size < 1:
             raise ValueError("TimeRAG window_size must be a positive integer")
 
@@ -718,6 +898,7 @@ class TimeRAGDatabase:
         aligned_lengths = {
             'continuous': len(self.windows_continuous),
             'discrete': len(self.windows_discrete),
+            'valid_masks': len(self.windows_valid_masks),
             'actions': len(self.windows_actions),
             'metadata': len(self.windows_metadata),
             'verbalizations': len(self.window_verbalizations),
@@ -727,10 +908,13 @@ class TimeRAGDatabase:
             raise ValueError(f"TimeRAG window data is not aligned: expected {count}, got {mismatched}")
         expected_continuous_shape = (count, self.window_size, len(self.continuous_keys))
         expected_discrete_shape = (count, self.window_size, len(self.discrete_keys))
+        expected_mask_shape = (count, self.window_size)
         if tuple(np.asarray(self.windows_continuous).shape) != expected_continuous_shape:
             raise ValueError("TimeRAG continuous feature shape does not match its schema")
         if tuple(np.asarray(self.windows_discrete).shape) != expected_discrete_shape:
             raise ValueError("TimeRAG discrete feature shape does not match its schema")
+        if tuple(np.asarray(self.windows_valid_masks).shape) != expected_mask_shape:
+            raise ValueError("TimeRAG valid-mask shape does not match its schema")
         if any(len(window) != self.window_size for window in self.windows):
             raise ValueError("TimeRAG raw window length does not match window_size")
 
@@ -742,8 +926,12 @@ class TimeRAGDatabase:
             num_shots = verbalization.get('num_shots')
             if not isinstance(num_shots, int) or not 0 <= num_shots <= self.window_size:
                 raise ValueError(f"TimeRAG verbalization {window_id} has invalid num_shots")
-            if not isinstance(verbalization.get('description'), str) or not verbalization['description'].strip():
-                raise ValueError(f"TimeRAG verbalization {window_id} has no description")
+            for stage in ('stage1', 'stage2'):
+                description = verbalization.get(f'{stage}_description')
+                if not isinstance(description, str) or not description.strip():
+                    raise ValueError(
+                        f"TimeRAG verbalization {window_id} has no {stage} description"
+                    )
 
         classic = self.window_stores.get('classic')
         normal = self.window_stores.get('normal')
@@ -771,6 +959,13 @@ class TimeRAGDatabase:
                 raise ValueError("TimeRAG missed-shot action coordinates must all be null")
         for window in self.windows:
             for state in window:
+                if state is not None:
+                    expected_dx = float(state['hit_x']) - float(state['player_location_x'])
+                    expected_dy = float(state['hit_y']) - float(state['player_location_y'])
+                    if not np.isclose(float(state['ball_distance_x']), expected_dx):
+                        raise ValueError("TimeRAG ball_distance_x does not match hit_x - player_location_x")
+                    if not np.isclose(float(state['ball_distance_y']), expected_dy):
+                        raise ValueError("TimeRAG ball_distance_y does not match hit_y - player_location_y")
                 if state is None or int(float(state.get('player_type', 0))) != 11:
                     continue
                 if any(not pd.isna(state.get(key)) for key in self.missed_coordinate_keys):
@@ -783,6 +978,12 @@ class TimeRAGDatabase:
             raise ValueError("TimeRAG continuous features are assigned to the wrong windows")
         if not np.array_equal(np.asarray(self.windows_discrete), rebuilt_discrete):
             raise ValueError("TimeRAG discrete features are assigned to the wrong windows")
+        rebuilt_masks = np.asarray([
+            [state is not None for state in window]
+            for window in self.windows
+        ], dtype=bool)
+        if not np.array_equal(np.asarray(self.windows_valid_masks), rebuilt_masks):
+            raise ValueError("TimeRAG valid masks are assigned to the wrong windows")
         expected_stats = {
             'total_count': count,
             'normal_count': len(expected_normal),
@@ -802,9 +1003,11 @@ class TimeRAGDatabase:
                 'player_name': self.player_name,
                 'player_id': self.player_id,
                 'window_size': self.window_size,
+                'build_metadata': self.build_metadata,
                 'windows': self.windows,
                 'windows_continuous': self.windows_continuous,
                 'windows_discrete': self.windows_discrete,
+                'windows_valid_masks': self.windows_valid_masks,
                 'windows_actions': self.windows_actions,
                 'windows_metadata': self.windows_metadata,
                 'window_verbalizations': self.window_verbalizations,
@@ -835,7 +1038,7 @@ class TimeRAGDatabase:
         verbalization_schema_version = data.get('verbalization_schema_version')
         if schema_version != cls.schema_version or verbalization_schema_version != cls.verbalization_schema_version:
             raise ValueError(
-                "This TimeRAG database does not contain compatible offline verbalizations. "
+                "This TimeRAG database is not compatible with the rally dataset. "
                 "Rebuild it with Scripts/prepare_all_data.py --timerag."
             )
         
@@ -846,9 +1049,11 @@ class TimeRAGDatabase:
         instance.player_name = data['player_name']
         instance.player_id = data['player_id']
         instance.window_size = data['window_size']
+        instance.build_metadata = data.get('build_metadata', {})
         instance.windows = data['windows']
         instance.windows_continuous = data['windows_continuous']
         instance.windows_discrete = data['windows_discrete']
+        instance.windows_valid_masks = data['windows_valid_masks']
         instance.windows_actions = data['windows_actions']
         instance.windows_metadata = data['windows_metadata']
         instance.window_verbalizations = data['window_verbalizations']
@@ -872,8 +1077,8 @@ class TimeRAGAgent(BaseAgent):
     
     def __init__(self, player_name, database, model_name=None,
                  api_key=None, host=None, port=None, base_url=None,
-                 host_url=None, top_k=5, normal_top_k=None, miss_top_k=None,
-                 retrieval_mode="classic", enable_tracing=True, prompt_variant="norm"):
+                 host_url=None, normal_top_k=10, miss_top_k=5,
+                 conditioned_top_k=10, enable_tracing=True, prompt_variant="norm"):
         """
         Initialize TimeRAG Agent.
         
@@ -890,16 +1095,20 @@ class TimeRAGAgent(BaseAgent):
         
         self.database = database
         self.window_size = database.window_size
-        self.top_k = top_k
-        self.normal_top_k = normal_top_k if normal_top_k is not None else top_k
-        self.miss_top_k = miss_top_k if miss_top_k is not None else max(1, min(5, top_k))
-        self.retrieval_mode = retrieval_mode
+        self.normal_top_k = int(normal_top_k)
+        self.miss_top_k = int(miss_top_k)
+        self.conditioned_top_k = int(conditioned_top_k)
+        if min(self.normal_top_k, self.miss_top_k, self.conditioned_top_k) < 1:
+            raise ValueError('Two-stage retrieval top-k values must all be positive')
+        self.retrieval_architecture = 'two_stage_v1'
         self.prompt_variant = prompt_variant
         self.tracer = BadmintonTracer("timerag", player_name, enable_tracing)
         
         # Trajectory tracking for current rally (full state_dicts)
         self.trajectory = []
         self._current_rally = None
+        self._last_case_ids = []
+        self.last_decision_trace = None
         
         # Initialize verbalizer
         self.verbalizer = create_timerag_verbalizer()
@@ -917,25 +1126,17 @@ class TimeRAGAgent(BaseAgent):
         # Load prompts
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "timerag")
-        template_names = {
-            ("classic", "norm"): "norm.jinja",
-            ("classic", "shifted"): "shift.jinja",
-            ("dual_db", "norm"): "norm.jinja",
-            ("dual_db", "shifted"): "shift.jinja",
-        }
-        template_key = (retrieval_mode, prompt_variant)
-        if template_key not in template_names:
-            raise ValueError(
-                f"Unsupported retrieval_mode/prompt_variant: {retrieval_mode}/{prompt_variant}"
-            )
-        user_template_name = template_names[template_key]
+        template_suffix = 'instruct' if prompt_variant == 'shifted' else 'norm'
+        if prompt_variant not in {'norm', 'shifted'}:
+            raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
 
         with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
         
-        # Load user template
-        with open(os.path.join(prompt_dir, user_template_name), "r") as f:
-            self.user_template = Template(f.read())
+        with open(os.path.join(prompt_dir, f'stage1_{template_suffix}.jinja'), "r") as f:
+            self.stage1_template = Template(f.read())
+        with open(os.path.join(prompt_dir, f'stage2_{template_suffix}.jinja'), "r") as f:
+            self.stage2_template = Template(f.read())
         
         # State history buffer for building windows
         self.state_history = []
@@ -957,6 +1158,64 @@ class TimeRAGAgent(BaseAgent):
             stroke_data['turn_role'] = 'target' if stroke_data['is_target_turn'] else 'opponent'
             normalized.append(stroke_data)
         return normalized
+
+    def _case_references(self, cases, stage, store, conditioned_shot_type=None):
+        references = []
+        for rank, case in enumerate(cases, 1):
+            reference = {
+                'database_player': self.player_name,
+                'stage': int(stage),
+                'store': store,
+                'case_id': int(case['window_id']),
+                'rank': rank,
+                'distance': float(case['distance']),
+            }
+            if conditioned_shot_type is not None:
+                reference['conditioned_shot_type'] = int(conditioned_shot_type)
+            references.append(reference)
+        return references
+
+    @staticmethod
+    def _nearest_case(cases):
+        if not cases:
+            return None
+        return min(cases, key=lambda case: (float(case['distance']), int(case['window_id'])))
+
+    def _stage1_fallback(self, retrieval, launch):
+        candidates = retrieval['normal_cases'] + retrieval['miss_cases']
+        nearest = self._nearest_case(candidates)
+        if nearest is not None:
+            shot_type = int(float(nearest['action']['player_type']))
+            outcome = 'missed' if shot_type == 11 else 'returned'
+            return {
+                'rationale': 'Stage 1 fallback copied the nearest legal temporal evidence outcome.',
+                'outcome': outcome,
+                'shot_type': shot_type,
+            }, 'fallback_nearest_case'
+        return {
+            'rationale': 'Stage 1 fallback used the deterministic legal default.',
+            'outcome': 'returned',
+            'shot_type': 1 if launch else 2,
+        }, 'fallback_default'
+
+    def _stage2_fallback(self, conditioned_cases):
+        nearest = self._nearest_case(conditioned_cases)
+        if nearest is None:
+            return {
+                'rationale': 'Stage 2 fallback used neutral placement because no conditioned evidence exists.',
+                'landing_x': 0.0,
+                'landing_y': 0.0,
+                'moving_x': 0.0,
+                'moving_y': 0.0,
+            }, 'fallback_neutral'
+        action = nearest['action']
+        return {
+            'rationale': 'Stage 2 fallback copied placement from the nearest shot-conditioned window.',
+            'landing_x': float(action['landing_x']),
+            'landing_y': float(action['landing_y']),
+            'moving_x': float(action['moving_x']),
+            'moving_y': float(action['moving_y']),
+        }, 'fallback_nearest_conditioned_case'
 
     def _build_state_dict_from_env(self, state, info):
         """Build a stroke dict from the current rollout state."""
@@ -1021,13 +1280,15 @@ class TimeRAGAgent(BaseAgent):
         if len(query_states) < self.window_size:
             query_states = [None] * (self.window_size - len(query_states)) + query_states
 
-        return self.database.build_feature_window(query_states)
+        return self.database.build_feature_window(query_states, include_mask=True)
 
     def reset_history(self):
         """Reset state history and trajectory tracking."""
         self.state_history = []
         self.trajectory = []
         self._current_rally = None
+        self._last_case_ids = []
+        self.last_decision_trace = None
 
     def predict(self, state, info, launch):
         """
@@ -1042,34 +1303,41 @@ class TimeRAGAgent(BaseAgent):
             action tuple and reasoning
         """
         state_dict = self._build_state_dict_from_env(state, info)
-
-        # Build query window
-        rally_history = info.get('rally_history')
-        query_continuous, query_discrete = self._build_query_window(state_dict, rally_history)
-
-        # Retrieve similar windows
-        t0 = time.time()
-        if self.retrieval_mode == 'dual_db':
-            retrieval_result = self.database.retrieve_dual(
-                query_continuous,
-                query_discrete,
-                normal_top_k=self.normal_top_k,
-                miss_top_k=self.miss_top_k,
-            )
-            retrieved_windows = retrieval_result['normal_cases'] + retrieval_result['miss_cases']
-        else:
-            retrieval_result = self.database.retrieve(query_continuous, query_discrete, top_k=self.top_k)
-            retrieved_windows = retrieval_result
-        t1 = time.time()
-
-        self.tracer.start_trace(state_dict, info, launch)
-        self.tracer.log_retrieval(state_dict, retrieved_windows, "timerag", int((t1 - t0) * 1000))
-        
-        # Track rally trajectory
         rally_num = info.get('rally', 0)
         if self._current_rally != rally_num:
             self._current_rally = rally_num
+            self.state_history = []
             self.trajectory = []
+
+        # Build query window
+        rally_history = info.get('rally_history')
+        query_continuous, query_discrete, query_valid_mask = self._build_query_window(
+            state_dict, rally_history
+        )
+
+        # Stage 1: retrieve successful and missed temporal evidence independently.
+        t0 = time.time()
+        retrieval_result = self.database.retrieve_stage1(
+            query_continuous,
+            query_discrete,
+            normal_top_k=self.normal_top_k,
+            miss_top_k=self.miss_top_k,
+            launch=launch,
+            query_valid_mask=query_valid_mask,
+        )
+        retrieved_windows = retrieval_result['normal_cases'] + retrieval_result['miss_cases']
+        t1 = time.time()
+
+        self.tracer.start_trace(state_dict, info, launch)
+        self.tracer.log_retrieval(
+            state_dict,
+            retrieved_windows,
+            "timerag",
+            int((t1 - t0) * 1000),
+            stage='stage1',
+        )
+        
+        # Track rally trajectory
         self.trajectory.append(state_dict)
         
         # Build context for LLM using verbalizer
@@ -1077,58 +1345,150 @@ class TimeRAGAgent(BaseAgent):
             state_history = self._normalize_history_for_player(rally_history)
         else:
             state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
-        if self.retrieval_mode == 'dual_db':
-            context = self.verbalizer.build_dual_prompt_context_nl(state_dict, retrieval_result, launch=launch, window_size=self.window_size, state_history=state_history)
-        else:
-            context = self.verbalizer.build_prompt_context_nl(state_dict, retrieved_windows, launch=launch, window_size=self.window_size, state_history=state_history)
-        context['style_shift_instruction'] = info.get('style_shift_instruction', '')
-        
-        # Render user prompt
-        user_prompt = self.user_template.render(**context)
-        
-        # Get LLM response
+        context = self.verbalizer.build_prompt_context_nl(
+            state_dict,
+            [],
+            launch=launch,
+            window_size=self.window_size,
+            state_history=state_history,
+        )
+        available_types = self.database.available_shot_types(launch=launch)
+        stage1_context = {
+            **context,
+            'normal_cases': self.verbalizer.build_stage1_cases(
+                retrieval_result['normal_cases']
+            ),
+            'miss_cases': self.verbalizer.build_stage1_cases(
+                retrieval_result['miss_cases']
+            ),
+            'rally_profile_instruction': info.get('rally_profile_instruction', ''),
+        }
+        stage1_prompt = self.stage1_template.render(**stage1_context)
         t0 = time.time()
-        response, raw_llm_output, usage = self.llm.get_verified_response(
+        stage1_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+            self.llm,
             system_prompt=self.system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=stage1_prompt,
             max_trials=5,
-            validator=BaseAgent.validate_prompt_action_response,
+            validator=lambda response: BaseAgent.validate_rag_stage1_response(
+                response,
+                launch=launch,
+                available_types=available_types,
+            ),
         )
         t1 = time.time()
         self.tracer.log_generation(
-            self.system_prompt, user_prompt, response,
+            self.system_prompt, stage1_prompt, stage1_response,
             latency_ms=int((t1 - t0) * 1000),
             raw_llm_output=raw_llm_output,
             usage=usage,
+            stage='stage1',
         )
-        
-        if response is None:
-            print("Warning: LLM response failed, using default action")
-            self.tracer.end_trace({"shot_type": "default_fallback"}, "LLM response failed")
-            return self._default_action(launch)
+        stage1 = BaseAgent.parse_rag_stage1_response(
+            stage1_response,
+            launch=launch,
+            available_types=available_types,
+        )
+        if stage1 is None:
+            stage1, stage1_source = self._stage1_fallback(retrieval_result, launch)
+        else:
+            stage1_source = 'llm'
 
-        # Parse response
-        parsed_action, reasoning = self._parse_llm_action(response)
-        if parsed_action is None:
-            print("Warning: LLM response did not contain a valid action, using default action")
-            self.tracer.end_trace({"shot_type": "default_fallback"}, "Invalid LLM action")
-            return self._default_action(launch)
-
-        shot_type = parsed_action['shot_type']
-        landing_x = parsed_action['landing_x']
-        landing_y = parsed_action['landing_y']
-        moving_x = parsed_action['moving_x']
-        moving_y = parsed_action['moving_y']
-        
+        stage1_normal_refs = self._case_references(
+            retrieval_result['normal_cases'], 1, 'normal'
+        )
+        stage1_miss_refs = self._case_references(
+            retrieval_result['miss_cases'], 1, 'miss'
+        )
+        shot_type = int(stage1['shot_type'])
+        stage2_refs = []
         if shot_type == 11:
-            landing_x = 0.0
-            landing_y = 0.0
-            moving_x = 0.0
-            moving_y = 0.0
-        
-        # Apply serve mask if needed
-        if launch and shot_type not in [1, 10]:
-            shot_type = 1 if np.random.rand() < 0.5 else 10
+            landing_x = landing_y = moving_x = moving_y = 0.0
+            stage2 = {
+                'status': 'skipped_missed',
+                'conditioned_shot_type': None,
+                'case_ids': [],
+                'rationale': '',
+                'source': 'skipped',
+            }
+            reasoning = stage1['rationale']
+        else:
+            t0 = time.time()
+            conditioned_cases = self.database.retrieve_by_shot_type(
+                query_continuous,
+                query_discrete,
+                shot_type,
+                top_k=self.conditioned_top_k,
+                distances=retrieval_result['distances'],
+                query_valid_mask=query_valid_mask,
+            )
+            if any(
+                int(float(case['action']['player_type'])) != shot_type
+                for case in conditioned_cases
+            ):
+                raise ValueError('Shot-conditioned retrieval returned a different shot type')
+            t1 = time.time()
+            self.tracer.log_retrieval(
+                state_dict,
+                conditioned_cases,
+                'timerag',
+                int((t1 - t0) * 1000),
+                stage='stage2',
+            )
+            stage2_context = self.verbalizer.build_prompt_context_nl(
+                state_dict,
+                conditioned_cases,
+                launch=launch,
+                window_size=self.window_size,
+                state_history=state_history,
+            )
+            stage2_context.update({
+                'conditioned_cases': stage2_context['cases'],
+                'selected_shot_type': INDEX2EN_SHOT[shot_type],
+                'rally_profile_instruction': info.get('rally_profile_instruction', ''),
+            })
+            stage2_prompt = self.stage2_template.render(**stage2_context)
+            t0 = time.time()
+            stage2_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+                self.llm,
+                system_prompt=self.system_prompt,
+                user_prompt=stage2_prompt,
+                max_trials=5,
+                validator=BaseAgent.validate_rag_stage2_response,
+            )
+            t1 = time.time()
+            self.tracer.log_generation(
+                self.system_prompt,
+                stage2_prompt,
+                stage2_response,
+                latency_ms=int((t1 - t0) * 1000),
+                raw_llm_output=raw_llm_output,
+                usage=usage,
+                stage='stage2',
+            )
+            placement = BaseAgent.parse_rag_stage2_response(stage2_response)
+            if placement is None:
+                placement, stage2_source = self._stage2_fallback(conditioned_cases)
+            else:
+                stage2_source = 'llm'
+            landing_x = float(placement['landing_x'])
+            landing_y = float(placement['landing_y'])
+            moving_x = float(placement['moving_x'])
+            moving_y = float(placement['moving_y'])
+            stage2_refs = self._case_references(
+                conditioned_cases,
+                2,
+                'shot_conditioned',
+                conditioned_shot_type=shot_type,
+            )
+            stage2 = {
+                'status': 'completed',
+                'conditioned_shot_type': shot_type,
+                'case_ids': stage2_refs,
+                'rationale': placement['rationale'],
+                'source': stage2_source,
+            }
+            reasoning = f"Stage 1: {stage1['rationale']} Stage 2: {placement['rationale']}"
         
         # Update the last trajectory state with the actual player_type and landing/moving
         # This ensures the next iteration will show the correct shot info in history
@@ -1154,20 +1514,33 @@ class TimeRAGAgent(BaseAgent):
             "landing": [landing_x, landing_y],
             "movement": [moving_x, moving_y],
         }, reasoning)
+        all_case_ids = stage1_normal_refs + stage1_miss_refs + stage2_refs
+        self._last_case_ids = all_case_ids
+        self.last_decision_trace = {
+            'schema_version': 2,
+            'architecture': self.retrieval_architecture,
+            'stage1': {
+                'normal_case_ids': stage1_normal_refs,
+                'miss_case_ids': stage1_miss_refs,
+                'outcome': stage1['outcome'],
+                'shot_type': None if shot_type == 11 else shot_type,
+                'rationale': stage1['rationale'],
+                'source': stage1_source,
+            },
+            'stage2': stage2,
+            'case_ids': all_case_ids,
+            'rationale': reasoning,
+            'action': {
+                'shot_type': int(shot_type),
+                'landing_x': None if shot_type == 11 else float(landing_x),
+                'landing_y': None if shot_type == 11 else float(landing_y),
+                'moving_x': None if shot_type == 11 else float(moving_x),
+                'moving_y': None if shot_type == 11 else float(moving_y),
+            },
+            'action_source': (
+                stage1_source if shot_type == 11
+                else f'{stage1_source}+{stage2["source"]}'
+            ),
+        }
         
         return action, reasoning
-    
-    def _default_action(self, launch):
-        """Default action when LLM fails."""
-        if launch:
-            shot_type = 1
-        else:
-            shot_type = np.random.randint(1, 12)
-        
-        return (
-            shot_type,
-            None,
-            (0.0, 0.0),
-            (0.0, 0.0),
-            [0.1] * 10
-        ), "Default action due to LLM failure"

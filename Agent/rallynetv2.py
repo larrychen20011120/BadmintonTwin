@@ -166,8 +166,7 @@ class LatentSDE(nn.Module):
 
         # ================= #
         self.action_model = MLP(latent_size + condition_size, 128, player_ids_len, shot_type_len, gmm_num=gmm_num).cuda(0)
-        class_weights = compute_shot_type_weights(method='uniform').cuda(0)
-        self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=0, reduction='none')
+        self.ce = nn.CrossEntropyLoss(ignore_index=0, reduction='none')
         # ================= #
 
         # Match State Encoder (condition encoder).

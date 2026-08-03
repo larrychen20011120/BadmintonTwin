@@ -23,10 +23,9 @@
 
 支援的演算法:
     - bc: Behavior Cloning
-    - rallynet: RallyNet (未實現)
+    - rallynet: RallyNet
     - rallynetv2: RallyNetV2
     - naive_rag: NaiveRAG
-    - pure_llm: Pure LLM
     - random: Random Agent
 """
 
@@ -50,9 +49,9 @@ def get_algorithm_map():
     """
     from Scripts.single_player_eval.evaluators import (
         BCEvaluator,
+        RallyNetEvaluator,
         RallyNetV2Evaluator,
         NaiveRAGEvaluator,
-        PureLLMEvaluator,
         TimeRAGEvaluator,
         TwinEvaluator,
         RandomEvaluator,
@@ -61,9 +60,9 @@ def get_algorithm_map():
     
     return {
         'bc': BCEvaluator,
+        'rallynet': RallyNetEvaluator,
         'rallynetv2': RallyNetV2Evaluator,
         'naive_rag': NaiveRAGEvaluator,
-        'pure_llm': PureLLMEvaluator,
         'timerag': TimeRAGEvaluator,
         'twin': TwinEvaluator,
         'random': RandomEvaluator,
@@ -110,10 +109,9 @@ def list_available_algorithms():
 
     algorithms = [
         ('bc', 'Behavior Cloning - 行為複製模型', True),
-        ('rallynet', 'RallyNet - SDE-based模型 (未實現)', False),
+        ('rallynet', 'RallyNet - two-stage SDE-based model', True),
         ('rallynetv2', 'RallyNetV2 - 擴展版RallyNet', True),
         ('naive_rag', 'NaiveRAG - 基於檢索的LLM方法', True),
-        ('pure_llm', 'PureLLM - 無檢索的純LLM方法', True),
         ('timerag', 'TimeRAG - 時間窗口檢索的LLM方法', True),
         ('twin', 'Twin - aspect-memory retrieval 的LLM方法', True),
         ('random', 'Random Agent - 隨機基線', True),
@@ -162,6 +160,8 @@ def create_evaluator(algorithm, player_name, experiment='norm', device='cuda',
         )
     
     evaluator_class = algorithm_map[algorithm]
+    if algorithm in ('bc', 'rallynet', 'shuttlenet'):
+        experiment = 'rally'
     
     if evaluator_class is None:
         raise NotImplementedError(
@@ -274,7 +274,7 @@ def main():
     parser.add_argument(
         '--algorithm',
         type=str,
-        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'pure_llm', 'timerag', 'twin', 'random', 'shuttlenet'],
+        choices=['bc', 'rallynet', 'rallynetv2', 'naive_rag', 'timerag', 'twin', 'random', 'shuttlenet'],
         help='要使用的演算法'
     )
     
@@ -317,7 +317,7 @@ def main():
     parser.add_argument(
         '--save-trajectories',
         action='store_true',
-        help='儲存原始軌跡（雙方選手、完整 GT 序列）到 pickle 檔案'
+        help='將每次 rally simulation 儲存為獨立 JSON 檔案'
     )
     
     # 資訊參數
@@ -356,7 +356,7 @@ def main():
     parser.add_argument(
         '--hyperparameters-path',
         type=str,
-        help='自訂hyperparameters路徑（僅適用於rallynet, rallynetv2）'
+        help='自訂hyperparameters路徑（僅適用於rallynetv2）'
     )
     
     parser.add_argument(
@@ -398,8 +398,8 @@ def main():
         type=str,
         default='auto',
         choices=['auto', 'off'],
-        help=('Style-shift instruction 模式（僅適用於 shifted 的 '
-              'pure_llm/naive_rag/timerag/twin/twin2）：auto 使用 shifted prompt 並注入 instruction；'
+        help=('Style-shift instruction 模式（僅適用於 legacy shifted evaluators）：'
+              'auto 使用 shifted prompt 並注入 instruction；'
               'off 使用一般 prompt 且不注入 instruction')
     )
 
@@ -427,6 +427,16 @@ def main():
         print("   或使用 --list-players 查看可用的選手")
         return 1
 
+    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
+        print(
+            "NaiveRAG/TimeRAG/Twin must evaluate complete physical rallies with "
+            "Scripts/single_player_eval/eval_all_rallies.py."
+        )
+        return 1
+
+    if args.algorithm in ('bc', 'rallynet', 'shuttlenet'):
+        args.experiment = 'rally'
+
     config = load_config()
     eval_config = config.get('evaluation', {})
     algorithm_config = config.get(args.algorithm, {})
@@ -451,7 +461,7 @@ def main():
         kwargs['distribution'] = args.distribution
     if args.algorithm == 'bc' and args.gmm_num:
         kwargs['gmm_num'] = args.gmm_num
-    if args.hyperparameters_path:
+    if args.hyperparameters_path and args.algorithm == 'rallynetv2':
         kwargs['hyperparameters_path'] = args.hyperparameters_path
     if args.seed is not None:
         kwargs['seed'] = args.seed
@@ -463,7 +473,7 @@ def main():
         kwargs['lambda_weight'] = effective_lambda_weight
     if args.save_trajectories:
         kwargs['save_trajectories'] = True
-    if args.algorithm in ('pure_llm', 'naive_rag', 'timerag', 'twin'):
+    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
         kwargs['style_shift_instruction_mode'] = args.style_shift_instruction
         kwargs['verbose_style_shift'] = args.verbose_style_shift
         kwargs['output_experiment'] = output_experiment_label(args.experiment, args.style_shift_instruction)
@@ -482,7 +492,7 @@ def main():
         window_size=effective_window_size,
         lambda_weight=effective_lambda_weight,
     )
-    if args.algorithm in ('pure_llm', 'naive_rag', 'timerag', 'twin'):
+    if args.algorithm in ('naive_rag', 'timerag', 'twin'):
         rows.extend(llm_rows(LLM.resolve_effective_settings()))
     print_runtime_box(f"Runtime Parameters: eval_single_player/{args.algorithm}", rows)
      

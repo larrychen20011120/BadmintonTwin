@@ -16,16 +16,21 @@ sys.path.append(project_path)
 from .base_evaluator import BaseEvaluator
 from Agent.bc import BC, build_state_tensor_from_row, sample_from_gaussian, sample_from_gmm
 from Utils.helper import state_col, action_col, transition, terminate
-from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
+from Scripts.single_player_eval.trajectory_store import (
+    build_gt_shot_from_row,
+    build_pred_shot,
+    build_rollout_metadata,
+)
+from Preprocessing.rally_data import filter_rally_rows, load_rally_dataset, rally_key
 import torch.nn.functional as F
 
 
 class BCEvaluator(BaseEvaluator):
     """BC模型單一選手評估器"""
     
-    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0, 
+    def __init__(self, player_name=None, experiment='rally', device='cuda', skip_first_n=0,
                  model_path=None, save_trajectories=False,
-                 distribution=None, gmm_num=None):
+                 distribution=None, gmm_num=None, all_rallies=False):
         """
         Args:
             player_name: 選手名稱
@@ -38,6 +43,7 @@ class BCEvaluator(BaseEvaluator):
         """
         super().__init__(player_name, experiment, device, skip_first_n,
                          save_trajectories=save_trajectories)
+        self.all_rallies = all_rallies
 
         if distribution is None:
             distribution = self.config['bc_training'].get('distribution', 'deterministic')
@@ -49,7 +55,7 @@ class BCEvaluator(BaseEvaluator):
         
         # 設定模型路徑
         if model_path is None:
-            self.model_path = self.config['paths']['bc']['models'][experiment]
+            self.model_path = self.config['paths']['bc']['model']
         else:
             self.model_path = model_path
         
@@ -57,10 +63,10 @@ class BCEvaluator(BaseEvaluator):
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
         
-        if self.player_name not in self.player2index:
+        if not self.all_rallies and self.player_name not in self.player2index:
             raise ValueError(f"Player '{self.player_name}' not found in player map")
         
-        self.player_id = self.player2index[self.player_name]
+        self.player_id = self.player2index.get(self.player_name, 0)
         
         # 載入模型
         self.model = self._load_model()
@@ -100,99 +106,65 @@ class BCEvaluator(BaseEvaluator):
         return "bc"
     
     def simulate(self):
-        """執行BC模型模擬，收集trajectory"""
+        """Simulate each selected physical rally exactly once."""
         device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
-        
-        # 取得選手的測試比賽
-        test_match_ids = self.get_player_test_matches()
-        
-        # 收集該選手的所有rallies
-        rallies_data = []
-        
-        for match_id in test_match_ids:
-            match_df = self.df[self.df['match_id'] == match_id].copy()
-            if len(match_df) == 0:
-                continue
-            
-            # 找出對手
-            players_in_match = match_df['player'].unique()
-            opponent_name = None
-            for p in players_in_match:
-                if p != self.player_name:
-                    opponent_name = p
-                    break
-            
-            if opponent_name is None or opponent_name not in self.player2index:
-                continue
-            
-            opponent_player_id = self.player2index[opponent_name]
-            
-            # 分組rallies
-            rallies = match_df.groupby(['set', 'rally'])
-            
-            for (set_num, rally_num), rally_df in rallies:
-                rallies_data.append({
-                    'rally_df': rally_df.sort_values('ball_round').reset_index(drop=True),
-                    'opponent_player_id': opponent_player_id,
-                    'opponent_name': opponent_name,
-                    'match_id': match_id,
-                    'set_num': int(set_num),
-                    'rally_num': int(rally_num),
-                })
-        
-        if not rallies_data:
-            return []
+        dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)
+        records = dataset['test']
+        if not self.all_rallies:
+            records = [record for record in records if self.player_name in record['players']]
 
-        target_max_len = self.get_player_max_sequence_length(self.player_name)
-        if target_max_len == 0:
-            return []
-        
+        selected_rows = filter_rally_rows(self.df, records)
+        rally_frames = {
+            tuple(int(value) for value in key): rally_df.sort_values('ball_round').reset_index(drop=True)
+            for key, rally_df in selected_rows.groupby(['match_id', 'set', 'rally'], sort=False)
+        }
+        missing_keys = sorted({rally_key(record) for record in records} - set(rally_frames))
+        if missing_keys:
+            raise ValueError(f'No model-ready rows found for test rallies: {missing_keys[:5]}')
+
         rally_trajectories = []
-        
-        for rally_info in tqdm(rallies_data, desc=f"Simulating {self.player_name}"):
-            rally_df = rally_info['rally_df']
-            opponent_player_id = rally_info['opponent_player_id']
-            opponent_name = rally_info['opponent_name']
-            match_id = rally_info['match_id']
-            set_num = rally_info['set_num']
-            rally_num = rally_info['rally_num']
-            
-            # 收集完整GT（雙方玩家，不受simulation影響）
-            rally_gt_full_seq = []
-            for _, row in rally_df.iterrows():
-                rally_gt_full_seq.append(build_gt_shot_from_row(row))
-            
-            # 收集預測（雙方玩家）
+        seen = set()
+        description = 'Simulating physical rallies' if self.all_rallies else f'Simulating {self.player_name}'
+        for record in tqdm(records, desc=description):
+            key = rally_key(record)
+            if key in seen:
+                raise ValueError(f'Duplicate physical test rally: {key}')
+            seen.add(key)
+            match_id, set_num, rally_num = key
+            rally_df = rally_frames[key]
+
+            players = list(dict.fromkeys(rally_df['player'].astype(str)))
+            if len(players) != 2:
+                raise ValueError(f'Expected two players for rally {key}, found {players}')
+            missing_players = [player for player in players if player not in self.player2index]
+            if missing_players:
+                raise ValueError(f'Players missing from player map for rally {key}: {missing_players}')
+            player_ids = {player: self.player2index[player] for player in players}
+            id_to_player = {player_id: player for player, player_id in player_ids.items()}
+
+            rally_gt_full_seq = [
+                build_gt_shot_from_row(row) for _, row in rally_df.iterrows()
+            ]
+            max_rollout_steps = len(rally_gt_full_seq) + 2
             rally_pred_full_seq = []
-            
-            # Determine target player's score at rally start
             first_row = rally_df.iloc[0]
-            target_player_won = None
-            
-            # 初始化第一個state
-            current_player_name = first_row['player']
-            current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
+            current_player_name = str(first_row['player'])
+            current_player_id = player_ids[current_player_name]
             current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
-            
-            simulation_ended_early = False
-            target_pred_count = 0
-            
-            while target_pred_count < target_max_len:
+            termination_reason = 'max_rollout_reached'
+
+            for _ in range(max_rollout_steps):
                 current_player_id = int(current_state[17].item())
-                is_target_turn = current_player_id == self.player_id
-                current_player_name = self.player_name if is_target_turn else opponent_name
-                current_player_id = self.player_id if is_target_turn else opponent_player_id
+                if current_player_id not in id_to_player:
+                    raise ValueError(f'Unknown player id {current_player_id} during rally {key}')
+                current_player_name = id_to_player[current_player_id]
                 current_state[17] = current_player_id
                 state_for_pred = current_state
                 ball_round = int(state_for_pred[1].item())
-                
                 launch = (state_for_pred[1].item() == 1)
-                
-                # 模型預測
+
                 with torch.no_grad():
                     land_logit, shot_logit, move_logit = self.model(state_for_pred.unsqueeze(0))
-                    
-                    # Apply mask
                     if launch:
                         mask = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.bool).to(device)
                     else:
@@ -202,12 +174,8 @@ class BCEvaluator(BaseEvaluator):
                     masked_probs = shot_probs.masked_fill(~mask, 0.0)
                     sum_probs = masked_probs.sum(dim=-1, keepdim=True)
                     shot_probs = torch.where(sum_probs > 0, masked_probs / sum_probs, mask.float() / mask.sum())
-                    # shot_type = torch.argmax(shot_probs, dim=-1)
-                    # use categorical sampling to allow for more diverse predictions
                     shot_type = torch.multinomial(shot_probs, num_samples=1).squeeze(-1)
 
-                
-                # 收集預測（雙方玩家）
                 if self.distribution == 'gmm':
                     land_2d = sample_from_gmm(
                         land_logit,
@@ -228,43 +196,42 @@ class BCEvaluator(BaseEvaluator):
                 rally_pred_full_seq.append(build_pred_shot(
                     current_player_name, int(shot_type.item()), land_2d, move_2d, ball_round))
 
-                if is_target_turn:
-                    target_pred_count += 1
-                
-                # Build action tensor
                 action_tensor = torch.tensor([
                     land_2d[0], land_2d[1],
                     float(shot_type.item()),
                     move_2d[0], move_2d[1]
                 ], dtype=torch.float32)
-                
-                # State transition
-                other_player_id = opponent_player_id if is_target_turn else self.player_id
+                other_player_id = next(
+                    player_id for player_id in id_to_player if player_id != current_player_id
+                )
                 next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
-                
                 if terminate(next_state.cpu()):
-                    simulation_ended_early = True
+                    termination_reason = 'natural_terminate'
                     break
-                
                 current_state = next_state.to(device)
-            
-            # Save rally trajectory (包含雙方玩家，GT完整長度)
-            if self.save_trajectories:
-                rally_trajectories.append({
-                    'match_id': match_id,
-                    'set': set_num,
-                    'rally': rally_num,
-                    'target_player': self.player_name,
-                    'opponent_player': opponent_name,
-                    'gt_sequence': rally_gt_full_seq,
-                    'pred_sequence': rally_pred_full_seq,
-                    'target_player_won': target_player_won,
-                    'rally_length_gt': len(rally_gt_full_seq),
-                    'rally_length_pred': len(rally_pred_full_seq),
-                    'simulation_ended_early': simulation_ended_early,
-                })
-        
-        # Save full trajectories
+
+            target_player = None if self.all_rallies else self.player_name
+            opponent_player = None
+            if target_player in players:
+                opponent_player = next(player for player in players if player != target_player)
+            rally_trajectories.append({
+                'match_id': match_id,
+                'set': set_num,
+                'rally': rally_num,
+                'players': players,
+                'player_profiles': record.get('player_profiles', {}),
+                'instruction_mode': 'no-instruct',
+                'target_player': target_player,
+                'opponent_player': opponent_player,
+                'gt_sequence': rally_gt_full_seq,
+                'pred_sequence': rally_pred_full_seq,
+                'target_player_won': None,
+                **build_rollout_metadata(
+                    rally_gt_full_seq,
+                    rally_pred_full_seq,
+                    termination_reason,
+                ),
+            })
+
         self._save_trajectories_if_needed(rally_trajectories)
-        
         return rally_trajectories

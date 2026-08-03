@@ -16,17 +16,24 @@ sys.path.append(project_path)
 from .base_evaluator import BaseEvaluator
 from Agent.naive_rag import NaiveRAGAgent, NaiveRAGDatabase
 from Utils.helper import state_col, action_col, transition, terminate
-from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
+from Scripts.single_player_eval.trajectory_store import (
+    build_gt_shot_from_row,
+    build_pred_shot,
+    build_rollout_metadata,
+)
+from Preprocessing.rally_data import filter_rally_rows, load_rally_dataset, rally_key
+from Utils.artifact_names import player_database_filename
 
 
 class NaiveRAGEvaluator(BaseEvaluator):
     """NaiveRAG單一選手評估器"""
     
-    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
-                  train_split_path=None, top_k=None, enable_tracing=True,
+    def __init__(self, player_name=None, experiment='rally', device='cuda', skip_first_n=0,
+                  train_split_path=None, conditioned_top_k=None, enable_tracing=True,
                   save_trajectories=False,
                  style_shift_instruction_mode='auto', verbose_style_shift=False,
-                 output_experiment=None):
+                 output_experiment=None, all_rallies=False,
+                 instruction_mode='no_instruct'):
         """
         Args:
             player_name: 選手名稱
@@ -37,35 +44,47 @@ class NaiveRAGEvaluator(BaseEvaluator):
             top_k: RAG檢索數量
             enable_tracing: 是否啟用 Langfuse 追蹤
         """
-        super().__init__(player_name, experiment, device, skip_first_n,
+        if instruction_mode not in ('instruct', 'no_instruct'):
+            raise ValueError("instruction_mode must be 'instruct' or 'no_instruct'")
+        super().__init__(player_name, 'rally', device, skip_first_n,
                          save_trajectories=save_trajectories,
-                         style_shift_instruction_mode=style_shift_instruction_mode,
+                         style_shift_instruction_mode='off',
                          verbose_style_shift=verbose_style_shift,
-                         output_experiment=output_experiment)
+                         output_experiment=output_experiment or f'rally_{instruction_mode}')
+        self.all_rallies = all_rallies
+        self.instruction_mode = instruction_mode
+        self.prompt_variant = 'shifted' if instruction_mode == 'instruct' else 'norm'
         
         # 設定train split路徑
-        if train_split_path is None:
-            self.train_split_path = self.config['paths'][f'{experiment}_split']
-        else:
-            self.train_split_path = train_split_path
+        self.train_split_path = train_split_path or self.config['paths']['rally_split']
         
         llm_config = self.config.get('naive_rag', {})
         retrieval_config = self.config.get('retrieval', {})
-        self.retrieval_mode = retrieval_config.get('mode', 'classic')
-        self.top_k = top_k if top_k is not None else retrieval_config.get('classic_top_k', retrieval_config.get('top_k', llm_config.get('top_k', 5)))
-        self.normal_top_k = retrieval_config.get('normal_top_k', self.top_k)
-        self.miss_top_k = retrieval_config.get('miss_top_k', max(1, min(5, self.top_k)))
+        stage1_config = retrieval_config.get('stage1', {})
+        stage2_config = retrieval_config.get('stage2', {})
+        self.retrieval_architecture = retrieval_config.get('architecture', 'two_stage_v1')
+        if self.retrieval_architecture != 'two_stage_v1':
+            raise ValueError('NaiveRAG requires retrieval.architecture=two_stage_v1')
+        self.normal_top_k = int(stage1_config.get('normal_top_k', 10))
+        self.miss_top_k = int(stage1_config.get('miss_top_k', 5))
+        self.conditioned_top_k = int(
+            conditioned_top_k
+            if conditioned_top_k is not None
+            else stage2_config.get('conditioned_top_k', 10)
+        )
+        if min(self.normal_top_k, self.miss_top_k, self.conditioned_top_k) < 1:
+            raise ValueError('Two-stage retrieval top-k values must all be positive')
         self.enable_tracing = enable_tracing
-        self.database_dir = self.config['paths']['naive_rag']['data'][experiment]
+        self.database_dir = self.config['paths']['naive_rag']['data']
         
         # 載入player2index
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
         
-        if self.player_name not in self.player2index:
+        if self.player_name is not None and self.player_name not in self.player2index:
             raise ValueError(f"Player '{self.player_name}' not found in player map")
         
-        self.player_id = self.player2index[self.player_name]
+        self.player_id = self.player2index.get(self.player_name)
         
         # 載入資料
         self.df = pd.read_csv(self.merged_csv_path)
@@ -74,14 +93,14 @@ class NaiveRAGEvaluator(BaseEvaluator):
         
         # 建立/快取每位選手各自的 Agent
         self.agents = {}
-        self.agent = self._get_agent(self.player_name)
+        self.agent = self._get_agent(self.player_name) if self.player_name is not None else None
 
         self.print_runtime_parameters(
             "naive_rag",
-            top_k=self.top_k,
+            top_k=self.conditioned_top_k,
             normal_top_k=self.normal_top_k,
             miss_top_k=self.miss_top_k,
-            retrieval_mode=self.retrieval_mode,
+            retrieval_mode=self.retrieval_architecture,
             include_llm=True,
             extra_rows=[
                 ("database_dir", self.database_dir),
@@ -94,6 +113,11 @@ class NaiveRAGEvaluator(BaseEvaluator):
         db_path = self._database_path(player_name)
         print(f"[NaiveRAG] Loading database for {player_name}: {db_path}")
         database = NaiveRAGDatabase.load(db_path)
+        if database.player_name != player_name or database.player_id != player_id:
+            raise ValueError(f"NaiveRAG database identity mismatch: {db_path}")
+        dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)
+        if database.build_metadata.get('split_sha256') != dataset['split_sha256']:
+            raise ValueError(f"NaiveRAG database split mismatch: {db_path}")
         print(f"[NaiveRAG] Database ready for {player_name}: {len(database.data)} entries")
         
         # 建立LLM client
@@ -109,10 +133,9 @@ class NaiveRAGEvaluator(BaseEvaluator):
             port=llm_config.get('port'),
             base_url=llm_config.get('base_url'),
             host_url=llm_config.get('host_url'),
-            top_k=self.top_k,
             normal_top_k=self.normal_top_k,
             miss_top_k=self.miss_top_k,
-            retrieval_mode=self.retrieval_mode,
+            conditioned_top_k=self.conditioned_top_k,
             enable_tracing=self.enable_tracing,
             prompt_variant=self.prompt_variant,
         )
@@ -121,8 +144,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
         return agent
 
     def _database_path(self, player_name):
-        safe_name = player_name.replace(" ", "_").replace(".", "")
-        return os.path.join(self.database_dir, f"{safe_name}_db.pkl")
+        return os.path.join(self.database_dir, player_database_filename(player_name))
 
     def _get_agent(self, player_name):
         """取得指定選手的 Agent；target/opponent 必須使用各自的 player_name。"""
@@ -185,150 +207,145 @@ class NaiveRAGEvaluator(BaseEvaluator):
             'moving_y': float(output_move[1]),
         }
     
-    def simulate(self):
-        """執行NaiveRAG模擬，收集trajectory"""
-        device = torch.device(self.device if torch.cuda.is_available() else 'cpu')
-        
-        # 取得選手的測試比賽
-        test_match_ids = self.get_player_test_matches()
-        target_max_len = self.get_player_max_sequence_length(self.player_name)
-        if target_max_len == 0:
-            return []
-        
-        rally_trajectories = []
-        
-        for match_id in tqdm(test_match_ids, desc=f"Simulating {self.player_name}"):
-            match_df = self.df[self.df['match_id'] == match_id].copy()
-            if len(match_df) == 0:
+    def simulate_rally(self, record):
+        """Simulate one canonical physical rally with both player-specific agents."""
+        match_id, set_num, rally_num = rally_key(record)
+        rally_df = filter_rally_rows(self.df, [record]).sort_values('ball_round').reset_index(drop=True)
+        if rally_df.empty:
+            raise ValueError(f'No model-ready rows found for rally {(match_id, set_num, rally_num)}')
+
+        players = list(record.get('players') or [])
+        if len(players) != 2:
+            raise ValueError(f'Expected two players for rally {(match_id, set_num, rally_num)}: {players}')
+        missing = [player for player in players if player not in self.player2index]
+        if missing:
+            raise ValueError(f'Players missing from player map: {missing}')
+
+        agents = {player: self._get_agent(player) for player in players}
+        for agent in agents.values():
+            agent.reset_history()
+        player_ids = {player: self.player2index[player] for player in players}
+        id_to_player = {player_id: player for player, player_id in player_ids.items()}
+        profiles = record.get('player_profiles') or {}
+        instructions = {}
+        for player in players:
+            if self.instruction_mode != 'instruct':
+                instructions[player] = ''
                 continue
-            
-            # 找出對手
-            players_in_match = match_df['player'].unique()
-            opponent_name = None
-            for p in players_in_match:
-                if p != self.player_name:
-                    opponent_name = p
-                    break
-            
-            if opponent_name is None or opponent_name not in self.player2index:
-                continue
-            
-            opponent_player_id = self.player2index[opponent_name]
-            opponent_agent = self._get_agent(opponent_name)
-            
-            # 分組rallies
-            rallies = match_df.groupby(['set', 'rally'])
-            
-            for (set_num, rally_num), rally_df in rallies:
-                rally_df = rally_df.sort_values('ball_round').reset_index(drop=True)
-                
-                if len(rally_df) == 0:
-                    continue
-                
-                self.agent.reset_history()
-                opponent_agent.reset_history()
-                
-                # 收集完整GT（雙方玩家，不受simulation影響）
-                rally_gt_full_seq = []
-                for _, row in rally_df.iterrows():
-                    rally_gt_full_seq.append(build_gt_shot_from_row(row))
-                
-                # 收集預測（雙方玩家）
-                rally_pred_full_seq = []
-                rally_history = []
-                
-                target_player_won = None
-                
-                # Determine target player's score at rally start
-                first_row = rally_df.iloc[0]
-                
-                # 初始化第一個state
-                current_player_name = first_row['player']
-                current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
-                
-                # 建立state tensor
-                state_values = [first_row[col] for col in state_col]
-                state_values[-1] = current_player_id
-                current_state = torch.tensor(state_values, dtype=torch.float32)
-                
-                simulation_ended_early = False
-                target_pred_count = 0
-                last_action = None
-                
-                while target_pred_count < target_max_len:
-                    current_player_id = int(current_state[17].item())
-                    is_target_turn = current_player_id == self.player_id
-                    current_player_name = self.player_name if is_target_turn else opponent_name
-                    current_player_id = self.player_id if is_target_turn else opponent_player_id
-                    current_state[17] = current_player_id
-                    state_for_pred = current_state
-                    info = self.build_rollout_info(match_id, rally_num, state_for_pred, last_action)
-                    ball_round = int(state_for_pred[1].item())
-                    
-                    launch = (state_for_pred[1].item() == 1)
-                    
-                    # Agent預測
-                    env_state = self._state_to_env_format(state_for_pred)
-                    current_agent = self.agent if is_target_turn else opponent_agent
-                    info['current_player_name'] = current_player_name
-                    info['opponent_player_name'] = opponent_name if is_target_turn else self.player_name
-                    info['rally_history'] = list(rally_history)
-                    self.attach_style_shift_instruction_for_rollout(info, current_player_name, match_id, rally_num)
-                    action, reason = current_agent.predict(env_state, info, launch)
-                    
-                    if action is None:
-                        simulation_ended_early = True
-                        break
-                    
-                    output_shot, hit, output_land, output_move, dist = action
-                    
-                    land_logit = torch.tensor(output_land).unsqueeze(0)
-                    move_logit = torch.tensor(output_move).unsqueeze(0)
-                    
-                    # 收集預測（雙方玩家）
-                    land_2d = [land_logit.squeeze(0)[0].item(), land_logit.squeeze(0)[1].item()]
-                    move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
-                    rally_pred_full_seq.append(build_pred_shot(
-                        current_player_name, int(output_shot), land_2d, move_2d, ball_round))
-                    rally_history.append(self._build_history_stroke(state_for_pred, current_player_name, action))
-                    if is_target_turn:
-                        target_pred_count += 1
-                    
-                    # Build action tensor for transition
-                    action_tensor = torch.tensor([
-                        land_logit[0, 0].item(), land_logit[0, 1].item(),
-                        float(output_shot),
-                        move_logit[0, 0].item(), move_logit[0, 1].item()
-                    ], dtype=torch.float32)
-                    
-                    # State transition
-                    other_player_id = opponent_player_id if is_target_turn else self.player_id
-                    next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
-                    
-                    if terminate(next_state.cpu()):
-                        simulation_ended_early = True
-                        break
-                    
-                    current_state = next_state
-                    last_action = action
-                
-                # Save rally trajectory (包含雙方玩家，GT完整長度)
-                if self.save_trajectories:
-                    rally_trajectories.append({
-                        'match_id': match_id,
-                        'set': int(set_num),
-                        'rally': int(rally_num),
-                        'target_player': self.player_name,
-                        'opponent_player': opponent_name,
-                        'gt_sequence': rally_gt_full_seq,
-                        'pred_sequence': rally_pred_full_seq,
-                        'target_player_won': target_player_won,
-                        'rally_length_gt': len(rally_gt_full_seq),
-                        'rally_length_pred': len(rally_pred_full_seq),
-                        'simulation_ended_early': simulation_ended_early,
-                    })
-        
-        # Save full trajectories
-        self._save_trajectories_if_needed(rally_trajectories)
-        
-        return rally_trajectories
+            profile = profiles.get(player) or {}
+            label = profile.get('label')
+            instruction = profile.get('instruction')
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(f'Missing tactical profile label for {player!r}')
+            if not isinstance(instruction, str) or not instruction.strip():
+                raise ValueError(f'Missing tactical profile instruction for {player!r}')
+            instructions[player] = f'{label.strip()}. {instruction.strip()}'
+
+        rally_gt_full_seq = [build_gt_shot_from_row(row) for _, row in rally_df.iterrows()]
+        extra_steps = int(self.config.get('evaluation', {}).get('rollout_extra_steps', 2))
+        max_rollout_steps = len(rally_gt_full_seq) + extra_steps
+        rally_pred_full_seq = []
+        rally_history = []
+        first_row = rally_df.iloc[0]
+        current_player_name = str(first_row['player'])
+        state_values = [first_row[col] for col in state_col]
+        state_values[-1] = player_ids[current_player_name]
+        current_state = torch.tensor(state_values, dtype=torch.float32)
+        termination_reason = 'max_rollout_reached'
+        last_action = None
+
+        while len(rally_pred_full_seq) < max_rollout_steps:
+            current_player_id = int(current_state[17].item())
+            if current_player_id not in id_to_player:
+                raise ValueError(f'Unknown player id {current_player_id} during rally')
+            current_player_name = id_to_player[current_player_id]
+            opponent_name = next(player for player in players if player != current_player_name)
+            state_for_pred = current_state
+            info = self.build_rollout_info(match_id, rally_num, state_for_pred, last_action)
+            info.update({
+                'current_player_name': current_player_name,
+                'opponent_player_name': opponent_name,
+                'rally_history': list(rally_history),
+                'style_shift_instruction': instructions[current_player_name],
+                'rally_profile_instruction': instructions[current_player_name],
+                'instruction_mode': self.instruction_mode,
+            })
+            ball_round = int(state_for_pred[1].item())
+            launch = state_for_pred[1].item() == 1
+            current_agent = agents[current_player_name]
+            action, reason = current_agent.predict(
+                self._state_to_env_format(state_for_pred), info, launch
+            )
+            if action is None:
+                termination_reason = 'action_none'
+                break
+
+            output_shot, hit, output_land, output_move, dist = action
+            land_2d = [float(output_land[0]), float(output_land[1])]
+            move_2d = [float(output_move[0]), float(output_move[1])]
+            decision = dict(getattr(current_agent, 'last_decision_trace', None) or {})
+            if not decision:
+                decision = {
+                    'case_ids': [],
+                    'rationale': reason,
+                    'action': {
+                        'shot_type': int(output_shot),
+                        'landing_x': land_2d[0],
+                        'landing_y': land_2d[1],
+                        'moving_x': move_2d[0],
+                        'moving_y': move_2d[1],
+                    },
+                    'action_source': 'agent',
+                }
+            rally_pred_full_seq.append(build_pred_shot(
+                current_player_name, int(output_shot), land_2d, move_2d, ball_round,
+                decision=decision,
+            ))
+            rally_history.append(self._build_history_stroke(
+                state_for_pred, current_player_name, action
+            ))
+            action_tensor = torch.tensor([
+                land_2d[0], land_2d[1], float(output_shot), move_2d[0], move_2d[1]
+            ], dtype=torch.float32)
+            next_state = transition(
+                action_tensor.cpu(), current_state.cpu(), player_ids[opponent_name]
+            )
+            if terminate(next_state.cpu()):
+                termination_reason = 'natural_terminate'
+                break
+            current_state = next_state
+            last_action = action
+
+        return {
+            'match_id': match_id,
+            'set': set_num,
+            'rally': rally_num,
+            'players': players,
+            'player_profiles': profiles,
+            'applied_instructions': instructions,
+            'instruction_mode': self.instruction_mode,
+            'evaluation_unit': 'physical_rally',
+            'target_player': None,
+            'opponent_player': None,
+            'gt_sequence': rally_gt_full_seq,
+            'pred_sequence': rally_pred_full_seq,
+            'target_player_won': None,
+            **build_rollout_metadata(
+                rally_gt_full_seq,
+                rally_pred_full_seq,
+                termination_reason,
+                rollout_limit=max_rollout_steps,
+            ),
+        }
+
+    def simulate(self, records=None):
+        dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)
+        records = list(records if records is not None else dataset['test'])
+        if not self.all_rallies and self.player_name is not None:
+            records = [record for record in records if self.player_name in record.get('players', [])]
+        trajectories = [
+            self.simulate_rally(record)
+            for record in tqdm(records, desc='Simulating physical rallies')
+        ]
+        self._save_trajectories_if_needed(trajectories)
+        return trajectories

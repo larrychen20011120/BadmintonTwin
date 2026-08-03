@@ -16,6 +16,42 @@ from Agent.base_agent import BaseAgent
 from Utils.helper import *
 
 
+RAW_AREA_BOUNDS = {
+    1: (50, 150, 104, 204),
+    2: (104, 150, 177.5, 204),
+    3: (177.5, 150, 251, 204),
+    4: (251, 150, 305, 204),
+    5: (50, 204, 104, 258),
+    6: (104, 204, 177.5, 258),
+    7: (177.5, 204, 251, 258),
+    8: (251, 204, 305, 258),
+    9: (50, 258, 104, 312),
+    10: (104, 258, 177.5, 312),
+    11: (177.5, 258, 251, 312),
+    12: (251, 258, 305, 312),
+    13: (50, 312, 104, 366),
+    14: (104, 312, 177.5, 366),
+    15: (177.5, 312, 251, 366),
+    16: (251, 312, 305, 366),
+    17: (50, 366, 104, 423),
+    18: (104, 366, 177.5, 423),
+    19: (177.5, 366, 251, 423),
+    20: (251, 366, 305, 423),
+    21: (50, 423, 104, 480),
+    22: (104, 423, 177.5, 480),
+    23: (177.5, 423, 251, 480),
+    24: (251, 423, 305, 480),
+    25: (305, 366, 355, 480),
+    26: (305, 204, 355, 366),
+    27: (305, 0, 355, 204),
+    28: (177.5, 0, 305, 150),
+    29: (0, 366, 50, 480),
+    30: (0, 204, 50, 366),
+    31: (0, 0, 50, 204),
+    32: (50, 0, 177.5, 150),
+}
+
+
 def set_random_seed(seed):
     """Set random seed for reproducibility."""
     random.seed(seed)
@@ -39,13 +75,49 @@ class RandomAgent(BaseAgent):
         else:
             self.rng = np.random
 
+    @staticmethod
+    def area_candidates(ball_round):
+        """Return safe areas for rounds 1-5, then the full in-court area set."""
+        return tuple(range(1, 25 if ball_round <= 5 else 33))
+
+    @staticmethod
+    def shot_candidates(ball_round, launch):
+        """Sample all shot types without correcting for serve situations."""
+        return tuple(range(1, 11 if ball_round <= 5 else 12))
+
+    def sample_area_position(self, ball_round):
+        """Sample an area uniformly, then sample a coordinate inside its bounds."""
+        area_id = int(self.rng.choice(self.area_candidates(ball_round)))
+        min_x, min_y, max_x, max_y = RAW_AREA_BOUNDS[area_id]
+        raw_x = self.rng.uniform(
+            np.nextafter(float(min_x), float(max_x)),
+            np.nextafter(float(max_x), float(min_x)),
+        )
+        raw_y = self.rng.uniform(
+            np.nextafter(float(min_y), float(max_y)),
+            np.nextafter(float(max_y), float(min_y)),
+        )
+        normalized = (
+            (raw_x - 177.5) / 177.5,
+            (raw_y - 240.0) / 240.0,
+        )
+        return area_id, normalized
+
+    @staticmethod
+    def _ball_round(info):
+        rounds = (info or {}).get('round', [1])
+        value = rounds[0] if isinstance(rounds, (list, tuple)) else rounds
+        return int(value)
+
     def predict(self, state, info, launch):
+        ball_round = self._ball_round(info)
         hit = state[-1]
-        output = self.rng.rand(4,) * 2 - 1
-        output_shot = self.rng.randint(11, size=1)[0] + 1
+        _, landing = self.sample_area_position(ball_round)
+        _, moving = self.sample_area_position(ball_round)
+        output_shot = int(self.rng.choice(self.shot_candidates(ball_round, launch)))
 
         uniform_dist = [0.1] * 10
-        action = (output_shot, hit, tuple(output[:2]), tuple(output[2:]), uniform_dist)
+        action = (output_shot, hit, landing, moving, uniform_dist)
 
         return action, ""
 
@@ -170,7 +242,16 @@ def evaluate_random_on_test(test_split_path, merged_csv_path, player_index_map_p
                     # Create RandomAgent for current player with seed
                     random_agent = RandomAgent(ground_truth_player, seed=seed)
                     
-                    action, _ = random_agent.predict(env_state, {'rally': 0, 'round': [0], 'score': [0, 0], 'action': [None]}, launch)
+                    action, _ = random_agent.predict(
+                        env_state,
+                        {
+                            'rally': rally_num,
+                            'round': [int(current_state[1].item())],
+                            'score': [0, 0],
+                            'action': [None],
+                        },
+                        launch,
+                    )
                     
                     pred_shot_type = action[0]
                     pred_land = np.array(action[2])

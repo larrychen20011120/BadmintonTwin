@@ -106,12 +106,28 @@ def algorithm_runtime_rows(config, algorithm, **effective):
 
     retrieval = config.get("retrieval", {}) if isinstance(config, dict) else {}
     if algorithm in {"naive_rag", "timerag", "twin", "twin2"}:
-        rows.append(("retrieval.mode", effective.get("retrieval_mode", retrieval.get("mode", "classic"))))
-        rows.append(("retrieval.classic_top_k", effective.get("top_k", retrieval.get("classic_top_k", retrieval.get("top_k")))))
-        if algorithm != "twin2":
-            rows.append(("retrieval.normal_top_k", effective.get("normal_top_k", retrieval.get("normal_top_k"))))
-            rows.append(("retrieval.miss_top_k", effective.get("miss_top_k", retrieval.get("miss_top_k"))))
-
+        if algorithm in {"naive_rag", "timerag", "twin"}:
+            stage1 = retrieval.get("stage1", {})
+            stage2 = retrieval.get("stage2", {})
+            rows.append(("retrieval.architecture", effective.get(
+                "retrieval_mode", (
+                    "twin_aspect_two_stage_v1"
+                    if algorithm == "twin"
+                    else retrieval.get("architecture", "two_stage_v1")
+                )
+            )))
+            rows.append(("retrieval.stage1.normal_top_k", effective.get(
+                "normal_top_k", stage1.get("normal_top_k")
+            )))
+            rows.append(("retrieval.stage1.miss_top_k", effective.get(
+                "miss_top_k", stage1.get("miss_top_k")
+            )))
+            rows.append(("retrieval.stage2.conditioned_top_k", effective.get(
+                "top_k", stage2.get("conditioned_top_k")
+            )))
+        else:
+            rows.append(("retrieval.mode", effective.get("retrieval_mode", retrieval.get("mode", "classic"))))
+            rows.append(("retrieval.classic_top_k", effective.get("top_k", retrieval.get("classic_top_k", retrieval.get("top_k")))))
     if algorithm == "timerag":
         rows.append(("timerag.window_size", effective.get("window_size", config.get("timerag", {}).get("window_size"))))
     elif algorithm == "twin":

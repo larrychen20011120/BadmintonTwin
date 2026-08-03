@@ -138,7 +138,7 @@ class EmbeddingProviderTest(unittest.TestCase):
                 embedding_dimension=3,
             )
 
-        self.assertEqual(metadata["schema_version"], 2)
+            self.assertEqual(metadata["schema_version"], TwinEmbeddingCache.schema_version)
         self.assertEqual(metadata["provider"], "openrouter")
         self.assertEqual(metadata["configured_dimension"], 3)
         self.assertNotIn("api_key", metadata)

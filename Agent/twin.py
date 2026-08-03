@@ -19,15 +19,20 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir
 sys.path.append(project_path)
 
 from Agent.base_agent import BaseAgent
-from Agent.timerag import TimeRAGVerbalizer
+from Agent.naive_rag import NaiveRAGVerbalizer
 from Utils.badminton_config import INDEX2EN_SHOT, LANG_AREA_MAPPING
+from Utils.artifact_names import player_database_filename
 from Utils.helper import action_col, coord2area, edit_distance, normalized_dtw_ndim_distance, state_col, terminate, transition
 from Utils.langfuse_tracing import BadmintonTracer
 from Utils.llm import LLM
 
 
-OPENING_RALLY_SUMMARY = "Opening rally of the match"
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1"
+EMBEDDING_PREFIXES = {
+    "document": "search_document: ",
+    "query": "search_query: ",
+}
+EMBEDDING_PREFIX_CONTRACT_VERSION = 2
 
 
 def safe_float(value, default=0.0):
@@ -52,21 +57,6 @@ def safe_player_name(player_name):
     return str(player_name).replace(" ", "_").replace(".", "")
 
 
-def load_embedding_model(model_name=DEFAULT_EMBEDDING_MODEL, device=None, revision=None):
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise ImportError(
-            "Twin requires sentence-transformers. Run `uv sync --extra twin`."
-        ) from exc
-    model_kwargs = {}
-    if revision:
-        model_kwargs["revision"] = revision
-    if device and str(device).lower() != "auto":
-        model_kwargs["device"] = device
-    return SentenceTransformer(model_name, **model_kwargs)
-
-
 def get_embedding_dimension(model):
     dimension = None
     if hasattr(model, "get_embedding_dimension"):
@@ -79,10 +69,24 @@ def get_embedding_dimension(model):
     return int(dimension)
 
 
-def encode_texts(model, texts, embedding_dim=None, batch_size=None, normalize_embeddings=True):
+def embedding_prefix(model_name, input_type):
+    model_name = str(model_name or "").lower()
+    if "nomic" in model_name:
+        return EMBEDDING_PREFIXES[input_type]
+    if "bge" in model_name and input_type == "query":
+        return "Represent this sentence for searching relevant passages: "
+    return ""
+
+
+def encode_texts(model, texts, embedding_dim=None, batch_size=None, normalize_embeddings=True,
+                 input_type=None, model_name=None):
     embedding_dim = int(embedding_dim or get_embedding_dimension(model))
     if not texts:
         return np.zeros((0, embedding_dim), dtype=np.float32)
+    if input_type not in EMBEDDING_PREFIXES:
+        raise ValueError("Twin embedding input_type must be document or query")
+    prefix = embedding_prefix(model_name, input_type)
+    texts = [f"{prefix}{text}" for text in texts]
     encode_kwargs = {}
     if batch_size is not None:
         encode_kwargs["batch_size"] = int(batch_size)
@@ -97,9 +101,15 @@ def encode_texts(model, texts, embedding_dim=None, batch_size=None, normalize_em
 
 
 def twin_memory_digest(memories):
-    """Fingerprint the ordered semantic texts used to build an embedding cache."""
+    """Fingerprint all ordered fields that affect Twin retrieval or actions."""
+    digest_keys = (
+        "memory_id", "semantic_text", "player_type", "opponent_type",
+        "player_location_x", "player_location_y", "hit_x", "hit_y",
+        "opponent_location_x", "opponent_location_y",
+        "landing_x", "landing_y", "moving_x", "moving_y",
+    )
     records = [
-        [str(memory.get("memory_id", "")), str(memory.get("semantic_text", ""))]
+        {key: memory.get(key) for key in digest_keys}
         for memory in memories
     ]
     payload = json.dumps(records, ensure_ascii=True, separators=(",", ":"))
@@ -115,6 +125,7 @@ def embedding_model_key(model_name, revision=None, normalize_embeddings=True, dt
         "embedding_dimension": embedding_dimension,
         "normalize_embeddings": bool(normalize_embeddings),
         "dtype": str(dtype),
+        "prefix_contract_version": EMBEDDING_PREFIX_CONTRACT_VERSION,
     }
     digest = hashlib.sha256(
         json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -135,14 +146,15 @@ def embedding_cache_paths(cache_root, player_name, model_name, revision=None,
             embedding_dimension,
         ),
     )
-    basename = f"{safe_player_name(player_name)}_embeddings"
+    database_stem = os.path.splitext(player_database_filename(player_name))[0]
+    basename = f"{database_stem.removesuffix('_db')}_embeddings"
     return os.path.join(model_dir, f"{basename}.npy"), os.path.join(model_dir, f"{basename}.json")
 
 
 class TwinEmbeddingCache:
     """Model-specific, disposable semantic embeddings for a TwinDatabase."""
 
-    schema_version = 2
+    schema_version = 4
 
     def __init__(self, player_name, model_name, embeddings, memory_digest,
                  revision=None, normalize_embeddings=True, dtype="float32",
@@ -179,6 +191,8 @@ class TwinEmbeddingCache:
             embedding_dim=embedding_dim,
             batch_size=batch_size,
             normalize_embeddings=normalize_embeddings,
+            input_type="document",
+            model_name=model_name,
         ).astype(dtype, copy=False)
         return cls(
             database.player_name,
@@ -247,6 +261,10 @@ class TwinEmbeddingCache:
         try:
             with os.fdopen(array_fd, "wb") as f:
                 np.save(f, self.embeddings, allow_pickle=False)
+            array_digest = hashlib.sha256()
+            with open(array_tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    array_digest.update(chunk)
             metadata = {
                 "schema_version": self.schema_version,
                 "player_name": self.player_name,
@@ -259,6 +277,8 @@ class TwinEmbeddingCache:
                 "embedding_dim": self.embedding_dim,
                 "memory_count": int(self.embeddings.shape[0]),
                 "memory_digest": self.memory_digest,
+                "array_sha256": array_digest.hexdigest(),
+                "prefix_contract_version": EMBEDDING_PREFIX_CONTRACT_VERSION,
             }
             with os.fdopen(metadata_fd, "w") as f:
                 json.dump(metadata, f, indent=2, sort_keys=True)
@@ -288,6 +308,14 @@ class TwinEmbeddingCache:
         if metadata.get("schema_version") != cls.schema_version:
             raise ValueError(f"Unsupported Twin embedding cache schema: {metadata.get('schema_version')}")
         embeddings = np.load(array_path, mmap_mode=mmap_mode, allow_pickle=False)
+        array_digest = hashlib.sha256()
+        with open(array_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                array_digest.update(chunk)
+        if metadata.get("array_sha256") != array_digest.hexdigest():
+            raise ValueError(f"Twin embedding array checksum mismatch for {database.player_name}.")
+        if metadata.get("prefix_contract_version") != EMBEDDING_PREFIX_CONTRACT_VERSION:
+            raise ValueError(f"Unsupported Twin embedding prefix contract for {database.player_name}.")
         cache = cls(
             metadata["player_name"], metadata["model_name"], embeddings,
             metadata["memory_digest"], revision=metadata.get("revision"),
@@ -310,14 +338,12 @@ class TwinEmbeddingCache:
 
 
 def build_semantic_text(my_tactical_pattern, my_tempo_movement_dynamics,
-                        opponent_tactical_pattern, opponent_tempo_movement_dynamics,
-                        previous_rally_summary, rally_dynamics=None):
+                        opponent_tactical_pattern, opponent_tempo_movement_dynamics):
     return "\n".join([
         f"My tactical pattern: {my_tactical_pattern}",
         f"My tempo and movement dynamics: {my_tempo_movement_dynamics}",
         f"Opponent tactical pattern: {opponent_tactical_pattern}",
         f"Opponent tempo and movement dynamics: {opponent_tempo_movement_dynamics}",
-        f"Previous rally summary: {previous_rally_summary}",
     ])
 
 
@@ -337,7 +363,7 @@ def shot_name_from_type(shot_type):
 class TwinDatabase:
     """Player-specific aspect-memory retrieval database for Twin."""
 
-    schema_version = 4
+    schema_version = 7
 
     def __init__(self, df, player_name, player_id):
         self.player_name = str(player_name)
@@ -631,36 +657,14 @@ class TwinDatabase:
             meta["opponent_score"] = safe_float(first.get("opponent_score"))
         return meta
 
-    def _fallback_annotation(self, rally_df, previous_rally_summary):
+    def _fallback_annotation(self, rally_df):
         first_round = safe_int(rally_df["ball_round"].min(), 1) if len(rally_df) else 1
         last_round = safe_int(rally_df["ball_round"].max(), first_round) if len(rally_df) else first_round
-        target_rows = rally_df[rally_df["player"].astype(str) == self.player_name] if "player" in rally_df else rally_df
-        shot_names = []
-        for _, row in target_rows.iterrows():
-            shot_type = safe_int(row.get("player_type"))
-            if shot_type > 0:
-                shot_names.append(shot_name_from_type(shot_type))
-        summary = "Target player rally with " + (", ".join(shot_names[:6]) if shot_names else "available stroke evidence") + "."
         segment = [{
             "range": [first_round, last_round],
-            "phase_name": "Full-rally fallback phase",
-            "narrative": "Full-rally fallback narrative based on available numeric stroke evidence.",
-            "advantage_state": "not specified in fallback annotation",
-            "physical_load_trend": "not specified in fallback annotation",
-            "transition_reason": "fallback annotation does not infer phase transitions",
-            "evidence_strokes": [int(v) for v in rally_df.get("ball_round", pd.Series([first_round])).dropna().astype(int).tolist()],
+            "phase": "Full-rally fallback phase",
         }]
         return {
-            "rally_summary": summary,
-            "rally_dynamics": {
-                "advantage_flow": "not specified in fallback annotation",
-                "physical_load_flow": "not specified in fallback annotation",
-                "turning_point": {
-                    "stroke": first_round,
-                    "description": "not specified in fallback annotation",
-                    "effect_on_advantage": "not specified in fallback annotation",
-                },
-            },
             "aspect_segments": {
                 "my_tactical_pattern": segment,
                 "my_tempo_movement_dynamics": segment,
@@ -669,38 +673,80 @@ class TwinDatabase:
             },
         }
 
-    def _annotate_rally_with_llm(self, llm, system_prompt, user_template, rally_df, group_key, previous_rally_summary):
-        players = [str(p) for p in rally_df.get("player", pd.Series(dtype=str)).dropna().unique()]
-        opponent = next((p for p in players if p != self.player_name), "Unknown")
+    def _annotate_rally_with_llm(self, llm, system_prompt, user_template, rally_df):
         rally_turn_based_text = self.build_rally_turn_based_text(rally_df)
         rally_meta_text = self.build_rally_meta_text(rally_df)
         context = {
-            "previous_rally_summary": previous_rally_summary,
             "rally_meta_text": rally_meta_text,
             "rally_turn_based_text": rally_turn_based_text,
+            "first_ball_round": int(rally_df["ball_round"].min()),
+            "last_ball_round": int(rally_df["ball_round"].max()),
         }
         user_prompt = user_template.render(**context)
         response, _, _ = llm.get_verified_response(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_trials=5,
+            validator=lambda value: self._validate_rally_annotation(value, rally_df),
         )
-        if isinstance(response, dict) and "rally_summary" in response and "aspect_segments" in response:
+        if self._validate_rally_annotation(response, rally_df):
             return response
-        return self._fallback_annotation(rally_df, previous_rally_summary)
+        return self._fallback_annotation(rally_df)
 
-    def annotate_rally(self, rally_df, previous_rally_summary=OPENING_RALLY_SUMMARY,
-                       llm=None, use_llm=True, group_key=None):
+    @staticmethod
+    def _validate_rally_annotation(annotation, rally_df):
+        if (
+            not isinstance(annotation, dict)
+            or set(annotation) != {"aspect_segments"}
+            or not isinstance(annotation.get("aspect_segments"), dict)
+        ):
+            return False
+        rounds = rally_df.get("ball_round", pd.Series(dtype=float)).dropna().astype(int)
+        if rounds.empty:
+            return False
+        first_round = int(rounds.min())
+        last_round = int(rounds.max())
+        aspects = (
+            "my_tactical_pattern",
+            "my_tempo_movement_dynamics",
+            "opponent_tactical_pattern",
+            "opponent_tempo_movement_dynamics",
+        )
+        if set(annotation["aspect_segments"]) != set(aspects):
+            return False
+        for aspect in aspects:
+            segments = annotation["aspect_segments"].get(aspect)
+            if not isinstance(segments, list) or not segments:
+                return False
+            expected_start = first_round
+            for segment in segments:
+                if not isinstance(segment, dict) or set(segment) != {"range", "phase"}:
+                    return False
+                interval = segment.get("range")
+                if not isinstance(interval, list) or len(interval) != 2:
+                    return False
+                if any(isinstance(value, bool) or not isinstance(value, int) for value in interval):
+                    return False
+                start, end = interval
+                if start != expected_start or end < start or end > last_round:
+                    return False
+                phase = segment.get("phase")
+                if (
+                    not isinstance(phase, str)
+                    or not phase.strip()
+                    or len(phase.split()) > 20
+                ):
+                    return False
+                expected_start = end + 1
+            if expected_start != last_round + 1:
+                return False
+        return True
+
+    def annotate_rally(self, rally_df, llm=None, use_llm=True):
         """Annotate a single completed rally for inspection or memory construction."""
         rally_df = rally_df.sort_values("ball_round").reset_index(drop=True)
-        if group_key is None:
-            group_key = [safe_int(rally_df.iloc[0].get("match_id")) if len(rally_df) else 0]
-            if "set" in rally_df.columns and len(rally_df):
-                group_key.append(safe_int(rally_df.iloc[0].get("set")))
-            group_key.append(safe_int(rally_df.iloc[0].get("rally")) if len(rally_df) else 0)
-            group_key = tuple(group_key)
         if not use_llm:
-            return self._fallback_annotation(rally_df, previous_rally_summary)
+            return self._fallback_annotation(rally_df)
 
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "twin")
@@ -714,27 +760,21 @@ class TwinDatabase:
             system_prompt,
             user_template,
             rally_df,
-            group_key,
-            previous_rally_summary,
         )
 
-    def build_stroke_annotations(self, rally_df, annotation, previous_rally_summary=OPENING_RALLY_SUMMARY):
+    def build_stroke_annotations(self, rally_df, annotation):
         """Attach a single-rally annotation to each target-player stroke."""
         rally_df = rally_df.sort_values("ball_round").reset_index(drop=True)
         target_rows = rally_df[rally_df["player"].astype(str) == self.player_name] if "player" in rally_df else rally_df
         return [
-            self._build_memory_from_row(row, annotation, previous_rally_summary)
+            self._build_memory_from_row(row, annotation)
             for _, row in target_rows.iterrows()
         ]
 
     @staticmethod
     def _segment_for_round(segments, ball_round):
         def _format_segment(segment):
-            phase_name = str(
-                segment.get("phase_name") or "Unspecified phase"
-            ).strip().rstrip(".")
-            narrative = str(segment.get("narrative") or "").strip()
-            return f"{phase_name}. {narrative}".strip()
+            return str(segment.get("phase") or "Unspecified phase").strip()
 
         for segment in segments or []:
             rng = segment.get("range", [ball_round, ball_round])
@@ -744,21 +784,18 @@ class TwinDatabase:
             return _format_segment(segments[0])
         return "No aspect evidence available."
 
-    def _build_memory_from_row(self, row, annotation, previous_rally_summary):
+    def _build_memory_from_row(self, row, annotation):
         ball_round = safe_int(row.get("ball_round"), 1)
         segments = annotation.get("aspect_segments", {}) if isinstance(annotation, dict) else {}
         my_tactical_pattern = self._segment_for_round(segments.get("my_tactical_pattern"), ball_round)
         my_tempo_movement_dynamics = self._segment_for_round(segments.get("my_tempo_movement_dynamics"), ball_round)
         opponent_tactical_pattern = self._segment_for_round(segments.get("opponent_tactical_pattern"), ball_round)
         opponent_tempo_movement_dynamics = self._segment_for_round(segments.get("opponent_tempo_movement_dynamics"), ball_round)
-        rally_dynamics = annotation.get("rally_dynamics", {}) if isinstance(annotation, dict) else {}
         semantic_text = build_semantic_text(
             my_tactical_pattern,
             my_tempo_movement_dynamics,
             opponent_tactical_pattern,
             opponent_tempo_movement_dynamics,
-            previous_rally_summary,
-            rally_dynamics=rally_dynamics,
         )
 
         memory = {
@@ -771,8 +808,6 @@ class TwinDatabase:
             "my_tempo_movement_dynamics": my_tempo_movement_dynamics,
             "opponent_tactical_pattern": opponent_tactical_pattern,
             "opponent_tempo_movement_dynamics": opponent_tempo_movement_dynamics,
-            "rally_dynamics": rally_dynamics,
-            "previous_rally_summary": previous_rally_summary,
             "is_miss": safe_int(row.get("player_type")) == 11,
             "outcome_type": "miss" if safe_int(row.get("player_type")) == 11 else "normal",
         }
@@ -834,35 +869,27 @@ class TwinDatabase:
             system_prompt = f.read()
         llm = llm or LLM()
         self.memories = []
-        previous_by_match = {}
         built_rallies = 0
-        for group_key, rally_df in self._group_rallies():
+        for _, rally_df in self._group_rallies():
             if max_rallies is not None and built_rallies >= max_rallies:
                 break
-            match_id = safe_int(group_key[0])
-            previous_summary = previous_by_match.get(match_id, OPENING_RALLY_SUMMARY)
-            annotation = self._annotate_rally_with_llm(llm, system_prompt, user_template, rally_df, group_key, previous_summary)
+            annotation = self._annotate_rally_with_llm(llm, system_prompt, user_template, rally_df)
             target_rows = rally_df[rally_df["player"].astype(str) == self.player_name] if "player" in rally_df else rally_df
             for _, row in target_rows.iterrows():
-                self.memories.append(self._build_memory_from_row(row, annotation, previous_summary))
-            previous_by_match[match_id] = str(annotation.get("rally_summary", "")) or previous_summary
+                self.memories.append(self._build_memory_from_row(row, annotation))
             built_rallies += 1
         self._build_memory_stores()
 
     def build_with_fallback(self, max_rallies=None):
         self.memories = []
-        previous_by_match = {}
         built_rallies = 0
-        for group_key, rally_df in self._group_rallies():
+        for _, rally_df in self._group_rallies():
             if max_rallies is not None and built_rallies >= max_rallies:
                 break
-            match_id = safe_int(group_key[0])
-            previous_summary = previous_by_match.get(match_id, OPENING_RALLY_SUMMARY)
-            annotation = self._fallback_annotation(rally_df, previous_summary)
+            annotation = self._fallback_annotation(rally_df)
             target_rows = rally_df[rally_df["player"].astype(str) == self.player_name] if "player" in rally_df else rally_df
             for _, row in target_rows.iterrows():
-                self.memories.append(self._build_memory_from_row(row, annotation, previous_summary))
-            previous_by_match[match_id] = annotation["rally_summary"]
+                self.memories.append(self._build_memory_from_row(row, annotation))
             built_rallies += 1
         self._build_memory_stores()
 
@@ -941,12 +968,17 @@ class TwinDatabase:
         )
 
     def retrieve_dual(self, query_state, query_embedding, normal_top_k=8, miss_top_k=5,
-                      lambda_weight=0.5, miss_lambda_weight=None):
-        miss_lambda_weight = miss_lambda_weight if miss_lambda_weight is not None else max(lambda_weight, 0.7)
+                      lambda_weight=0.5, miss_lambda_weight=None, launch=False):
+        miss_lambda_weight = miss_lambda_weight if miss_lambda_weight is not None else lambda_weight
+        legal_types = {1, 10} if launch else set(range(2, 10))
+        normal_indices = [
+            idx for idx in self.memory_stores.get("normal", [])
+            if safe_int(self.memories[idx].get("player_type")) in legal_types
+        ]
         normal_memories = self._retrieve_from_indices(
             query_state,
             query_embedding,
-            self.memory_stores.get("normal", []),
+            normal_indices,
             top_k=normal_top_k,
             lambda_weight=lambda_weight,
         )
@@ -975,6 +1007,47 @@ class TwinDatabase:
                 "miss_lambda_weight": float(miss_lambda_weight),
             },
         }
+
+    def retrieve_stage1(self, query_state, query_embedding, normal_top_k=10, miss_top_k=5,
+                        lambda_weight=0.5, launch=False):
+        return self.retrieve_dual(
+            query_state,
+            query_embedding,
+            normal_top_k=normal_top_k,
+            miss_top_k=miss_top_k,
+            lambda_weight=lambda_weight,
+            launch=launch,
+        )
+
+    def available_shot_types(self, launch=False):
+        legal_types = {1, 10} if launch else set(range(2, 10))
+        return sorted({
+            safe_int(self.memories[idx].get("player_type"))
+            for idx in self.memory_stores.get("normal", [])
+            if safe_int(self.memories[idx].get("player_type")) in legal_types
+        })
+
+    def retrieve_by_shot_type(self, query_state, query_embedding, shot_type, top_k=10,
+                              lambda_weight=0.5):
+        shot_type = safe_int(shot_type)
+        if shot_type == 11:
+            raise ValueError("Missed shot cannot be used for Twin Stage 2 retrieval")
+        coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
+        indices = []
+        for idx in self.memory_stores.get("normal", []):
+            memory = self.memories[idx]
+            if safe_int(memory.get("player_type")) != shot_type:
+                continue
+            coordinates = [safe_float(memory.get(key), default=np.nan) for key in coordinate_keys]
+            if all(np.isfinite(value) and -1.0 <= value <= 1.0 for value in coordinates):
+                indices.append(idx)
+        return self._retrieve_from_indices(
+            query_state,
+            query_embedding,
+            indices,
+            top_k=top_k,
+            lambda_weight=lambda_weight,
+        )
 
     def save(self, filepath):
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
@@ -1035,34 +1108,41 @@ class TwinDatabase:
 
 
 def create_twin_verbalizer():
-    return TimeRAGVerbalizer()
+    return NaiveRAGVerbalizer()
 
 
 class TwinAgent(BaseAgent):
-    """Two-step Twin agent: aspect estimation, joint retrieval, action generation."""
+    """Aspect-conditioned Twin retrieval with two-stage action generation."""
 
-    def __init__(self, player_name, database, embedding_cache, model_name=None, api_key=None, host=None, port=None,
-                  base_url=None, host_url=None, top_k=5, lambda_weight=0.5,
-                  normal_top_k=None, miss_top_k=None, retrieval_mode="classic",
-                  embedding_model_name=DEFAULT_EMBEDDING_MODEL, embedding_device="auto",
-                   embedding_batch_size=None, embedding_revision=None,
-                   normalize_embeddings=True, embedding_dtype="float32",
-                   embedding_model=None, enable_tracing=True, prompt_variant="norm",
-                   embedding_provider="local", embedding_dimension=None):
+    def __init__(self, player_name, database, embedding_cache, model_name=None, api_key=None,
+                 host=None, port=None, base_url=None, host_url=None, normal_top_k=10,
+                 miss_top_k=5, conditioned_top_k=10, lambda_weight=0.5,
+                 embedding_model_name=DEFAULT_EMBEDDING_MODEL,
+                 embedding_batch_size=None, embedding_revision=None,
+                 normalize_embeddings=True, embedding_dtype="float32",
+                 embedding_model=None, enable_tracing=True,
+                 instruction_mode="no_instruct", embedding_provider="local",
+                 embedding_dimension=None):
         super().__init__(player_name)
         self.database = database
-        self.top_k = top_k
-        self.lambda_weight = lambda_weight
-        self.normal_top_k = normal_top_k if normal_top_k is not None else top_k
-        self.miss_top_k = miss_top_k if miss_top_k is not None else max(1, min(5, top_k))
-        self.retrieval_mode = retrieval_mode
-        self.prompt_variant = prompt_variant
+        self.normal_top_k = int(normal_top_k)
+        self.miss_top_k = int(miss_top_k)
+        self.conditioned_top_k = int(conditioned_top_k)
+        if min(self.normal_top_k, self.miss_top_k, self.conditioned_top_k) < 1:
+            raise ValueError("Twin two-stage retrieval top-k values must all be positive")
+        self.lambda_weight = float(lambda_weight)
+        if not 0.0 <= self.lambda_weight <= 1.0:
+            raise ValueError("Twin lambda_weight must be between 0 and 1")
+        if instruction_mode not in {"instruct", "no_instruct"}:
+            raise ValueError("instruction_mode must be instruct or no_instruct")
+        self.instruction_mode = instruction_mode
+        self.retrieval_architecture = "two_stage_v1"
+        self.pre_stage_architecture = "twin_aspect_v1"
         self.tracer = BadmintonTracer("twin", player_name, enable_tracing)
-        self.verbalizer = TimeRAGVerbalizer()
+        self.verbalizer = NaiveRAGVerbalizer()
         self.embedding_model_name = embedding_model_name
         self.embedding_provider = embedding_provider
         self.configured_embedding_dimension = embedding_dimension
-        self.embedding_device = embedding_device
         self.embedding_batch_size = embedding_batch_size
         self.embedding_revision = embedding_revision
         self.normalize_embeddings = bool(normalize_embeddings)
@@ -1077,13 +1157,9 @@ class TwinAgent(BaseAgent):
             embedding_dimension,
         )
         database.attach_embedding_cache(embedding_cache)
-        if embedding_model is None and embedding_provider != "local":
-            raise ValueError(
-                f"An initialized embedding client is required for provider {embedding_provider}."
-            )
-        self.embedding_model = embedding_model or load_embedding_model(
-            embedding_model_name, embedding_device, embedding_revision
-        )
+        if embedding_model is None:
+            raise ValueError("An initialized local embedding client is required")
+        self.embedding_model = embedding_model
         self.embedding_dim = get_embedding_dimension(self.embedding_model)
         if embedding_cache.embedding_dim != self.embedding_dim:
             raise ValueError(
@@ -1092,33 +1168,21 @@ class TwinAgent(BaseAgent):
                 "Rebuild the Twin embedding cache or align config.yaml."
             )
         self.llm = LLM(model_name=model_name, api_key=api_key, host=host, port=port, base_url=base_url, host_url=host_url)
-        self.previous_rally_summary = OPENING_RALLY_SUMMARY
         self.trajectory = []
         self._current_rally = None
+        self._last_case_ids = []
+        self.last_decision_trace = None
 
         prompt_root = os.path.join(project_path, "Prompts", "New")
         prompt_dir = os.path.join(prompt_root, "twin")
-        template_names = {
-            ("classic", "norm"): "classic_user.jinja",
-            ("classic", "shifted"): "classic_shifted_user.jinja",
-            ("dual_db", "norm"): "dual_user.jinja",
-            ("dual_db", "shifted"): "dual_shifted_user.jinja",
-        }
-        template_key = (retrieval_mode, prompt_variant)
-        if template_key not in template_names:
-            raise ValueError(
-                f"Unsupported retrieval_mode/prompt_variant: {retrieval_mode}/{prompt_variant}"
-            )
-
         with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
-        final_template = template_names[template_key]
-        with open(os.path.join(prompt_dir, final_template), "r") as f:
-            self.user_template = Template(f.read())
+        with open(os.path.join(prompt_dir, f"stage1_{instruction_mode}.jinja"), "r") as f:
+            self.stage1_template = Template(f.read())
+        with open(os.path.join(prompt_dir, f"stage2_{instruction_mode}.jinja"), "r") as f:
+            self.stage2_template = Template(f.read())
         with open(os.path.join(prompt_dir, "aspect_user.jinja"), "r") as f:
             self.aspect_template = Template(f.read())
-        with open(os.path.join(prompt_dir, "summary_user.jinja"), "r") as f:
-            self.summary_template = Template(f.read())
 
     def _build_state_dict_from_env(self, state, info):
         player_score = info["score"][0] if info.get("score") else 0
@@ -1153,34 +1217,158 @@ class TwinAgent(BaseAgent):
             "opponent_move_y": 0,
         }
 
-    @staticmethod
-    def _parse_llm_action(response):
-        return BaseAgent.parse_prompt_action(response)
+    def _normalize_history_for_player(self, history):
+        normalized = []
+        for stroke in history or []:
+            stroke_data = dict(stroke)
+            player = stroke_data.get("player")
+            stroke_data["is_target_turn"] = (
+                str(player) == str(self.player_name)
+                if player is not None else bool(stroke_data.get("is_target_turn", True))
+            )
+            stroke_data["turn_role"] = "target" if stroke_data["is_target_turn"] else "opponent"
+            normalized.append(stroke_data)
+        return normalized
 
-    def _estimate_aspects(self, state_dict, state_history, style_shift_instruction=""):
+    @staticmethod
+    def _validate_aspect_response(response):
+        required = {
+            "my_tactical_pattern",
+            "my_tempo_movement_dynamics",
+            "opponent_tactical_pattern",
+            "opponent_tempo_movement_dynamics",
+        }
+        return (
+            isinstance(response, dict)
+            and set(response) == required
+            and all(
+                isinstance(response[key], str)
+                and response[key].strip()
+                and len(response[key].split()) <= 20
+                for key in required
+            )
+        )
+
+    def _estimate_aspects(self, state_dict, state_history, rally_profile_instruction=""):
         trajectory_text = self.verbalizer.build_trajectory_text((state_history or []) + [state_dict], state_dict)
         user_prompt = self.aspect_template.render(
             trajectory_text=trajectory_text,
-            previous_rally_summary=self.previous_rally_summary,
-            style_shift_instruction=style_shift_instruction,
+            rally_profile_instruction=rally_profile_instruction,
         )
-        response, _, _ = self.llm.get_verified_response(system_prompt=self.system_prompt, user_prompt=user_prompt, max_trials=5)
-        if isinstance(response, dict) and response.get("semantic_query_text"):
-            return response
-        semantic_text = build_semantic_text(
-            "Current target-player tactical pattern inferred from numeric rally prefix.",
-            "Target-player tempo and movement dynamics inferred from reachability and recovery context.",
-            "Opponent tactical pressure inferred from incoming shot and court positions.",
-            "Opponent tempo and movement dynamics inferred from court balance and recovery context.",
-            self.previous_rally_summary,
+        t0 = time.time()
+        response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+            self.llm,
+            system_prompt=self.system_prompt,
+            user_prompt=user_prompt,
+            max_trials=5,
+            validator=self._validate_aspect_response,
         )
+        self.tracer.log_generation(
+            self.system_prompt,
+            user_prompt,
+            response,
+            latency_ms=int((time.time() - t0) * 1000),
+            raw_llm_output=raw_llm_output,
+            usage=usage,
+            stage="aspect",
+        )
+        if self._validate_aspect_response(response):
+            aspects = dict(response)
+            source = "llm"
+        else:
+            aspects = {
+                "my_tactical_pattern": "Current tactical phase unknown",
+                "my_tempo_movement_dynamics": "Current movement phase unknown",
+                "opponent_tactical_pattern": "Opponent tactical phase unknown",
+                "opponent_tempo_movement_dynamics": "Opponent movement phase unknown",
+            }
+            source = "fallback"
+        aspects["semantic_query_text"] = build_semantic_text(
+            aspects["my_tactical_pattern"],
+            aspects["my_tempo_movement_dynamics"],
+            aspects["opponent_tactical_pattern"],
+            aspects["opponent_tempo_movement_dynamics"],
+        )
+        return aspects, source
+
+    def _format_stage1_cases(self, memories):
+        return [
+            {
+                "case_id": memory["memory_id"],
+                "stage1_description": self.verbalizer.build_case_verbalization(memory)["stage1_description"],
+            }
+            for memory in memories
+        ]
+
+    def _format_stage2_cases(self, memories):
+        cases = []
+        for memory in memories:
+            description = self.verbalizer.build_case_verbalization(memory)["stage2_description"]
+            semantic_text = str(memory.get("semantic_text", "")).strip()
+            if semantic_text:
+                description = f"{description}\nTwin semantic context:\n{semantic_text}"
+            cases.append({
+                "case_id": memory["memory_id"],
+                "stage2_description": description,
+            })
+        return cases
+
+    def _case_references(self, cases, stage, store, conditioned_shot_type=None):
+        references = []
+        for rank, case in enumerate(cases, 1):
+            reference = {
+                "database_player": self.player_name,
+                "stage": int(stage),
+                "store": store,
+                "case_id": str(case["memory_id"]),
+                "rank": rank,
+                "score": float(case["score"]),
+                "state_similarity": float(case["state_similarity"]),
+                "semantic_similarity": float(case["semantic_similarity"]),
+            }
+            if conditioned_shot_type is not None:
+                reference["conditioned_shot_type"] = int(conditioned_shot_type)
+            references.append(reference)
+        return references
+
+    @staticmethod
+    def _nearest_case(cases):
+        if not cases:
+            return None
+        return max(cases, key=lambda case: (float(case["score"]), str(case["memory_id"])))
+
+    def _stage1_fallback(self, retrieval, launch):
+        nearest = self._nearest_case(retrieval["normal_cases"] + retrieval["miss_cases"])
+        if nearest is not None:
+            shot_type = safe_int(nearest.get("player_type"))
+            return {
+                "rationale": "Stage 1 fallback copied the nearest legal Twin memory outcome.",
+                "outcome": "missed" if shot_type == 11 else "returned",
+                "shot_type": shot_type,
+            }, "fallback_nearest_case"
         return {
-            "my_tactical_pattern": "Fallback current target-player tactical pattern.",
-            "my_tempo_movement_dynamics": "Fallback target-player tempo and movement dynamics estimate.",
-            "opponent_tactical_pattern": "Fallback opponent tactical pattern.",
-            "opponent_tempo_movement_dynamics": "Fallback opponent tempo and movement dynamics estimate.",
-            "semantic_query_text": semantic_text,
-        }
+            "rationale": "Stage 1 fallback used the deterministic legal default.",
+            "outcome": "returned",
+            "shot_type": 1 if launch else 2,
+        }, "fallback_default"
+
+    def _stage2_fallback(self, conditioned_cases):
+        nearest = self._nearest_case(conditioned_cases)
+        if nearest is None:
+            return {
+                "rationale": "Stage 2 fallback used neutral placement because no conditioned Twin memory exists.",
+                "landing_x": 0.0,
+                "landing_y": 0.0,
+                "moving_x": 0.0,
+                "moving_y": 0.0,
+            }, "fallback_neutral"
+        return {
+            "rationale": "Stage 2 fallback copied placement from the nearest shot-conditioned Twin memory.",
+            "landing_x": float(nearest["landing_x"]),
+            "landing_y": float(nearest["landing_y"]),
+            "moving_x": float(nearest["moving_x"]),
+            "moving_y": float(nearest["moving_y"]),
+        }, "fallback_nearest_conditioned_case"
 
     def predict(self, state, info, launch):
         state_dict = self._build_state_dict_from_env(state, info)
@@ -1188,78 +1376,169 @@ class TwinAgent(BaseAgent):
         if self._current_rally != rally_num:
             self._current_rally = rally_num
             self.trajectory = []
-        state_history = list(self.trajectory)
+        shared_history = info.get("rally_history")
+        if shared_history is not None:
+            state_history = self._normalize_history_for_player(shared_history)
+        else:
+            state_history = list(self.trajectory)
         self.trajectory.append(state_dict)
 
         self.tracer.start_trace(state_dict, info, launch)
-        aspects = self._estimate_aspects(state_dict, state_history, info.get("style_shift_instruction", ""))
+        profile_instruction = info.get("rally_profile_instruction", "")
+        aspects, aspect_source = self._estimate_aspects(
+            state_dict,
+            state_history,
+            profile_instruction,
+        )
         query_embedding = encode_texts(
             self.embedding_model,
             [aspects["semantic_query_text"]],
             self.embedding_dim,
             self.embedding_batch_size,
             normalize_embeddings=self.normalize_embeddings,
+            input_type="query",
+            model_name=self.embedding_model_name,
         )[0]
 
         t0 = time.time()
-        if self.retrieval_mode == "dual_db":
-            retrieval_result = self.database.retrieve_dual(
-                state_dict,
-                query_embedding,
-                normal_top_k=self.normal_top_k,
-                miss_top_k=self.miss_top_k,
-                lambda_weight=self.lambda_weight,
-            )
-            memories = retrieval_result["normal_cases"] + retrieval_result["miss_cases"]
-        else:
-            retrieval_result = self.database.retrieve(
-                state_dict,
-                query_embedding,
-                top_k=self.top_k,
-                lambda_weight=self.lambda_weight,
-            )
-            memories = retrieval_result
+        retrieval_result = self.database.retrieve_stage1(
+            state_dict,
+            query_embedding,
+            normal_top_k=self.normal_top_k,
+            miss_top_k=self.miss_top_k,
+            lambda_weight=self.lambda_weight,
+            launch=launch,
+        )
+        memories = retrieval_result["normal_cases"] + retrieval_result["miss_cases"]
         t1 = time.time()
-        self.tracer.log_retrieval(state_dict, memories, "twin", int((t1 - t0) * 1000))
+        self.tracer.log_retrieval(
+            state_dict, memories, "twin", int((t1 - t0) * 1000), stage="stage1"
+        )
 
-        trajectory_text = self.verbalizer.build_trajectory_text((state_history or []) + [state_dict], state_dict)
-        user_prompt = self.user_template.render(
-            trajectory_text=trajectory_text,
+        context = self.verbalizer.build_prompt_context_nl(
+            state_dict, [], launch=launch, state_history=state_history
+        )
+        available_types = self.database.available_shot_types(launch=launch)
+        stage1_prompt = self.stage1_template.render(
+            trajectory_text=context["trajectory_text"],
             semantic_query_text=aspects["semantic_query_text"],
-            memories=memories,
-            normal_memories=retrieval_result.get("normal_cases", []) if isinstance(retrieval_result, dict) else [],
-            miss_memories=retrieval_result.get("miss_cases", []) if isinstance(retrieval_result, dict) else [],
-            top_k=len(memories),
-            style_shift_instruction=info.get("style_shift_instruction", ""),
+            normal_cases=self._format_stage1_cases(retrieval_result["normal_cases"]),
+            miss_cases=self._format_stage1_cases(retrieval_result["miss_cases"]),
+            rally_profile_instruction=profile_instruction,
         )
         t0 = time.time()
-        response, raw_llm_output, usage = self.llm.get_verified_response(
+        stage1_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+            self.llm,
             system_prompt=self.system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=stage1_prompt,
             max_trials=5,
-            validator=BaseAgent.validate_prompt_action_response,
+            validator=lambda response: BaseAgent.validate_rag_stage1_response(
+                response,
+                launch=launch,
+                available_types=available_types,
+            ),
         )
         t1 = time.time()
         self.tracer.log_generation(
-            self.system_prompt, user_prompt, response,
+            self.system_prompt, stage1_prompt, stage1_response,
             latency_ms=int((t1 - t0) * 1000),
             raw_llm_output=raw_llm_output,
             usage=usage,
+            stage="stage1",
         )
-        parsed_action, reasoning = self._parse_llm_action(response)
-        if parsed_action is None:
-            self.tracer.end_trace({"shot_type": "default_fallback"}, "Invalid LLM action")
-            return self._default_action(launch)
+        stage1 = BaseAgent.parse_rag_stage1_response(
+            stage1_response,
+            launch=launch,
+            available_types=available_types,
+        )
+        if stage1 is None:
+            stage1, stage1_source = self._stage1_fallback(retrieval_result, launch)
+        else:
+            stage1_source = "llm"
 
-        shot_type = parsed_action["shot_type"]
-        landing_x = parsed_action["landing_x"]
-        landing_y = parsed_action["landing_y"]
-        moving_x = parsed_action["moving_x"]
-        moving_y = parsed_action["moving_y"]
+        stage1_normal_refs = self._case_references(
+            retrieval_result["normal_cases"], 1, "normal"
+        )
+        stage1_miss_refs = self._case_references(
+            retrieval_result["miss_cases"], 1, "miss"
+        )
+        stage2_refs = []
+        shot_type = int(stage1["shot_type"])
         if shot_type == 11:
             landing_x = landing_y = moving_x = moving_y = 0.0
-        if launch and shot_type not in [1, 10]:
-            shot_type = 1 if np.random.rand() < 0.5 else 10
+            stage2 = {
+                "status": "skipped_missed",
+                "conditioned_shot_type": None,
+                "case_ids": [],
+                "rationale": "",
+                "source": "skipped",
+            }
+            reasoning = stage1["rationale"]
+        else:
+            t0 = time.time()
+            conditioned_cases = self.database.retrieve_by_shot_type(
+                state_dict,
+                query_embedding,
+                shot_type,
+                top_k=self.conditioned_top_k,
+                lambda_weight=self.lambda_weight,
+            )
+            if any(safe_int(case.get("player_type")) != shot_type for case in conditioned_cases):
+                raise ValueError("Twin shot-conditioned retrieval returned a different shot type")
+            self.tracer.log_retrieval(
+                state_dict,
+                conditioned_cases,
+                "twin",
+                int((time.time() - t0) * 1000),
+                stage="stage2",
+            )
+            stage2_prompt = self.stage2_template.render(
+                trajectory_text=context["trajectory_text"],
+                semantic_query_text=aspects["semantic_query_text"],
+                selected_shot_type=INDEX2EN_SHOT[shot_type],
+                conditioned_cases=self._format_stage2_cases(conditioned_cases),
+                rally_profile_instruction=profile_instruction,
+            )
+            t0 = time.time()
+            stage2_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+                self.llm,
+                system_prompt=self.system_prompt,
+                user_prompt=stage2_prompt,
+                max_trials=5,
+                validator=BaseAgent.validate_rag_stage2_response,
+            )
+            self.tracer.log_generation(
+                self.system_prompt,
+                stage2_prompt,
+                stage2_response,
+                latency_ms=int((time.time() - t0) * 1000),
+                raw_llm_output=raw_llm_output,
+                usage=usage,
+                stage="stage2",
+            )
+            placement = BaseAgent.parse_rag_stage2_response(stage2_response)
+            if placement is None:
+                placement, stage2_source = self._stage2_fallback(conditioned_cases)
+            else:
+                stage2_source = "llm"
+            landing_x = float(placement["landing_x"])
+            landing_y = float(placement["landing_y"])
+            moving_x = float(placement["moving_x"])
+            moving_y = float(placement["moving_y"])
+            stage2_refs = self._case_references(
+                conditioned_cases,
+                2,
+                "shot_conditioned",
+                conditioned_shot_type=shot_type,
+            )
+            stage2 = {
+                "status": "completed",
+                "conditioned_shot_type": shot_type,
+                "case_ids": stage2_refs,
+                "rationale": placement["rationale"],
+                "source": stage2_source,
+            }
+            reasoning = f"Stage 1: {stage1['rationale']} Stage 2: {placement['rationale']}"
 
         if self.trajectory:
             self.trajectory[-1].update({
@@ -1271,37 +1550,63 @@ class TwinAgent(BaseAgent):
             })
         action = (shot_type, state[-1] if len(state) > 0 else None, [landing_x, landing_y], [moving_x, moving_y], [0.1] * 10)
         self.tracer.end_trace({"shot_type": int(shot_type), "landing": [landing_x, landing_y], "movement": [moving_x, moving_y]}, reasoning)
+        all_case_ids = stage1_normal_refs + stage1_miss_refs + stage2_refs
+        self._last_case_ids = all_case_ids
+        self.last_decision_trace = {
+            "schema_version": 2,
+            "architecture": self.retrieval_architecture,
+            "pre_stage": {
+                "architecture": self.pre_stage_architecture,
+                "semantic_query_text": aspects["semantic_query_text"],
+                "aspects": {
+                    key: aspects.get(key, "")
+                    for key in (
+                        "my_tactical_pattern",
+                        "my_tempo_movement_dynamics",
+                        "opponent_tactical_pattern",
+                        "opponent_tempo_movement_dynamics",
+                    )
+                },
+                "source": aspect_source,
+            },
+            "stage1": {
+                "normal_case_ids": stage1_normal_refs,
+                "miss_case_ids": stage1_miss_refs,
+                "outcome": stage1["outcome"],
+                "shot_type": None if shot_type == 11 else shot_type,
+                "rationale": stage1["rationale"],
+                "source": stage1_source,
+            },
+            "stage2": stage2,
+            "case_ids": all_case_ids,
+            "rationale": reasoning,
+            "action": {
+                "shot_type": shot_type,
+                "landing_x": None if shot_type == 11 else landing_x,
+                "landing_y": None if shot_type == 11 else landing_y,
+                "moving_x": None if shot_type == 11 else moving_x,
+                "moving_y": None if shot_type == 11 else moving_y,
+            },
+            "action_source": (
+                f"{aspect_source}+{stage1_source}"
+                if shot_type == 11 else
+                f"{aspect_source}+{stage1_source}+{stage2['source']}"
+            ),
+        }
         return action, reasoning
 
     def on_rally_end(self, rally_history=None):
-        history = rally_history or self.trajectory
-        if not history:
-            return self.previous_rally_summary
-        normalized_history = []
-        for stroke in history:
-            stroke_data = dict(stroke)
-            is_target_turn = str(stroke_data.get("player", self.player_name)) == str(self.player_name)
-            stroke_data["is_target_turn"] = is_target_turn
-            stroke_data["turn_role"] = "target" if is_target_turn else "opponent"
-            normalized_history.append(stroke_data)
-        rally_text = self.verbalizer.build_trajectory_text(normalized_history, normalized_history[-1])
-        user_prompt = self.summary_template.render(target_player=self.player_name, rally_text=rally_text)
-        response, _, _ = self.llm.get_verified_response(system_prompt=self.system_prompt, user_prompt=user_prompt, max_trials=3)
-        if isinstance(response, dict) and response.get("rally_summary"):
-            self.previous_rally_summary = str(response["rally_summary"])
-        else:
-            self.previous_rally_summary = "Completed previous rally with available trajectory evidence."
-        self.trajectory = []
-        return self.previous_rally_summary
-
-    def reset_history(self):
-        self.previous_rally_summary = OPENING_RALLY_SUMMARY
+        del rally_history
         self.trajectory = []
         self._current_rally = None
+        self._last_case_ids = []
+        self.last_decision_trace = None
 
-    def _default_action(self, launch):
-        shot_type = 1 if launch else np.random.randint(1, 11)
-        return (shot_type, None, (0.0, 0.0), (0.0, 0.0), [0.1] * 10), "Default action due to LLM failure"
+    def reset_history(self):
+        self.trajectory = []
+        self._current_rally = None
+        self._last_case_ids = []
+        self.last_decision_trace = None
 
 
 def build_state_tensor_from_row(row, player_id):
@@ -1323,10 +1628,12 @@ def state_to_env_format(state_18):
 
 
 def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir, top_k, lambda_weight,
-                    embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
+                    embedding_model_name, embedding_batch_size, prompt_variant,
                     embedding_revision=None, normalize_embeddings=True, embedding_dtype="float32",
                     embedding_model=None, embedding_provider="local", embedding_dimension=None):
-    db_path = os.path.join(database_dir, f"{safe_player_name(player_name)}_db.pkl")
+    from Utils.artifact_names import player_database_filename
+
+    db_path = os.path.join(database_dir, player_database_filename(player_name))
     if not os.path.exists(db_path):
         return None
     database = TwinDatabase.load(db_path)
@@ -1344,16 +1651,17 @@ def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir
         player_name=player_name,
         database=database,
         embedding_cache=embedding_cache,
-        top_k=top_k,
+        normal_top_k=top_k,
+        miss_top_k=max(1, min(5, top_k)),
+        conditioned_top_k=top_k,
         lambda_weight=lambda_weight,
         embedding_model_name=embedding_model_name,
-        embedding_device=embedding_device,
         embedding_batch_size=embedding_batch_size,
         embedding_revision=embedding_revision,
         normalize_embeddings=normalize_embeddings,
         embedding_dtype=embedding_dtype,
         embedding_model=embedding_model,
-        prompt_variant=prompt_variant,
+        instruction_mode="instruct" if prompt_variant == "shifted" else "no_instruct",
         embedding_provider=embedding_provider,
         embedding_dimension=embedding_dimension,
     )
@@ -1362,11 +1670,15 @@ def load_twin_agent(player_name, player2index, database_dir, embedding_cache_dir
 def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_path, database_dir,
                           embedding_cache_dir,
                           output_path=None, top_k=10, lambda_weight=0.5,
-                          embedding_model_name=DEFAULT_EMBEDDING_MODEL, embedding_device="auto",
-                           embedding_batch_size=None, embedding_revision=None,
-                           normalize_embeddings=True, embedding_dtype="float32",
-                           prompt_variant="norm", skip_first_n=0,
-                           embedding_provider="local", embedding_dimension=None):
+                          embedding_model_name=DEFAULT_EMBEDDING_MODEL,
+                          embedding_batch_size=None, embedding_revision=None,
+                          normalize_embeddings=True, embedding_dtype="float32",
+                          prompt_variant="norm", skip_first_n=0,
+                          embedding_provider="local", embedding_dimension=None):
+    raise RuntimeError(
+        "Legacy match-level Twin evaluation is removed. Run "
+        "Scripts/single_player_eval/eval_all_rallies.py --algorithm twin instead."
+    )
     with open(test_split_path, 'r') as f:
         test_split = json.load(f)
     with open(player_index_map_path, 'r') as f:
@@ -1377,24 +1689,19 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
     df = df.dropna(subset=target_cols).reset_index(drop=True)
     ctc_loss_fn = CTCLoss(blank=0, reduction='mean', zero_infinity=True)
     results = {}
-    if embedding_provider == "local":
-        embedding_model = load_embedding_model(
-            embedding_model_name, embedding_device, embedding_revision
-        )
-    else:
-        from Utils.embeddings import create_embedding_client, resolve_embedding_settings
+    from Utils.embeddings import create_embedding_client, resolve_embedding_settings
 
-        embedding_settings = resolve_embedding_settings(provider=embedding_provider)
-        if embedding_model_name != DEFAULT_EMBEDDING_MODEL:
-            embedding_settings["model_name"] = embedding_model_name
-        else:
-            embedding_model_name = embedding_settings["model_name"]
-        if embedding_dimension is not None:
-            embedding_settings["dimension"] = embedding_dimension
-        else:
-            embedding_dimension = embedding_settings["dimension"]
-        embedding_revision = embedding_settings.get("revision")
-        embedding_model = create_embedding_client(embedding_settings)
+    embedding_settings = resolve_embedding_settings(provider=embedding_provider)
+    if embedding_model_name != DEFAULT_EMBEDDING_MODEL:
+        embedding_settings["model_name"] = embedding_model_name
+    else:
+        embedding_model_name = embedding_settings["model_name"]
+    if embedding_dimension is not None:
+        embedding_settings["dimension"] = embedding_dimension
+    else:
+        embedding_dimension = embedding_settings["dimension"]
+    embedding_revision = embedding_settings.get("revision")
+    embedding_model = create_embedding_client(embedding_settings)
 
     for target_player_name, test_match_ids in tqdm(list(test_split['test'].items()), desc="Evaluating Twin players"):
         if target_player_name not in player2index:
@@ -1403,7 +1710,7 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
         agent_cache = {}
         target_agent = load_twin_agent(
             target_player_name, player2index, database_dir, embedding_cache_dir, top_k,
-            lambda_weight, embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
+            lambda_weight, embedding_model_name, embedding_batch_size, prompt_variant,
             embedding_revision, normalize_embeddings, embedding_dtype, embedding_model,
             embedding_provider, embedding_dimension,
         )
@@ -1468,7 +1775,7 @@ def evaluate_twin_on_test(test_split_path, merged_csv_path, player_index_map_pat
                     if agent is None:
                         agent = load_twin_agent(
                             ground_truth_player, player2index, database_dir, embedding_cache_dir, top_k,
-                            lambda_weight, embedding_model_name, embedding_device, embedding_batch_size, prompt_variant,
+                            lambda_weight, embedding_model_name, embedding_batch_size, prompt_variant,
                             embedding_revision, normalize_embeddings, embedding_dtype, embedding_model,
                             embedding_provider, embedding_dimension,
                         )

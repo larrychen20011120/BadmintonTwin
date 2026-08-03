@@ -18,8 +18,8 @@ class BCTrainingConfigTest(unittest.TestCase):
         config = {
             'paths': {
                 'bc': {
-                    'data': {'norm': 'data/norm', 'shifted': 'data/shifted'},
-                    'models': {'norm': 'weights/norm.pth', 'shifted': 'weights/shifted.pth'},
+                    'data': 'data/rally',
+                    'model': 'weights/rally.pth',
                     'weight_dir': 'weights',
                 }
             },
@@ -47,7 +47,7 @@ class BCTrainingConfigTest(unittest.TestCase):
                 return_value=SimpleNamespace(returncode=0),
             ) as run,
         ):
-            success = train_bc_script.train_bc('norm', distribution='gmm')
+            success = train_bc_script.train_bc(distribution='gmm')
 
         self.assertTrue(success)
         command = run.call_args.args[0]
@@ -88,8 +88,7 @@ class BCTrainingConfigTest(unittest.TestCase):
                 output=output_path,
             )
 
-            with patch('Agent.bc.compute_shot_type_weights', return_value=torch.ones(6)):
-                train_model(args)
+            train_model(args)
 
             state_dict = torch.load(output_path, map_location='cpu', weights_only=True)
 

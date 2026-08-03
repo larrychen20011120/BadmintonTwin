@@ -4,9 +4,8 @@ BC 模型訓練腳本
 使用 config.yaml 中的設定進行訓練
 
 使用方式:
-    python Scripts/train_bc.py --experiment norm       # 在 norm 資料上訓練
-    python Scripts/train_bc.py --experiment shifted    # 在 shifted 資料上訓練
-    python Scripts/train_bc.py --experiment norm --epochs 200 --lr 0.0005
+    python Scripts/train_bc.py
+    python Scripts/train_bc.py --epochs 200 --lr 0.0005
 """
 
 import argparse
@@ -29,13 +28,12 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name=None,
+def train_bc(epochs=None, batch_size=None, lr=None, output_name=None,
              distribution='deterministic', gmm_num=None):
     """
     訓練 BC 模型
     
     Args:
-        experiment_type: 'norm' 或 'shifted'
         epochs: 訓練輪數（可選，預設使用 config）
         batch_size: 批次大小（可選，預設使用 config）
         lr: 學習率（可選，預設使用 config）
@@ -43,17 +41,8 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     """
     config = load_config()
     
-    # 取得路徑
-    if experiment_type == 'norm':
-        data_dir = config['paths']['bc']['data']['norm']
-        default_output = config['paths']['bc']['models']['norm']
-    elif experiment_type == 'shifted':
-        data_dir = config['paths']['bc']['data']['shifted']
-        default_output = config['paths']['bc']['models']['shifted']
-    else:
-        print(f"❌ 不支援的實驗類型: {experiment_type}")
-        print("   支援的類型: norm, shifted")
-        return False
+    data_dir = config['paths']['bc']['data']
+    default_output = config['paths']['bc']['model']
     
     distribution = distribution or config['bc_training'].get('distribution', 'deterministic')
 
@@ -61,10 +50,7 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     if output_name:
         output_path = os.path.join(config['paths']['bc']['weight_dir'], output_name)
     elif distribution == 'gaussian':
-        output_path = os.path.join(
-            config['paths']['bc']['weight_dir'],
-            f'{experiment_type}_correlated_gaussian_model.pth'
-        )
+        output_path = default_output
     else:
         output_path = default_output
     
@@ -93,7 +79,7 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
         algorithm_runtime_rows(
             config,
             "bc",
-            experiment=experiment_type,
+            experiment='rally',
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=lr,
@@ -115,11 +101,11 @@ def train_bc(experiment_type, epochs=None, batch_size=None, lr=None, output_name
     
     if not os.path.exists(state_path) or not os.path.exists(action_path):
         print(f"❌ 訓練資料不存在: {data_dir}")
-        print(f"   請先執行: python Scripts/prepare_all_data.py --{experiment_type} --bc")
+        print("   請先執行: python Scripts/prepare_all_data.py --bc")
         return False
     
     print("="*70)
-    print(f"BC 模型訓練 - {experiment_type.upper()}")
+    print("BC 模型訓練 - RALLY")
     print("="*70)
     print(f"資料來源: {data_dir}")
     print(f"輸出模型: {output_path}")
@@ -174,18 +160,16 @@ def list_available_data():
     print("\n可用的訓練資料:")
     print("-"*70)
     
-    for exp_type in ['norm', 'shifted']:
-        data_dir = config['paths']['bc']['data'][exp_type]
-        state_path = os.path.join(data_dir, 'train_state.pkl')
-        action_path = os.path.join(data_dir, 'train_action.pkl')
-        
-        if os.path.exists(state_path) and os.path.exists(action_path):
-            import pickle
-            with open(state_path, 'rb') as f:
-                state_data = pickle.load(f)
-            print(f"  ✓ {exp_type:10s}: {len(state_data)} 樣本 - {data_dir}")
-        else:
-            print(f"  ✗ {exp_type:10s}: 資料不存在 - {data_dir}")
+    data_dir = config['paths']['bc']['data']
+    state_path = os.path.join(data_dir, 'train_state.pkl')
+    action_path = os.path.join(data_dir, 'train_action.pkl')
+    if os.path.exists(state_path) and os.path.exists(action_path):
+        import pickle
+        with open(state_path, 'rb') as f:
+            state_data = pickle.load(f)
+        print(f"  ✓ rally: {len(state_data)} 樣本 - {data_dir}")
+    else:
+        print(f"  ✗ rally: 資料不存在 - {data_dir}")
     
     print("-"*70)
 
@@ -219,17 +203,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例:
-  # 在 norm 資料上訓練
-  python Scripts/train_bc.py --experiment norm
-  
-  # 在 shifted 資料上訓練
-  python Scripts/train_bc.py --experiment shifted
+  # 在 rally-level 資料上訓練
+  python Scripts/train_bc.py
   
   # 自訂訓練參數
-  python Scripts/train_bc.py --experiment shifted --epochs 200 --lr 0.0005
+  python Scripts/train_bc.py --epochs 200 --lr 0.0005
   
   # 自訂輸出檔名
-  python Scripts/train_bc.py --experiment shifted --output-name my_model.pth
+  python Scripts/train_bc.py --output-name my_model.pth
   
   # 查看可用的資料和模型
   python Scripts/train_bc.py --list-data
@@ -237,12 +218,6 @@ def main():
         """
     )
     
-    parser.add_argument(
-        '--experiment',
-        type=str,
-        choices=['norm', 'shifted'],
-        help='實驗類型: norm (train_test_split) 或 shifted (style_shift)'
-    )
     parser.add_argument(
         '--epochs',
         type=int,
@@ -297,15 +272,8 @@ def main():
         list_trained_models()
         return 0
     
-    # 檢查必要參數
-    if not args.experiment:
-        parser.print_help()
-        print("\n❌ 錯誤: 必須指定 --experiment (norm 或 shifted)")
-        return 1
-    
     # 執行訓練
     success = train_bc(
-        experiment_type=args.experiment,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,

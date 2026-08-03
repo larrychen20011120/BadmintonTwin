@@ -16,10 +16,11 @@ from jinja2 import Template
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
 
-from Agent.twin import OPENING_RALLY_SUMMARY, TwinDatabase
+from Agent.twin import TwinDatabase
 
 
 DEFAULT_CONFIG_PATH = os.path.join(project_path, "Scripts", "config.yaml")
+DEFAULT_PREVIOUS_RALLY_SUMMARY = "No previous-rally summary is used by the current Twin memory schema."
 
 
 def build_parser():
@@ -33,8 +34,8 @@ def build_parser():
     parser.add_argument("--rally", required=True, type=int, help="Rally number")
     parser.add_argument(
         "--previous-rally-summary",
-        default=OPENING_RALLY_SUMMARY,
-        help="Summary included in each semantic_text",
+        default=DEFAULT_PREVIOUS_RALLY_SUMMARY,
+        help="Deprecated compatibility option; current Twin memories do not use it",
     )
     parser.add_argument("--no-llm", action="store_true", help="Use fallback annotation without an LLM request")
     parser.add_argument("--show-prompt", action="store_true", help="Print the full user prompt sent to the LLM")
@@ -108,13 +109,15 @@ def select_rally(dataframe, match_id, rally_number, set_number=None):
 
 
 def render_memory_prompt(database, rally_df, previous_rally_summary):
+    del previous_rally_summary
     template_path = os.path.join(project_path, "Prompts", "New", "twin", "memory_user.jinja")
     with open(template_path, "r", encoding="utf-8") as file:
         template = Template(file.read())
     return template.render(
-        previous_rally_summary=previous_rally_summary,
         rally_meta_text=database.build_rally_meta_text(rally_df),
         rally_turn_based_text=database.build_rally_turn_based_text(rally_df),
+        first_ball_round=int(rally_df["ball_round"].min()),
+        last_ball_round=int(rally_df["ball_round"].max()),
     )
 
 
@@ -147,14 +150,12 @@ def build_preview(rally_df, player_name, player_id, previous_rally_summary,
         llm = LLM(config_path=config_path)
     annotation = database.annotate_rally(
         rally_df,
-        previous_rally_summary=previous_rally_summary,
         llm=llm,
         use_llm=use_llm,
     )
     memories = database.build_stroke_annotations(
         rally_df,
         annotation,
-        previous_rally_summary=previous_rally_summary,
     )
     return {
         "rally_meta_text": database.build_rally_meta_text(rally_df),

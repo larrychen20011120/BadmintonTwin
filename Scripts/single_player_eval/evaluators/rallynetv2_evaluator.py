@@ -18,7 +18,11 @@ sys.path.append(project_path)
 from .base_evaluator import BaseEvaluator
 from Agent.rallynetv2 import LatentSDE
 from Utils.helper import state_col, action_col, transition, terminate
-from Scripts.single_player_eval.trajectory_store import build_gt_shot_from_row, build_pred_shot
+from Scripts.single_player_eval.trajectory_store import (
+    build_gt_shot_from_row,
+    build_pred_shot,
+    build_rollout_metadata,
+)
 
 
 def build_state_tensor_from_row(row, player_id):
@@ -133,10 +137,6 @@ class RallyNetV2Evaluator(BaseEvaluator):
         
         # 取得選手的測試比賽
         test_match_ids = self.get_player_test_matches()
-        target_max_len = self.get_player_max_sequence_length(self.player_name)
-        if target_max_len == 0:
-            return []
-        
         rally_trajectories = []
         
         for match_id in tqdm(test_match_ids, desc=f"Simulating {self.player_name}"):
@@ -170,6 +170,7 @@ class RallyNetV2Evaluator(BaseEvaluator):
                 rally_gt_full_seq = []
                 for _, row in rally_df.iterrows():
                     rally_gt_full_seq.append(build_gt_shot_from_row(row))
+                max_rollout_steps = len(rally_gt_full_seq) + 2
                 
                 # 收集預測（雙方玩家）
                 rally_pred_full_seq = []
@@ -183,15 +184,13 @@ class RallyNetV2Evaluator(BaseEvaluator):
                 current_player_id = self.player_id if current_player_name == self.player_name else opponent_player_id
                 current_state = build_state_tensor_from_row(first_row, current_player_id).to(device)
                 
-                max_rollout_steps = max(target_max_len * 2 + 2, len(rally_df), 1)
                 ht = torch.zeros(max_rollout_steps, 1, 18, device=device)
                 
                 rally_done = False
                 shot_idx = 0
-                simulation_ended_early = False
-                target_pred_count = 0
+                termination_reason = 'max_rollout_reached'
                 
-                while not rally_done and target_pred_count < target_max_len and shot_idx < max_rollout_steps:
+                while not rally_done and shot_idx < max_rollout_steps:
                     current_player_id = int(current_state[17].item())
                     is_target_turn = current_player_id == self.player_id
                     current_player_name = self.player_name if is_target_turn else opponent_name
@@ -238,9 +237,6 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     move_2d = [move_logit.squeeze(0)[0].item(), move_logit.squeeze(0)[1].item()]
                     rally_pred_full_seq.append(build_pred_shot(
                         current_player_name, int(shot_type_masked.item()), land_2d, move_2d, ball_round))
-                    if is_target_turn:
-                        target_pred_count += 1
-                    
                     # Build action tensor
                     action_tensor = torch.tensor([
                         land_logit[0, 0].item(), land_logit[0, 1].item(),
@@ -254,26 +250,29 @@ class RallyNetV2Evaluator(BaseEvaluator):
                     
                     if terminate(next_state.cpu()):
                         rally_done = True
-                        simulation_ended_early = True
+                        termination_reason = 'natural_terminate'
                     
                     current_state = next_state.to(device)
                     shot_idx += 1
                 
                 # Save rally trajectory (包含雙方玩家，GT完整長度)
-                if self.save_trajectories:
-                    rally_trajectories.append({
-                        'match_id': match_id,
-                        'set': int(set_num),
-                        'rally': int(rally_num),
-                        'target_player': self.player_name,
-                        'opponent_player': opponent_name,
-                        'gt_sequence': rally_gt_full_seq,
-                        'pred_sequence': rally_pred_full_seq,
-                        'target_player_won': target_player_won,
-                        'rally_length_gt': len(rally_gt_full_seq),
-                        'rally_length_pred': len(rally_pred_full_seq),
-                        'simulation_ended_early': simulation_ended_early,
-                    })
+                rally_trajectories.append({
+                    'match_id': match_id,
+                    'set': int(set_num),
+                    'rally': int(rally_num),
+                    'players': [self.player_name, opponent_name],
+                    'instruction_mode': 'no-instruct',
+                    'target_player': self.player_name,
+                    'opponent_player': opponent_name,
+                    'gt_sequence': rally_gt_full_seq,
+                    'pred_sequence': rally_pred_full_seq,
+                    'target_player_won': target_player_won,
+                    **build_rollout_metadata(
+                        rally_gt_full_seq,
+                        rally_pred_full_seq,
+                        termination_reason,
+                    ),
+                })
         
         # Save full trajectories
         self._save_trajectories_if_needed(rally_trajectories)

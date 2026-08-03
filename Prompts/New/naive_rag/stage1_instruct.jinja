@@ -1,0 +1,55 @@
+# Task
+Your task is to simulate the return outcome and shot type.
+This is a case-driven behavior simulation and imitation task, not tactical optimization.
+
+Decide whether the player returns the shuttle legally or misses. For a legal return, predict only the shot type. Make one joint decision from the current rally situation and the historical cases. Consider the incoming shot, player and opponent positions, movement and reachability, prior rally actions, score pressure, and the behavior shown in past cases.
+
+## Current Match Situation
+{{ trajectory_text }}
+
+## Tactical Imitation Instruction
+{{ rally_profile_instruction }}
+
+## Successful Return Cases
+Cases in this section are ordered from most similar to least similar.
+{% for case in normal_cases %}
+Case {{ loop.index }}:
+{{ case.stage1_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Missed Return Cases
+Cases in this section are ordered from most similar to least similar.
+{% for case in miss_cases %}
+Case {{ loop.index }}:
+{{ case.stage1_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Case Priority and Instruction Usage
+The retrieved cases are the primary basis of the prediction. Give greater weight to earlier cases, then compare their situations with the current rally before making the decision.
+
+First prioritize cases that best match the incoming shot, player and opponent positions, movement and reachability, prior rally actions, and score pressure. Determine case compatibility before considering the tactical imitation instruction.
+
+Treat the tactical imitation instruction as weak auxiliary information. Use it only to rerank otherwise similarly relevant cases. Keep the prediction case-driven: the instruction must not make a less compatible case more important than a clearly more compatible case.
+
+Do not use the instruction to determine whether the player returns or misses. Do not select a shot type solely because it is named or implied by the instruction. The selected shot type must be supported by the nearest compatible cases.
+
+If the instruction conflicts with the nearest compatible cases, ignore the instruction and follow the cases.
+
+## Legal Shot Types
+For a serve, choose only Serve short or Serve long.
+For a non-serve return, choose only Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, or Drop.
+
+## Output Format
+Return only one valid JSON object. Do not include markdown or any text outside the JSON.
+For a legal returned shot:
+{
+  "rationale": "one to two sentences for case-based explanation",
+  "outcome": "returned",
+  "shot_type": "<one exact allowed shot type>"
+}
+For a missed shot or serve fault:
+{
+  "rationale": "one to two sentences for case-based explanation",
+  "outcome": "missed",
+  "shot_type": null
+}

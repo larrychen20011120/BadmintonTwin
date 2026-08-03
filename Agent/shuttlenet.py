@@ -28,6 +28,7 @@ from Utils.helper import (
     transition,
 )
 from Utils.runtime_report import print_runtime_box
+from Preprocessing.rally_data import filter_rally_rows, load_rally_dataset, rally_key
 
 
 PAD = 0
@@ -640,15 +641,27 @@ def load_json(path):
 
 def prepare_shuttlenet_data(merged_csv_path, split_path, player_map_path, output_dir, encode_length=DEFAULT_ENCODE_LENGTH):
     import pandas as pd
+    from Preprocessing.rally_data import filter_rally_rows, load_rally_dataset, rally_key
 
     player2index = load_json(player_map_path)
-    split_content = load_json(split_path)
+    split_content = load_rally_dataset(split_path)
     df = pd.read_csv(merged_csv_path)
     required_cols = ['match_id', 'set', 'rally', 'ball_round', 'player', 'player_type', 'landing_x', 'landing_y', 'moving_x', 'moving_y']
     df = df.dropna(subset=required_cols).copy()
     df = df[df['player'].isin(player2index)].reset_index(drop=True)
     df['match_id'] = df['match_id'].astype(int)
-    train_matches = {player: set(int(mid) for mid in match_ids) for player, match_ids in split_content.get('train', {}).items()}
+    df = filter_rally_rows(df, split_content['train'])
+    if df.empty:
+        raise ValueError('No ShuttleNet rows matched the rally-level training split')
+
+    expected_keys = {rally_key(record) for record in split_content['train']}
+    matched_keys = set(
+        df[['match_id', 'set', 'rally']]
+        .astype(int)
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    )
+    skipped_keys = sorted(expected_keys - matched_keys)
 
     samples = []
     group_cols = ['match_id', 'set', 'rally']
@@ -656,10 +669,7 @@ def prepare_shuttlenet_data(merged_csv_path, split_path, player_map_path, output
         rally_df = rally_df.sort_values('ball_round').reset_index(drop=True)
         history = []
         for _, row in rally_df.iterrows():
-            player_name = row['player']
-            match_id = int(row['match_id'])
-            if match_id in train_matches.get(player_name, set()):
-                samples.append(build_sample_from_history(history, row, player2index, encode_length))
+            samples.append(build_sample_from_history(history, row, player2index, encode_length))
             history.append(row_to_history_item(row, player2index))
 
     os.makedirs(output_dir, exist_ok=True)
@@ -672,6 +682,13 @@ def prepare_shuttlenet_data(merged_csv_path, split_path, player_map_path, output
             'merged_csv_path': merged_csv_path,
             'split_path': split_path,
             'player_map_path': player_map_path,
+            'physical_train_rallies_in_split': len(expected_keys),
+            'physical_train_rallies_matched': len(matched_keys),
+            'physical_train_rallies_skipped': len(skipped_keys),
+            'skipped_rally_keys': [
+                {'match_id': key[0], 'set': key[1], 'rally': key[2]}
+                for key in skipped_keys
+            ],
         },
     }
     with open(output_path, 'wb') as f:
@@ -1130,26 +1147,29 @@ try:
     BaseEvaluator = base_evaluator_module.BaseEvaluator
     build_gt_shot_from_row = trajectory_store_module.build_gt_shot_from_row
     build_pred_shot = trajectory_store_module.build_pred_shot
+    build_rollout_metadata = trajectory_store_module.build_rollout_metadata
 except Exception:  # pragma: no cover - only used when single-player evaluator package is unavailable.
     BaseEvaluator = object
     build_gt_shot_from_row = None
     build_pred_shot = None
+    build_rollout_metadata = None
 
 
 class ShuttleNetEvaluator(BaseEvaluator):
-    def __init__(self, player_name, experiment='norm', device='cuda', skip_first_n=0,
-                 model_path=None, save_trajectories=False, sample=True):
+    def __init__(self, player_name=None, experiment='rally', device='cuda', skip_first_n=0,
+                 model_path=None, save_trajectories=False, sample=True, all_rallies=False):
         super().__init__(player_name, experiment, device, skip_first_n, save_trajectories=save_trajectories)
+        self.all_rallies = all_rallies
         if model_path is None:
-            model_path = self.config['paths']['shuttlenet']['models'][experiment]
+            model_path = self.config['paths']['shuttlenet']['model']
         self.model_path = model_path
         self.sample = sample
 
         with open(self.player_map_path, 'r') as f:
             self.player2index = json.load(f)
-        if self.player_name not in self.player2index:
+        if not self.all_rallies and self.player_name not in self.player2index:
             raise ValueError(f"Player '{self.player_name}' not found in player map")
-        self.player_id = self.player2index[self.player_name]
+        self.player_id = self.player2index.get(self.player_name, 0)
         self.policy = ShuttleNetPolicy(self.model_path, device=self.device, sample=self.sample)
 
         import pandas as pd
@@ -1167,90 +1187,103 @@ class ShuttleNetEvaluator(BaseEvaluator):
         return 'shuttlenet'
 
     def simulate(self):
-        test_match_ids = self.get_player_test_matches()
-        target_max_len = self.get_player_max_sequence_length(self.player_name)
-        if target_max_len == 0:
-            return []
-
+        dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)
+        records = dataset['test']
+        if not self.all_rallies:
+            records = [record for record in records if self.player_name in record['players']]
+        selected_rows = filter_rally_rows(self.df, records)
+        rally_frames = {
+            tuple(int(value) for value in key): rally_df.sort_values('ball_round').reset_index(drop=True)
+            for key, rally_df in selected_rows.groupby(['match_id', 'set', 'rally'], sort=False)
+        }
+        missing_keys = sorted({rally_key(record) for record in records} - set(rally_frames))
+        if missing_keys:
+            raise ValueError(f'No model-ready rows found for test rallies: {missing_keys[:5]}')
         rally_trajectories = []
-        for match_id in tqdm(test_match_ids, desc=f'Simulating {self.player_name}'):
-            match_df = self.df[self.df['match_id'] == match_id].copy()
-            if match_df.empty:
-                continue
-            opponent_name = get_opponent_name(match_df, self.player_name)
-            if opponent_name is None or opponent_name not in self.player2index:
-                continue
-            opponent_player_id = self.player2index[opponent_name]
+        seen = set()
+        description = 'Simulating physical rallies' if self.all_rallies else f'Simulating {self.player_name}'
+        for record in tqdm(records, desc=description):
+            key = rally_key(record)
+            if key in seen:
+                raise ValueError(f'Duplicate physical test rally: {key}')
+            seen.add(key)
+            match_id, set_num, rally_num = key
+            rally_df = rally_frames[key]
 
-            for (set_num, rally_num), rally_df in match_df.groupby(['set', 'rally']):
-                rally_df = rally_df.sort_values('ball_round').reset_index(drop=True)
-                if rally_df.empty:
-                    continue
+            players = list(dict.fromkeys(rally_df['player'].astype(str)))
+            if len(players) != 2:
+                raise ValueError(f'Expected two players for rally {key}, found {players}')
+            missing_players = [player for player in players if player not in self.player2index]
+            if missing_players:
+                raise ValueError(f'Players missing from player map for rally {key}: {missing_players}')
+            player_ids = {player: self.player2index[player] for player in players}
+            id_to_player = {player_id: player for player, player_id in player_ids.items()}
 
-                rally_gt_full_seq = [build_gt_shot_from_row(row) for _, row in rally_df.iterrows()]
-                rally_pred_full_seq = []
-                rollout = ShuttleNetRollout(self.policy)
-                first_row = rally_df.iloc[0]
-                current_player_id = self.player_id if first_row['player'] == self.player_name else opponent_player_id
-                current_state = build_state_tensor_from_row(first_row, current_player_id)
-                simulation_ended_early = False
-                target_pred_count = 0
-                max_steps = max(target_max_len * 2 + 2, len(rally_df), 1)
+            rally_gt_full_seq = [build_gt_shot_from_row(row) for _, row in rally_df.iterrows()]
+            max_rollout_steps = len(rally_gt_full_seq) + 2
+            rally_pred_full_seq = []
+            rollout = ShuttleNetRollout(self.policy)
+            first_row = rally_df.iloc[0]
+            current_player_name = str(first_row['player'])
+            current_state = build_state_tensor_from_row(first_row, player_ids[current_player_name])
+            termination_reason = 'max_rollout_reached'
 
-                for _ in range(max_steps):
-                    current_player_id = int(current_state[17].item())
-                    is_target_turn = current_player_id == self.player_id
-                    current_player_name = self.player_name if is_target_turn else opponent_name
-                    launch = current_state[1].item() == 1
-                    ball_round = int(current_state[1].item())
-                    action_tensor, prediction = rollout.step(current_state, launch=launch)
-                    land_2d = prediction['landing']
-                    move_2d = prediction['moving']
-                    shot_type = int(prediction['shot_type'])
-                    rally_pred_full_seq.append(build_pred_shot(current_player_name, shot_type, land_2d, move_2d, ball_round))
+            for _ in range(max_rollout_steps):
+                current_player_id = int(current_state[17].item())
+                if current_player_id not in id_to_player:
+                    raise ValueError(f'Unknown player id {current_player_id} during rally {key}')
+                current_player_name = id_to_player[current_player_id]
+                launch = current_state[1].item() == 1
+                ball_round = int(current_state[1].item())
+                action_tensor, prediction = rollout.step(current_state, launch=launch)
+                land_2d = prediction['landing']
+                move_2d = prediction['moving']
+                shot_type = int(prediction['shot_type'])
+                rally_pred_full_seq.append(build_pred_shot(
+                    current_player_name, shot_type, land_2d, move_2d, ball_round
+                ))
 
-                    if is_target_turn:
-                        target_pred_count += 1
-                        if target_pred_count >= target_max_len:
-                            break
+                other_player_id = next(
+                    player_id for player_id in id_to_player if player_id != current_player_id
+                )
+                next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
+                if terminate(next_state.cpu()):
+                    termination_reason = 'natural_terminate'
+                    break
+                current_state = next_state
 
-                    other_player_id = opponent_player_id if is_target_turn else self.player_id
-                    next_state = transition(action_tensor.cpu(), current_state.cpu(), other_player_id)
-                    if terminate(next_state.cpu()):
-                        simulation_ended_early = True
-                        break
-                    current_state = next_state
-
-                if self.save_trajectories:
-                    rally_trajectories.append({
-                        'match_id': int(match_id),
-                        'set': int(set_num),
-                        'rally': int(rally_num),
-                        'target_player': self.player_name,
-                        'opponent_player': opponent_name,
-                        'gt_sequence': rally_gt_full_seq,
-                        'pred_sequence': rally_pred_full_seq,
-                        'target_player_won': None,
-                        'rally_length_gt': len(rally_gt_full_seq),
-                        'rally_length_pred': len(rally_pred_full_seq),
-                        'simulation_ended_early': simulation_ended_early,
-                    })
+            target_player = None if self.all_rallies else self.player_name
+            opponent_player = None
+            if target_player in players:
+                opponent_player = next(player for player in players if player != target_player)
+            rally_trajectories.append({
+                'match_id': int(match_id),
+                'set': int(set_num),
+                'rally': int(rally_num),
+                'players': players,
+                'player_profiles': record.get('player_profiles', {}),
+                'instruction_mode': 'no-instruct',
+                'target_player': target_player,
+                'opponent_player': opponent_player,
+                'gt_sequence': rally_gt_full_seq,
+                'pred_sequence': rally_pred_full_seq,
+                'target_player_won': None,
+                **build_rollout_metadata(
+                    rally_gt_full_seq,
+                    rally_pred_full_seq,
+                    termination_reason,
+                ),
+            })
 
         self._save_trajectories_if_needed(rally_trajectories)
         return rally_trajectories
 
 
 def prepare_model_paths(args):
-    if args.experiment == 'shifted':
-        default_split = 'Data/intermediate_data/style_shift_split.json'
-        default_data_dir = 'Experiments/shuttlenet/data/shifted'
-        default_output = 'Experiments/shuttlenet/weight/shifted_model.pth'
-        default_eval_output = 'Experiments/shuttlenet/results/shifted_eval.json'
-    else:
-        default_split = 'Data/intermediate_data/train_test_split.json'
-        default_data_dir = 'Experiments/shuttlenet/data/norm'
-        default_output = 'Experiments/shuttlenet/weight/norm_model.pth'
-        default_eval_output = 'Experiments/shuttlenet/results/norm_eval.json'
+    default_split = 'Data/intermediate_data/rally_split.json'
+    default_data_dir = 'Experiments/shuttlenet/data/rally'
+    default_output = 'Experiments/shuttlenet/weight/rally_model.pth'
+    default_eval_output = 'Experiments/shuttlenet/results/rally_eval.json'
 
     args.split = args.split or default_split
     args.data_dir = args.data_dir or default_data_dir
@@ -1265,26 +1298,15 @@ def run_prepare(args):
 
 
 def run_eval(args):
-    results = evaluate_shuttlenet_on_test(
-        args.split,
-        args.merged_csv,
-        args.player_map,
-        args.model_path,
-        device=args.device,
-        skip_first_n=args.skip_first_n,
-        sample=not args.deterministic,
+    raise RuntimeError(
+        'Use Scripts/single_player_eval/eval_all_rallies.py --algorithm '
+        'shuttlenet --no-instruct for physical-rally evaluation.'
     )
-    print_results(results)
-    os.makedirs(os.path.dirname(args.eval_output), exist_ok=True)
-    with open(args.eval_output, 'w') as f:
-        json.dump(results, f, indent=2)
-    print(f'Results saved to {args.eval_output}')
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='ShuttleNet Agent - prepare, train, or evaluate')
     parser.add_argument('--mode', choices=['prepare', 'train', 'eval'], default='train')
-    parser.add_argument('--experiment', choices=['norm', 'shifted'], default='norm')
     parser.add_argument('--merged_csv', default='Data/intermediate_data/merged.csv')
     parser.add_argument('--player_map', default='Data/intermediate_data/player_index_map.json')
     parser.add_argument('--split', default=None)

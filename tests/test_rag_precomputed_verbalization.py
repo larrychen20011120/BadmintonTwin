@@ -10,17 +10,44 @@ import pandas as pd
 from Agent.naive_rag import NaiveRAGAgent, NaiveRAGDatabase, NaiveRAGVerbalizer
 from Agent.timerag import TimeRAGDatabase, TimeRAGVerbalizer
 from Preprocessing.data_preparation import prepare_naive_rag_data, prepare_timerag_data
+from Utils.artifact_names import player_database_filename
+from Utils.langfuse_tracing import (
+    simplify_naive_rag_experiences,
+    simplify_timerag_windows,
+)
 
 
-NAIVE_SERVE_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
+NAIVE_STAGE1_SERVE_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
+Match Context: Rally 1, currently at Shot 1. This is the first shot of the rally.
+
+Serve situation: player at Rear Center, opponent at Mid Center.
+Outcome: Returned with Serve short.'''
+
+NAIVE_STAGE2_SERVE_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
 Match Context: Rally 1, currently at Shot 1. This is the first shot of the rally.
 
 It is my turn to serve. I am at Rear Center, opponent at Mid Center.
 I serve a Serve short to Mid Center, then move to Rear Center.
 Action: {"shot_type": "Serve short", "landing_area": "Mid Center", "landing_x": 213, "landing_y": 312, "moving_area": "Rear Center", "moving_x": 150, "moving_y": 180}'''
 
-TIMERAG_THREE_SHOT_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
-Match Context: Rally 1, currently at Shot 1. This is the first shot of the rally.
+TIMERAG_STAGE1_THREE_SHOT_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
+Match Context: Rally 1, currently at Shot 3. 2 shots have been played in this rally.
+
+Shot 1:
+It is my turn. I am at Rear Center, opponent at Mid Center.
+I serve a Serve short to Mid Center, then move to Rear Center.
+Shot 2:
+It is opponent's turn. I am at Mid Center, opponent at Rear Center.
+My Serve short is arriving at Mid Center.
+Opponent moves to Mid Center and hits a Clear to Mid Center, then moves to Rear Center.
+Shot 3:
+It is my turn. I am at Rear Center, opponent at Mid Center.
+Opponent's Clear is arriving at Mid Center.
+[Next shot to be decided]
+Outcome: Returned with Smash.'''
+
+TIMERAG_STAGE2_THREE_SHOT_DESCRIPTION = '''Current score: 3-2. I lead by 1 points.
+Match Context: Rally 1, currently at Shot 3. 2 shots have been played in this rally.
 
 Shot 1:
 It is my turn. I am at Rear Center, opponent at Mid Center.
@@ -81,7 +108,19 @@ class RAGDataPreparationTest(unittest.TestCase):
     def test_string_dtype_player_names_are_not_treated_as_ids(self):
         dataframe = make_dataframe()
         dataframe['player'] = dataframe['player'].astype('string')
-        split = {'train': {'Player A': [1]}}
+        record = {
+            'match_id': 1,
+            'set': 1,
+            'rally': 1,
+            'players': ['Player A', 'Player B'],
+            'player_profiles': {'Player A': None, 'Player B': None},
+        }
+        split = {
+            'train': [record],
+            'test': [],
+            'split_sha256': 'test-split',
+            'profiles_sha256': None,
+        }
         player_map = {'Player A': 0, 'Player B': 1}
 
         with tempfile.TemporaryDirectory() as directory:
@@ -89,12 +128,73 @@ class RAGDataPreparationTest(unittest.TestCase):
             timerag_dir = os.path.join(directory, 'timerag')
             self.assertEqual(
                 prepare_naive_rag_data(dataframe, split, player_map, naive_dir),
-                1,
+                2,
             )
             self.assertEqual(
                 prepare_timerag_data(dataframe, split, player_map, timerag_dir, window_size=3),
-                1,
+                2,
             )
+
+    def test_rally_preparation_does_not_include_test_rally_from_same_match(self):
+        train = make_dataframe()
+        test = make_dataframe().copy()
+        test['rally'] = 2
+        dataframe = pd.concat([train, test], ignore_index=True)
+        train_record = {
+            'match_id': 1, 'set': 1, 'rally': 1,
+            'players': ['Player A', 'Player B'], 'player_profiles': {},
+        }
+        test_record = {
+            'match_id': 1, 'set': 1, 'rally': 2,
+            'players': ['Player A', 'Player B'], 'player_profiles': {},
+        }
+        split = {
+            'train': [train_record],
+            'test': [test_record],
+            'split_sha256': 'test-split',
+            'profiles_sha256': None,
+        }
+        player_map = {'Player A': 0, 'Player B': 1}
+
+        with tempfile.TemporaryDirectory() as directory:
+            naive_dir = os.path.join(directory, 'naive')
+            timerag_dir = os.path.join(directory, 'timerag')
+            prepare_naive_rag_data(dataframe, split, player_map, naive_dir)
+            prepare_timerag_data(dataframe, split, player_map, timerag_dir, window_size=3)
+            naive = NaiveRAGDatabase.load(os.path.join(
+                naive_dir, player_database_filename('Player A')
+            ))
+            timerag = TimeRAGDatabase.load(os.path.join(
+                timerag_dir, player_database_filename('Player A')
+            ))
+
+        self.assertEqual(set(naive.data['rally'].astype(int)), {1})
+        self.assertEqual({int(row['rally']) for row in timerag.windows_metadata}, {1})
+        self.assertEqual(naive.build_metadata['train_rally_keys'], [[1, 1, 1]])
+
+    def test_failed_build_does_not_replace_existing_database_directory(self):
+        dataframe = make_dataframe()
+        record = {
+            'match_id': 1, 'set': 1, 'rally': 1,
+            'players': ['Player A', 'Player B'], 'player_profiles': {},
+        }
+        split = {
+            'train': [record], 'test': [],
+            'split_sha256': 'test-split', 'profiles_sha256': None,
+        }
+        player_map = {'Player A': 0, 'Player B': 1}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = os.path.join(directory, 'naive')
+            os.makedirs(output_dir)
+            marker = os.path.join(output_dir, 'existing.txt')
+            with open(marker, 'w', encoding='utf-8') as handle:
+                handle.write('keep')
+            with patch.object(NaiveRAGDatabase, 'save', side_effect=RuntimeError('boom')):
+                with self.assertRaisesRegex(RuntimeError, 'Failed to build'):
+                    prepare_naive_rag_data(dataframe, split, player_map, output_dir)
+            with open(marker, encoding='utf-8') as handle:
+                self.assertEqual(handle.read(), 'keep')
 
 
 class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
@@ -111,16 +211,38 @@ class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
             for _, row in self.database.data.iterrows()
         ]
         self.assertEqual(self.database.case_verbalizations, expected)
-        self.assertEqual(self.database.case_verbalizations[0]['description'], NAIVE_SERVE_DESCRIPTION)
+        verbalization = self.database.case_verbalizations[0]
+        self.assertNotIn('description', verbalization)
+        self.assertEqual(
+            verbalization['stage1_description'], NAIVE_STAGE1_SERVE_DESCRIPTION
+        )
+        self.assertEqual(
+            verbalization['stage2_description'], NAIVE_STAGE2_SERVE_DESCRIPTION
+        )
 
-    def test_retrieved_cases_do_not_call_renderer(self):
+    def test_retrieved_stage_cases_do_not_call_renderer(self):
         row = self.database.data.iloc[0]
         query = {key: row[key] for key in self.database.retrieval_keys}
         experiences = self.database.retrieve(query, top_k=2)
         with patch.object(NaiveRAGVerbalizer, 'build_case_verbalization', side_effect=AssertionError):
-            cases = NaiveRAGVerbalizer().build_cases_list(experiences)
-        self.assertEqual([case['index'] for case in cases], [1, 2])
-        self.assertEqual(cases[0]['description'], experiences[0]['case_verbalization']['description'])
+            verbalizer = NaiveRAGVerbalizer()
+            stage1_cases = verbalizer.build_stage1_cases(experiences)
+            stage2_cases = verbalizer.build_stage2_cases(experiences)
+        self.assertEqual([case['index'] for case in stage1_cases], [1, 2])
+        self.assertEqual(
+            stage1_cases[0]['stage1_description'],
+            experiences[0]['case_verbalization']['stage1_description'],
+        )
+        self.assertEqual(
+            stage2_cases[0]['stage2_description'],
+            experiences[0]['case_verbalization']['stage2_description'],
+        )
+        self.assertNotIn('description', stage1_cases[0])
+        self.assertNotIn('description', stage2_cases[0])
+        self.assertNotIn('distance', stage1_cases[0])
+        self.assertNotIn('distance', stage2_cases[0])
+        self.assertNotIn('landing_x', stage1_cases[0]['stage1_description'])
+        self.assertIn('landing_x', stage2_cases[0]['stage2_description'])
 
     def test_dual_retrieval_uses_aligned_cached_cases(self):
         row = self.database.data.iloc[-1]
@@ -131,7 +253,51 @@ class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
             context = NaiveRAGVerbalizer().build_dual_prompt_context_nl(state_dict, result)
         self.assertEqual(len(context['normal_cases']), 2)
         self.assertEqual(len(context['miss_cases']), 1)
-        self.assertIn('MISSED SHOT', context['miss_cases'][0]['description'])
+        self.assertIn('MISSED SHOT', context['miss_cases'][0]['stage2_description'])
+
+    def test_two_stage_retrieval_uses_eight_features_and_filters_before_ranking(self):
+        self.assertEqual(self.database.continuous_keys, [
+            'player_location_x', 'player_location_y',
+            'hit_x', 'hit_y',
+            'opponent_location_x', 'opponent_location_y',
+            'ball_distance_x', 'ball_distance_y',
+        ])
+        row = self.database.data.iloc[1]
+        query = {key: row[key] for key in self.database.retrieval_keys}
+        stage1 = self.database.retrieve_stage1(
+            query, normal_top_k=5, miss_top_k=5, launch=False
+        )
+        self.assertTrue(stage1['normal_cases'])
+        self.assertTrue(stage1['miss_cases'])
+        self.assertEqual(
+            {int(case['player_type']) for case in stage1['normal_cases']}, {4}
+        )
+        conditioned = self.database.retrieve_by_shot_type(
+            query, 4, top_k=5, distances=stage1['distances']
+        )
+        self.assertTrue(conditioned)
+        self.assertEqual({int(case['player_type']) for case in conditioned}, {4})
+        self.assertEqual(self.database.retrieve_by_shot_type(query, 9, top_k=5), [])
+        distractor = self.database.data.iloc[1]
+        distractor_query = {
+            key: distractor[key] for key in self.database.retrieval_keys
+        }
+        self.assertEqual(
+            int(self.database.retrieve(distractor_query, top_k=1)[0]['player_type']),
+            4,
+        )
+        conditioned_serve = self.database.retrieve_by_shot_type(
+            distractor_query, 1, top_k=1
+        )
+        self.assertEqual(int(conditioned_serve[0]['player_type']), 1)
+        type_four_id = self.database.data.index[
+            self.database.data['player_type'].astype(int) == 4
+        ][0]
+        self.database.data.loc[type_four_id, 'landing_x'] = 1.5
+        self.assertEqual(
+            self.database.retrieve_by_shot_type(distractor_query, 4, top_k=1),
+            [],
+        )
 
     def test_missed_shot_coordinates_are_canonicalized(self):
         missed = self.database.data[self.database.data['player_type'].astype(int) == 11]
@@ -141,8 +307,32 @@ class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
         self.assertIn(
             'Action: {"shot_type": "Missed shot", "landing_area": null, "landing_x": null, '
             '"landing_y": null, "moving_area": null, "moving_x": null, "moving_y": null}',
-            self.database.case_verbalizations[-1]['description'],
+            self.database.case_verbalizations[-1]['stage2_description'],
         )
+        self.assertNotIn(
+            'landing_x', self.database.case_verbalizations[-1]['stage1_description']
+        )
+
+    def test_stage_specific_trace_descriptions_match_prompt_evidence(self):
+        row = self.database.data.iloc[0]
+        query = {key: row[key] for key in self.database.retrieval_keys}
+        experience = self.database.retrieve(query, top_k=1)[0]
+
+        stage1 = simplify_naive_rag_experiences([experience], stage='stage1')[0]
+        stage2 = simplify_naive_rag_experiences([experience], stage='stage2')[0]
+
+        self.assertEqual(
+            stage1['stage1_description'],
+            experience['case_verbalization']['stage1_description'],
+        )
+        self.assertNotIn('landing_x', stage1['stage1_description'])
+        self.assertIn('distance', stage1)
+        self.assertEqual(
+            stage2['stage2_description'],
+            experience['case_verbalization']['stage2_description'],
+        )
+        self.assertIn('landing_x', stage2['stage2_description'])
+        self.assertIn('distance', stage2)
 
     def test_full_history_is_rendered_from_each_agents_viewpoint(self):
         raw_history = [dict(row) for row in make_dataframe().iloc[:3].to_dict('records')]
@@ -168,7 +358,7 @@ class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
             path = os.path.join(directory, 'db.pkl')
             self.database.save(path)
             loaded = NaiveRAGDatabase.load(path)
-            self.assertEqual(loaded.schema_version, 5)
+            self.assertEqual(loaded.schema_version, 8)
             self.assertEqual(loaded.case_verbalizations, self.database.case_verbalizations)
 
             loaded.case_verbalizations[0], loaded.case_verbalizations[1] = (
@@ -180,10 +370,10 @@ class NaiveRAGOfflineVerbalizationTest(unittest.TestCase):
 
             with open(path, 'rb') as f:
                 payload = pickle.load(f)
-            payload['schema_version'] = 4
+            payload['schema_version'] = 7
             with open(path, 'wb') as f:
                 pickle.dump(payload, f)
-            with self.assertRaisesRegex(ValueError, 'offline verbalizations'):
+            with self.assertRaisesRegex(ValueError, 'rally dataset'):
                 NaiveRAGDatabase.load(path)
 
     def test_validation_rejects_feature_and_stats_corruption(self):
@@ -230,16 +420,38 @@ class TimeRAGOfflineVerbalizationTest(unittest.TestCase):
             for window_id in range(len(self.database.windows))
         ]
         self.assertEqual(self.database.window_verbalizations, expected)
-        self.assertEqual(self.database.window_verbalizations[1]['description'], TIMERAG_THREE_SHOT_DESCRIPTION)
+        verbalization = self.database.window_verbalizations[1]
+        self.assertNotIn('description', verbalization)
+        self.assertEqual(
+            verbalization['stage1_description'], TIMERAG_STAGE1_THREE_SHOT_DESCRIPTION
+        )
+        self.assertEqual(
+            verbalization['stage2_description'], TIMERAG_STAGE2_THREE_SHOT_DESCRIPTION
+        )
 
-    def test_retrieved_cases_do_not_call_renderer(self):
+    def test_retrieved_stage_cases_do_not_call_renderer(self):
         query_continuous = np.asarray(self.database.windows_continuous[0], dtype=np.float32)
         query_discrete = np.asarray(self.database.windows_discrete[0], dtype=np.float32)
         windows = self.database.retrieve(query_continuous, query_discrete, top_k=2)
         with patch.object(TimeRAGVerbalizer, 'build_window_verbalization', side_effect=AssertionError):
-            cases = TimeRAGVerbalizer().build_cases_list(windows)
-        self.assertEqual([case['index'] for case in cases], [1, 2])
-        self.assertEqual(cases[0]['description'], windows[0]['case_verbalization']['description'])
+            verbalizer = TimeRAGVerbalizer()
+            stage1_cases = verbalizer.build_stage1_cases(windows)
+            stage2_cases = verbalizer.build_stage2_cases(windows)
+        self.assertEqual([case['index'] for case in stage1_cases], [1, 2])
+        self.assertEqual(
+            stage1_cases[0]['stage1_description'],
+            windows[0]['case_verbalization']['stage1_description'],
+        )
+        self.assertEqual(
+            stage2_cases[0]['stage2_description'],
+            windows[0]['case_verbalization']['stage2_description'],
+        )
+        self.assertNotIn('description', stage1_cases[0])
+        self.assertNotIn('description', stage2_cases[0])
+        self.assertNotIn('distance', stage1_cases[0])
+        self.assertNotIn('distance', stage2_cases[0])
+        self.assertNotIn('Action:', stage1_cases[0]['stage1_description'])
+        self.assertIn('Action:', stage2_cases[0]['stage2_description'])
 
     def test_dual_retrieval_uses_aligned_cached_cases(self):
         query_continuous = np.asarray(self.database.windows_continuous[-1], dtype=np.float32)
@@ -255,7 +467,67 @@ class TimeRAGOfflineVerbalizationTest(unittest.TestCase):
             context = TimeRAGVerbalizer().build_dual_prompt_context_nl(state_dict, result)
         self.assertEqual(len(context['normal_cases']), 2)
         self.assertEqual(len(context['miss_cases']), 1)
-        self.assertIn('MISSED SHOT', context['miss_cases'][0]['description'])
+        self.assertIn('MISSED SHOT', context['miss_cases'][0]['stage2_description'])
+
+    def test_two_stage_retrieval_uses_eight_features_and_exact_shot_windows(self):
+        self.assertEqual(self.database.continuous_keys, [
+            'player_location_x', 'player_location_y',
+            'hit_x', 'hit_y',
+            'opponent_location_x', 'opponent_location_y',
+            'ball_distance_x', 'ball_distance_y',
+        ])
+        query_continuous = np.asarray(self.database.windows_continuous[1], dtype=np.float32)
+        query_discrete = np.asarray(self.database.windows_discrete[1], dtype=np.float32)
+        stage1 = self.database.retrieve_stage1(
+            query_continuous,
+            query_discrete,
+            normal_top_k=5,
+            miss_top_k=5,
+            launch=False,
+        )
+        self.assertTrue(stage1['normal_cases'])
+        self.assertTrue(stage1['miss_cases'])
+        self.assertEqual(
+            {int(case['action']['player_type']) for case in stage1['normal_cases']}, {4}
+        )
+        conditioned = self.database.retrieve_by_shot_type(
+            query_continuous,
+            query_discrete,
+            4,
+            top_k=5,
+            distances=stage1['distances'],
+        )
+        self.assertEqual(
+            {int(case['action']['player_type']) for case in conditioned}, {4}
+        )
+        self.assertEqual(
+            self.database.retrieve_by_shot_type(
+                query_continuous, query_discrete, 9, top_k=5
+            ),
+            [],
+        )
+        self.assertEqual(
+            int(self.database.retrieve(
+                query_continuous, query_discrete, top_k=1
+            )[0]['action']['player_type']),
+            4,
+        )
+        conditioned_serve = self.database.retrieve_by_shot_type(
+            query_continuous, query_discrete, 1, top_k=1
+        )
+        self.assertEqual(int(conditioned_serve[0]['action']['player_type']), 1)
+        type_four_id = next(
+            window_id
+            for window_id, action in enumerate(self.database.windows_actions)
+            if int(action['player_type']) == 4
+        )
+        self.database.windows_actions[type_four_id]['landing_x'] = 1.5
+        self.assertEqual(
+            self.database.retrieve_by_shot_type(
+                query_continuous, query_discrete, 4, top_k=1
+            ),
+            [],
+        )
 
     def test_missed_shot_coordinates_are_canonicalized(self):
         coordinate_keys = self.database.missed_coordinate_keys
@@ -282,15 +554,40 @@ class TimeRAGOfflineVerbalizationTest(unittest.TestCase):
         self.assertIn(
             'Action: {"shot_type": "Missed shot", "landing_area": null, "landing_x": null, '
             '"landing_y": null, "moving_area": null, "moving_x": null, "moving_y": null}',
-            self.database.window_verbalizations[-1]['description'],
+            self.database.window_verbalizations[-1]['stage2_description'],
         )
+        self.assertNotIn(
+            'landing_x', self.database.window_verbalizations[-1]['stage1_description']
+        )
+
+    def test_stage_specific_trace_hides_only_final_window_placement(self):
+        query_continuous = np.asarray(self.database.windows_continuous[1], dtype=np.float32)
+        query_discrete = np.asarray(self.database.windows_discrete[1], dtype=np.float32)
+        window = self.database.retrieve(query_continuous, query_discrete, top_k=1)[0]
+
+        stage1 = simplify_timerag_windows([window], stage='stage1')[0]
+        stage2 = simplify_timerag_windows([window], stage='stage2')[0]
+
+        self.assertEqual(
+            stage1['stage1_description'],
+            window['case_verbalization']['stage1_description'],
+        )
+        self.assertIn('Opponent moves to Mid Center', stage1['stage1_description'])
+        self.assertNotIn('Action:', stage1['stage1_description'])
+        self.assertIn('distance', stage1)
+        self.assertEqual(
+            stage2['stage2_description'],
+            window['case_verbalization']['stage2_description'],
+        )
+        self.assertIn('Action:', stage2['stage2_description'])
+        self.assertIn('distance', stage2)
 
     def test_round_trip_and_cache_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, 'db.pkl')
             self.database.save(path)
             loaded = TimeRAGDatabase.load(path)
-            self.assertEqual(loaded.schema_version, 7)
+            self.assertEqual(loaded.schema_version, 10)
             self.assertEqual(loaded.window_verbalizations, self.database.window_verbalizations)
 
             loaded.window_verbalizations[0], loaded.window_verbalizations[1] = (
@@ -308,10 +605,10 @@ class TimeRAGOfflineVerbalizationTest(unittest.TestCase):
 
             with open(path, 'rb') as f:
                 payload = pickle.load(f)
-            payload['schema_version'] = 6
+            payload['schema_version'] = 9
             with open(path, 'wb') as f:
                 pickle.dump(payload, f)
-            with self.assertRaisesRegex(ValueError, 'offline verbalizations'):
+            with self.assertRaisesRegex(ValueError, 'rally dataset'):
                 TimeRAGDatabase.load(path)
 
     def test_validation_rejects_feature_and_stats_corruption(self):

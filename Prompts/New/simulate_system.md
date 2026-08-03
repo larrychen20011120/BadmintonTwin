@@ -61,16 +61,19 @@ The half court is divided into 17 semantic areas.
 - Valid grid coordinates satisfy 0 <= x <= 355 and 0 <= y <= 480.
 - All non-missed landing and recovery coordinates must be integers.
 - The semantic area must match its integer coordinate.
-- For **Missed shot**, `landing_area`, `landing_x`, `landing_y`, `moving_area`, `moving_x`, and `moving_y` must all be `null`.
+
 # Shot Types
+## Serve
 - **Serve short**
 - **Serve long**
-- **Clear**
+## Attack
 - **Push Shot**
 - **Smash**
+- **Drop**
+## Defense
+- **Clear**
 - **Smash Defence**
+- **Lob**
+## Neutral
 - **Drive**
 - **Net Shot**
-- **Lob**
-- **Drop**
-- **Missed shot**

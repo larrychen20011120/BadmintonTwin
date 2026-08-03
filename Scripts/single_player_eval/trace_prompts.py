@@ -792,11 +792,11 @@ class TimeRAGTracer(PromptTracer):
         # 格式化 retrieved items
         retrieved_items = []
         for i, win in enumerate(windows, 1):
-            formatted = self.verbalizer.format_window_turn_based(win, i)
+            formatted = self.verbalizer.format_stage2_case(win, i)
             retrieved_items.append({
                 'index': formatted['index'],
                 'num_shots': formatted['num_shots'],
-                'description': formatted['description'],
+                'stage2_description': formatted['stage2_description'],
             })
         
         return {
@@ -1057,6 +1057,13 @@ def main():
     )
     
     args = parser.parse_args()
+
+    if args.algorithm in {'naive_rag', 'timerag', 'twin'}:
+        parser.error(
+            'NaiveRAG/TimeRAG/Twin now use stage-specific prompts. Run '
+            'eval_all_rallies.py with --enable-tracing to inspect both retrieval '
+            'and generation stages in Langfuse.'
+        )
 
     import yaml
     with open(os.path.join(project_path, 'Scripts', 'config.yaml'), 'r') as f:

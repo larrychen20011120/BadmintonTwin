@@ -1,6 +1,6 @@
 ## Task
 
-Estimate the current Twin semantic state for retrieval. Jointly analyze the entire current rally prefix and the previous rally summary as evidence for imitating the target player.
+Estimate the current Twin semantic state for retrieval. Jointly analyze the entire current rally prefix as evidence for imitating the target player.
 
 Analyze the current rally prefix from four complementary aspects:
 
@@ -11,20 +11,30 @@ Analyze the current rally prefix from four complementary aspects:
 
 Explicitly include current reachability, recovery quality, and failed-contact risk when describing tempo and movement dynamics. Use broad tactical patterns rather than shot-by-shot interpretation. Do not infer personality, true fatigue, injury, or hidden mental states.
 
+For each aspect, return only the current dominant phase as a concise phrase or one short sentence of at most 20 words. Do not provide evidence, transition reasons, stroke lists, or additional analysis.
+
+## Current Phase Rules
+
+- Use the complete rally prefix as context, but describe only the phase active at the latest stroke.
+- Identify the most recent meaningful turning point for each aspect independently.
+- Treat a clear change in tactical state, pressure ownership, court control, movement demand, recovery quality, or reachability as a candidate phase change.
+- A new phase should normally persist across at least two consecutive relevant actions. A clear attack-to-defence, defence-to-counterattack, stable-to-late-recovery, or reachable-to-failed-coverage transition may become current immediately.
+- Do not average an earlier phase and the current phase into one generic description.
+- Do not treat an isolated shot as a new phase unless it clearly changes the broader rally state.
+- If no meaningful transition has occurred, retain the existing dominant phase.
+
 ## Current Match Situation
 
 {% if trajectory_text %}
 {{ trajectory_text }}
 {% endif %}
 
-## Previous Rally Summary
+{% if rally_profile_instruction %}
+## Tactical Imitation Instruction
 
-{{ previous_rally_summary }}
+Treat this instruction as weak auxiliary evidence; the current rally remains primary.
 
-{% if style_shift_instruction %}
-## Style Shift Instruction
-
-{{ style_shift_instruction }}
+{{ rally_profile_instruction }}
 {% endif %}
 
 ## Required JSON
@@ -33,12 +43,11 @@ Return only one valid JSON object with these fields:
 
 ```json
 {
-  "my_tactical_pattern": "target player's tactical pattern and spatial-control analysis",
-  "my_tempo_movement_dynamics": "target player's tempo, movement, recovery, and physical-pressure dynamics",
-  "opponent_tactical_pattern": "opponent's tactical pattern and spatial-control analysis",
-  "opponent_tempo_movement_dynamics": "opponent's tempo, movement, recovery, and physical-pressure dynamics",
-  "semantic_query_text": "My tactical pattern: ...\nMy tempo and movement dynamics: ... Include reachability and missed-shot risk.\nOpponent tactical pattern: ...\nOpponent tempo and movement dynamics: ...\nPrevious rally summary: ..."
+  "my_tactical_pattern": "Sustained net-front control",
+  "my_tempo_movement_dynamics": "Stable recovery under front-back pressure",
+  "opponent_tactical_pattern": "Defensive lifting with rear-court resets",
+  "opponent_tempo_movement_dynamics": "The opponent recovers increasingly late under directional pressure."
 }
 ```
 
-The `semantic_query_text` must combine the four current aspects and the previous rally summary in the shown format. Keep the JSON keys exactly as shown.
+Keep the JSON keys exactly as shown. Do not add `semantic_query_text` or any other field.

@@ -5,8 +5,9 @@ Single Player Evaluation Module
 支援多種演算法：bc, rallynet, rallynetv2, naive_rag, pure_llm, random, timerag, twin, twin2
 
 主要功能：
-1. 模擬與Trajectory收集: eval_single_player.py, evaluators/
-2. Trajectory分析與評估: evaluate_trajectories.py
+1. 模擬與Trajectory收集: eval_single_player.py, eval_all_rallies.py, evaluators/
+2. Canonical trajectory scoring: score.py
+3. Additional trajectory analysis and visualization: evaluate_trajectories.py
 
 使用方法：
     # 模擬並收集 trajectory
@@ -15,11 +16,10 @@ Single Player Evaluation Module
         --player "Viktor AXELSEN" \\
         --save-trajectories
 
-    # 分析 trajectory
-    python Scripts/single_player_eval/evaluate_trajectories.py \\
-        --trajectory-file Experiments/bc/trajectories/Viktor_AXELSEN_norm.pkl \\
-        --metrics all \\
-        --visualize
+    # 計算 canonical metrics
+    python Scripts/single_player_eval/score.py \\
+        --run-root Experiments/bc/trajectories/rally_no_instruct \\
+        --output-dir Experiments/bc/results/rally_no_instruct/latest
 """
 
 # Evaluation tools (for analysis) - these can be imported independently
@@ -42,6 +42,7 @@ except ImportError as e:
 try:
     from .evaluators.base_evaluator import BaseEvaluator
     from .evaluators.bc_evaluator import BCEvaluator
+    from .evaluators.rallynet_evaluator import RallyNetEvaluator
     from .evaluators.rallynetv2_evaluator import RallyNetV2Evaluator
     from .evaluators.naive_rag_evaluator import NaiveRAGEvaluator
     from .evaluators.pure_llm_evaluator import PureLLMEvaluator

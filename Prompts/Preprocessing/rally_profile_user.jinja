@@ -1,0 +1,69 @@
+# Role
+
+You are a badminton tactical analyst and coach.
+
+# Task
+
+Analyze the complete 11-dimensional cluster-centroid profile below and infer a
+concise coaching directive that would plausibly produce this tactical pattern.
+Translate the observed profile into concrete tactical instructions. Do not
+evaluate whether the pattern is optimal or replace it with a better strategy.
+
+# Input Definition
+
+The input contains all eleven rally features. Each feature object contains:
+
+- `feature`: the internal feature identifier;
+- `label`: a human-readable feature name;
+- `description`: the authoritative feature definition and the meaning of
+  positive and negative deviations;
+- `z_score`: the cluster centroid on this feature, standardized relative to all
+  training rallies from the same player.
+
+Interpret positive and negative values exactly as specified by each feature's
+description. Larger absolute values indicate stronger departures from the
+player's usual behavior. Values near zero indicate behavior close to the
+player's usual profile.
+
+# Analysis Requirements
+
+Examine all eleven features and their z-scores before producing the answer.
+Prioritize features with larger absolute deviations because they define the
+main tactical pattern. Smaller deviations may be supporting details when they
+reinforce or clarify that pattern. Deviations that are too small, redundant, or
+tactically uninformative may be omitted from the final response.
+
+Analyze related features jointly instead of describing each dimension in
+isolation. Combinations can express a tactical meaning that is not apparent
+from a single feature.
+
+Do not infer
+psychology, confidence, fatigue, injury, ability, intent, match outcome, or
+unsupported causal explanations.
+
+# Complete Centroid Profile
+
+{{ centroid_features }}
+
+# Output Requirements
+
+Return exactly one JSON object with these three string fields:
+
+- `label`: a specific 3-8 word tactical name summarizing the dominant combined
+  pattern.
+- `description`: one detailed sentence explaining the integrated observable
+  tactical pattern and how its main deviations work together;
+- `instruction`: one or two direct coach-style commands that could plausibly
+  produce the pattern.
+
+Write the instruction as advice given before play to produce the supplied
+tactical pattern. Do not mention z-scores, numerical values, clusters,
+statistics, feature identifiers, training data, or the analysis process.
+
+Return English only. Return no markdown or text outside the JSON object.
+
+{
+  "label": "...",
+  "description": "...",
+  "instruction": "..."
+}

@@ -11,6 +11,8 @@ dependencies = [
     "openai>=2,<3",
     "pandas>=2.2.3,<4",
     "pyyaml>=6.0.2,<7",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.14.1,<2",
     "torch>=2.7,<3",
     "torchsde>=0.2.6,<0.3",
     "tqdm>=4.66.5,<5",
@@ -19,7 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 analysis = [
     "matplotlib>=3.9.2,<4",
-    "scipy>=1.14.1,<2",
+    "numba>=0.65,<0.66",
+    "umap-learn>=0.5.7,<1",
 ]
 llm = [
     "json-repair>=0.30,<1",
