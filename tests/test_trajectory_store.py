@@ -195,6 +195,46 @@ class TrajectoryStoreTest(unittest.TestCase):
         self.assertEqual(completed, {(1, 1, 2)})
         self.assertEqual(invalid, [])
 
+    def test_single_stage_twin_trajectory_accepts_direct_action_trace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            trajectory = self.trajectory(None)
+            trajectory['pred_sequence'][0]['decision'] = {
+                'schema_version': 2,
+                'architecture': 'single_stage_v1',
+                'pre_stage': {
+                    'architecture': 'twin_aspect_v1',
+                    'semantic_query_text': 'Current Twin semantic query.',
+                    'source': 'llm',
+                },
+                'retrieval': {
+                    'normal_case_ids': [],
+                    'miss_case_ids': [],
+                },
+                'case_ids': [],
+                'rationale': 'One complete action decision.',
+                'action': {
+                    'shot_type': 1,
+                    'landing_x': 0.0,
+                    'landing_y': 0.0,
+                    'moving_x': 0.0,
+                    'moving_y': 0.0,
+                },
+                'action_source': 'llm+llm',
+            }
+            save_trajectories(
+                [trajectory],
+                temp_dir,
+                metadata={
+                    'algorithm': 'twin_single_stage',
+                    'evaluation_unit': 'physical_rally',
+                    'config_fingerprint': 'abc',
+                },
+            )
+            completed, invalid = completed_rally_keys(temp_dir, 'abc')
+
+        self.assertEqual(completed, {(1, 1, 2)})
+        self.assertEqual(invalid, [])
+
     def test_rag_trajectory_rejects_outer_action_mismatch_and_bad_case_type(self):
         for mutation in ('outer_shot', 'bad_case', 'invalid_shot_type'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp_dir:

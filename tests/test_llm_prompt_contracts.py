@@ -280,6 +280,36 @@ class LLMPromptRenderingTest(unittest.TestCase):
         self.assertIn("Attack. Attack more.", instructed)
         self.assertIn("Tactical Imitation Instruction", instructed)
 
+    def test_single_stage_twin_templates_render_complete_actions_strictly(self):
+        memory = {
+            "score": 0.9,
+            "state_similarity": 0.8,
+            "semantic_similarity": 1.0,
+            "context_text": "Twin semantic context.",
+            "reachability_text": "The player returned the shuttle.",
+            "action_verbalization": 'Action: {"shot_type": "Clear"}',
+        }
+        context = {
+            "trajectory_text": "Complete current rally.",
+            "semantic_query_text": "Current Twin semantic query.",
+            "normal_memories": [memory],
+            "miss_memories": [memory],
+            "rally_profile_instruction": "Attack. Prefer attacking returns.",
+        }
+        for variant in ("no_instruct", "instruct"):
+            rendered = render_strict(
+                PROMPT_ROOT / "twin_single_stage" / f"action_{variant}.jinja",
+                **context,
+            )
+            self.assertIn("Complete current rally.", rendered)
+            self.assertIn('"landing_x"', rendered)
+            self.assertIn("Retrieved Missed-Shot Twin Memories", rendered)
+            self.assertIn("Retrieved Successful Return Twin Memories", rendered)
+            self.assertEqual(
+                "Attack. Prefer attacking returns." in rendered,
+                variant == "instruct",
+            )
+
     def test_pure_llm_normalizes_shared_history_from_each_player_view(self):
         agent = PureLLMAgent.__new__(PureLLMAgent)
         agent.player_name = "A"

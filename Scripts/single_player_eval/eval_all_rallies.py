@@ -32,7 +32,9 @@ from Scripts.single_player_eval.trajectory_store import (
 )
 
 
-RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin'}
+RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin', 'twin_single_stage'}
+TWO_STAGE_RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin'}
+TWIN_ALGORITHMS = {'twin', 'twin_single_stage'}
 PARALLEL_LLM_ALGORITHMS = RAG_ALGORITHMS | {'pure_llm'}
 INSTRUCTION_VARIANTS = {'original', 'opposite', 'random_other', 'rewrite'}
 _WORKER_EVALUATOR = None
@@ -83,11 +85,22 @@ def _safe_settings(config, args, dataset):
         'llm_client': os.path.join(PROJECT_ROOT, 'Utils', 'llm.py'),
         'badminton_config': os.path.join(PROJECT_ROOT, 'Utils', 'badminton_config.py'),
     }
-    if args.algorithm == 'twin':
+    if args.algorithm in TWIN_ALGORITHMS:
         implementation_paths.update({
             'verbalizer': os.path.join(PROJECT_ROOT, 'Agent', 'naive_rag.py'),
             'embedding_client': os.path.join(PROJECT_ROOT, 'Utils', 'embeddings.py'),
         })
+        if args.algorithm == 'twin_single_stage':
+            implementation_paths.update({
+                'twin_agent_base': os.path.join(PROJECT_ROOT, 'Agent', 'twin.py'),
+                'twin_evaluator_base': os.path.join(
+                    PROJECT_ROOT,
+                    'Scripts',
+                    'single_player_eval',
+                    'evaluators',
+                    'twin_evaluator.py',
+                ),
+            })
     settings = {
         'algorithm': args.algorithm,
         'dataset': 'rally',
@@ -133,7 +146,7 @@ def _safe_settings(config, args, dataset):
 
     retrieval = config.get('retrieval', {})
     stage1 = retrieval.get('stage1', {})
-    if args.algorithm == 'twin':
+    if args.algorithm in TWIN_ALGORITHMS:
         from Agent.twin import embedding_model_key
         from Utils.embeddings import resolve_embedding_settings
 
@@ -155,12 +168,32 @@ def _safe_settings(config, args, dataset):
             'preparation_manifest.json',
         )
         prompt_suffix = args.instruction_mode
+        single_stage = args.algorithm == 'twin_single_stage'
+        prompt_hashes = {
+            'system': _file_digest(system_prompt_path),
+            'aspect': _file_digest(os.path.join(
+                PROJECT_ROOT, 'Prompts', 'New', 'twin', 'aspect_user.jinja'
+            )),
+        }
+        if single_stage:
+            prompt_hashes['action'] = _file_digest(
+                os.path.join(prompt_dir, f'action_{prompt_suffix}.jinja')
+            )
+        else:
+            prompt_hashes.update({
+                'stage1': _file_digest(os.path.join(prompt_dir, f'stage1_{prompt_suffix}.jinja')),
+                'stage2': _file_digest(os.path.join(prompt_dir, f'stage2_{prompt_suffix}.jinja')),
+            })
         settings.update({
-            'retrieval_architecture': 'twin_aspect_two_stage_v1',
-            'action_architecture': retrieval.get('architecture'),
+            'retrieval_architecture': (
+                'twin_aspect_single_stage_v1'
+                if single_stage else 'twin_aspect_two_stage_v1'
+            ),
+            'action_architecture': (
+                'single_stage_v1' if single_stage else retrieval.get('architecture')
+            ),
             'stage1_normal_top_k': stage1.get('normal_top_k'),
             'stage1_miss_top_k': stage1.get('miss_top_k'),
-            'stage2_conditioned_top_k': args.conditioned_top_k,
             'lambda_weight': args.lambda_weight,
             'embedding': {
                 key: embedding.get(key)
@@ -169,12 +202,7 @@ def _safe_settings(config, args, dataset):
                     'normalize_embeddings',
                 )
             },
-            'prompt_sha256': {
-                'system': _file_digest(system_prompt_path),
-                'aspect': _file_digest(os.path.join(prompt_dir, 'aspect_user.jinja')),
-                'stage1': _file_digest(os.path.join(prompt_dir, f'stage1_{prompt_suffix}.jinja')),
-                'stage2': _file_digest(os.path.join(prompt_dir, f'stage2_{prompt_suffix}.jinja')),
-            },
+            'prompt_sha256': prompt_hashes,
             'database_manifest_sha256': (
                 _file_digest(memory_manifest) if os.path.isfile(memory_manifest) else None
             ),
@@ -182,6 +210,8 @@ def _safe_settings(config, args, dataset):
                 _file_digest(embedding_manifest) if os.path.isfile(embedding_manifest) else None
             ),
         })
+        if not single_stage:
+            settings['stage2_conditioned_top_k'] = args.conditioned_top_k
         return settings
 
     prompt_suffix = 'instruct' if args.instruction_mode == 'instruct' else 'norm'
@@ -292,6 +322,10 @@ def _create_parallel_evaluator(algorithm, kwargs):
         from Scripts.single_player_eval.evaluators.twin_evaluator import TwinEvaluator
 
         return TwinEvaluator(**kwargs)
+    if algorithm == 'twin_single_stage':
+        from Scripts.single_player_eval.evaluators.twin_single_stage_evaluator import TwinSingleStageEvaluator
+
+        return TwinSingleStageEvaluator(**kwargs)
     from Scripts.single_player_eval.evaluators.timerag_evaluator import TimeRAGEvaluator
 
     return TimeRAGEvaluator(**kwargs)
@@ -371,7 +405,10 @@ def parse_args():
     )
     parser.add_argument(
         '--algorithm', required=True,
-        choices=['bc', 'rallynet', 'shuttlenet', 'random', 'pure_llm', 'naive_rag', 'timerag', 'twin'],
+        choices=[
+            'bc', 'rallynet', 'shuttlenet', 'random', 'pure_llm',
+            'naive_rag', 'timerag', 'twin', 'twin_single_stage',
+        ],
     )
     parser.add_argument('--device', choices=['cuda', 'cpu'])
     parser.add_argument('--workers', type=int)
@@ -559,13 +596,12 @@ def _run_parallel_llm(args, config, dataset):
         'instruction_mode': args.instruction_mode,
     }
     if args.algorithm in RAG_ALGORITHMS:
-        evaluator_kwargs.update({
-            'experiment': 'rally',
-            'conditioned_top_k': args.conditioned_top_k,
-        })
+        evaluator_kwargs['experiment'] = 'rally'
+        if args.algorithm in TWO_STAGE_RAG_ALGORITHMS:
+            evaluator_kwargs['conditioned_top_k'] = args.conditioned_top_k
         if args.algorithm == 'timerag':
             evaluator_kwargs['window_size'] = args.window_size
-        elif args.algorithm == 'twin':
+        elif args.algorithm in TWIN_ALGORITHMS:
             evaluator_kwargs['lambda_weight'] = args.lambda_weight
 
     results = []
@@ -677,9 +713,9 @@ def main():
     )
     if args.workers < 1:
         raise ValueError('--workers must be at least 1')
-    if args.algorithm in RAG_ALGORITHMS and args.conditioned_top_k < 1:
+    if args.algorithm in TWO_STAGE_RAG_ALGORITHMS and args.conditioned_top_k < 1:
         raise ValueError('--conditioned-top-k must be at least 1')
-    if args.algorithm == 'twin' and not 0.0 <= args.lambda_weight <= 1.0:
+    if args.algorithm in TWIN_ALGORITHMS and not 0.0 <= args.lambda_weight <= 1.0:
         raise ValueError('--lambda-weight must be between 0 and 1')
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)

@@ -44,6 +44,11 @@ def _file_sha256(path):
 class TwinEvaluator(BaseEvaluator):
     """Evaluate each atomic physical rally once with two player-specific Twins."""
 
+    algorithm_name = "twin"
+    agent_class = TwinAgent
+    retrieval_mode = "twin_aspect_two_stage_v1"
+    uses_conditioned_retrieval = True
+
     def __init__(self, player_name=None, experiment="rally", device="cuda", skip_first_n=0,
                  train_split_path=None, conditioned_top_k=None, lambda_weight=None,
                  enable_tracing=True, save_trajectories=False, output_experiment=None,
@@ -79,7 +84,10 @@ class TwinEvaluator(BaseEvaluator):
         self.lambda_weight = float(
             lambda_weight if lambda_weight is not None else twin_config.get("lambda_weight", 0.5)
         )
-        if min(self.normal_top_k, self.miss_top_k, self.conditioned_top_k) < 1:
+        required_top_k = [self.normal_top_k, self.miss_top_k]
+        if self.uses_conditioned_retrieval:
+            required_top_k.append(self.conditioned_top_k)
+        if min(required_top_k) < 1:
             raise ValueError("Twin retrieval top-k values must all be positive")
         if not 0.0 <= self.lambda_weight <= 1.0:
             raise ValueError("Twin lambda_weight must be between 0 and 1")
@@ -130,11 +138,11 @@ class TwinEvaluator(BaseEvaluator):
         self.agent = self._get_agent(self.player_name) if self.player_name is not None else None
 
         self.print_runtime_parameters(
-            "twin",
-            top_k=self.conditioned_top_k,
+            self.algorithm_name,
+            top_k=self.conditioned_top_k if self.uses_conditioned_retrieval else None,
             normal_top_k=self.normal_top_k,
             miss_top_k=self.miss_top_k,
-            retrieval_mode="twin_aspect_two_stage_v1",
+            retrieval_mode=self.retrieval_mode,
             lambda_weight=self.lambda_weight,
             include_llm=True,
             extra_rows=[
@@ -198,7 +206,7 @@ class TwinEvaluator(BaseEvaluator):
         if self.embedding_model is None:
             self.embedding_model = create_embedding_client(self.embedding_settings)
         twin_config = self.config.get("twin", {})
-        return TwinAgent(
+        return self.agent_class(
             player_name=player_name,
             database=database,
             embedding_cache=embedding_cache,
@@ -234,7 +242,7 @@ class TwinEvaluator(BaseEvaluator):
         return self.agents[player_name]
 
     def get_algorithm_name(self):
-        return "twin"
+        return self.algorithm_name
 
     @staticmethod
     def _state_to_env_format(state):
@@ -399,7 +407,7 @@ class TwinEvaluator(BaseEvaluator):
             records = [record for record in records if self.player_name in record.get("players", [])]
         trajectories = [
             self.simulate_rally(record)
-            for record in tqdm(records, desc="Simulating Twin physical rallies")
+            for record in tqdm(records, desc=f"Simulating {self.algorithm_name} physical rallies")
         ]
         self._save_trajectories_if_needed(trajectories)
         return trajectories

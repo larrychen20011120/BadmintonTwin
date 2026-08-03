@@ -6,6 +6,7 @@ from Agent.base_agent import BaseAgent
 from Agent.naive_rag import NaiveRAGAgent, NaiveRAGDatabase
 from Agent.timerag import TimeRAGAgent, TimeRAGDatabase
 from Agent.twin import TwinAgent, TwinDatabase, TwinEmbeddingCache
+from Agent.twin_single_stage import TwinSingleStageAgent
 
 
 def row(ball_round, player_type, offset=0.0, player="Player A"):
@@ -225,6 +226,22 @@ class TwoStageRAGTest(unittest.TestCase):
         agent.llm = FakeLLM(responses)
         return agent
 
+    def twin_single_stage_agent(self, responses):
+        database = TwinDatabase(dataframe(), "Player A", 0)
+        database.build_with_fallback()
+        model = FakeEmbeddingModel()
+        cache = TwinEmbeddingCache.build(database, model, "fake/model")
+        agent = TwinSingleStageAgent(
+            "Player A",
+            database,
+            cache,
+            embedding_model=model,
+            embedding_model_name="fake/model",
+            enable_tracing=False,
+        )
+        agent.llm = FakeLLM(responses)
+        return agent
+
     def test_stage2_calls_do_not_use_semantic_validator(self):
         stage1 = {
             "rationale": "The evidence supports a legal Clear.",
@@ -289,6 +306,40 @@ class TwoStageRAGTest(unittest.TestCase):
         self.assertEqual(action[0], 11)
         self.assertEqual(len(agent.llm.prompts), 2)
         self.assertEqual(agent.last_decision_trace["stage2"]["status"], "skipped_missed")
+
+    def test_single_stage_twin_generates_the_complete_action_after_one_retrieval(self):
+        response = {
+            "rationale": "The Twin evidence supports a complete Clear action.",
+            "action": BaseAgent.build_prompt_action(2, 0.3, 0.4, -0.2, -0.1),
+        }
+        agent = self.twin_single_stage_agent([aspect_response(), response])
+        agent.database.retrieve_by_shot_type = lambda *_args, **_kwargs: self.fail(
+            "single-stage Twin must not perform shot-conditioned retrieval"
+        )
+
+        action, _ = agent.predict(STATE, info(), launch=False)
+
+        self.assertEqual(action[0], 2)
+        self.assertEqual(len(agent.llm.prompts), 2)
+        self.assertIn("Retrieved Missed-Shot Twin Memories", agent.llm.prompts[1])
+        self.assertIn("Retrieved Successful Return Twin Memories", agent.llm.prompts[1])
+        self.assertIn('"landing_x"', agent.llm.prompts[1])
+        self.assertEqual(agent.last_decision_trace["architecture"], "single_stage_v1")
+        self.assertIn("retrieval", agent.last_decision_trace)
+        self.assertNotIn("stage2", agent.last_decision_trace)
+
+    def test_single_stage_twin_supports_missed_action_in_the_same_call(self):
+        response = {
+            "rationale": "The missed memories indicate failed contact.",
+            "action": BaseAgent.build_prompt_action(11, None, None, None, None),
+        }
+        agent = self.twin_single_stage_agent([aspect_response(), response])
+
+        action, _ = agent.predict(STATE, info(), launch=False)
+
+        self.assertEqual(action[0], 11)
+        self.assertEqual(len(agent.llm.prompts), 2)
+        self.assertIsNone(agent.last_decision_trace["action"]["landing_x"])
 
 
 class FakeEmbeddingModel:

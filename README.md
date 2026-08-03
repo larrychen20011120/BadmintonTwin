@@ -83,8 +83,8 @@ legacy normal/shifted experiments.
 
 ## Baseline
 
-BC, RallyNet, ShuttleNet, Random, NaiveRAG, TimeRAG, and Twin use the atomic rally
-split directly. The split lists a rally under both participants, but data
+BC, RallyNet, ShuttleNet, Random, NaiveRAG, TimeRAG, Twin, and Twin Single Stage
+use the atomic rally split directly. The split lists a rally under both participants, but data
 preparation and evaluation deduplicate the physical key `(match_id, set,
 rally)` before processing it. BC, RallyNet, ShuttleNet, and Random do not
 consume tactical instructions. In instructed RAG runs,
@@ -107,6 +107,10 @@ semantic embedding query, then uses the same disjoint Stage 1 and Stage 2 action
 contracts. A returned Twin decision therefore uses three LLM calls; a missed
 decision skips action Stage 2 and uses two logical generation stages. As with
 the other RAG agents, an invalid provider response may be retried within a stage.
+`twin_single_stage` reuses the same aspect query, successful/missed memory
+retrieval, and embedding cache, but makes one joint shot-type, landing, and
+recovery decision without shot-conditioned Stage 2 retrieval. It therefore uses
+two LLM calls per prediction: one aspect call and one complete-action call.
 Rally-profile instructions are controllability conditions assigned with the
 train-fitted clustering pipeline, not causal features for forecasting an unseen
 rally from its opening state.
@@ -142,6 +146,9 @@ uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm timerag --workers 4 --conditioned-top-k 10 --instruction-mode no_instruct
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm twin --workers 4 --conditioned-top-k 10 \
+  --lambda-weight 0.5 --instruction-mode instruct
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm twin_single_stage --workers 4 \
   --lambda-weight 0.5 --instruction-mode instruct
 
 # Resume only missing, failed, or invalid rally JSON files.

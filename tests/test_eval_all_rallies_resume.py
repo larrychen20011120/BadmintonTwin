@@ -215,6 +215,34 @@ class EvalAllRalliesResumeTest(unittest.TestCase):
         )
         self.assertIn('embedding_manifest_sha256', settings)
 
+    def test_single_stage_twin_fingerprint_excludes_stage2_contract(self):
+        args = SimpleNamespace(
+            algorithm='twin_single_stage',
+            instruction_mode='no_instruct',
+            seed=42,
+            device='cpu',
+            limit=None,
+            conditioned_top_k=10,
+            window_size=5,
+            lambda_weight=0.5,
+        )
+        dataset = {'split_sha256': 'split', 'profiles_sha256': 'profiles'}
+        settings = eval_all_rallies._safe_settings(
+            eval_all_rallies.load_config(), args, dataset
+        )
+
+        self.assertEqual(
+            settings['retrieval_architecture'],
+            'twin_aspect_single_stage_v1',
+        )
+        self.assertEqual(settings['action_architecture'], 'single_stage_v1')
+        self.assertNotIn('stage2_conditioned_top_k', settings)
+        self.assertEqual(
+            set(settings['prompt_sha256']),
+            {'system', 'aspect', 'action'},
+        )
+        self.assertIn('embedding_manifest_sha256', settings)
+
 
 if __name__ == '__main__':
     unittest.main()

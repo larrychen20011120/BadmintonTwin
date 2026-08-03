@@ -12,6 +12,7 @@ from .random_evaluator import RandomEvaluator
 from .shuttlenet_evaluator import ShuttleNetEvaluator
 from .timerag_evaluator import TimeRAGEvaluator
 from .twin_evaluator import TwinEvaluator
+from .twin_single_stage_evaluator import TwinSingleStageEvaluator
 
 __all__ = [
     'BaseEvaluator',
@@ -24,4 +25,5 @@ __all__ = [
     'ShuttleNetEvaluator',
     'TimeRAGEvaluator',
     'TwinEvaluator',
+    'TwinSingleStageEvaluator',
 ]

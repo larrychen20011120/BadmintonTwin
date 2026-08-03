@@ -217,7 +217,87 @@ def completed_rally_keys(output_dir, expected_fingerprint=None):
             for shot in pred_sequence:
                 if not isinstance(shot, dict) or not required_action <= set(shot):
                     raise ValueError('invalid predicted shot')
-                if document.get('algorithm') in {'naive_rag', 'timerag', 'twin'}:
+                if document.get('algorithm') == 'twin_single_stage':
+                    decision = shot.get('decision')
+                    if not isinstance(decision, dict):
+                        raise ValueError('missing single-stage Twin decision trace')
+                    if decision.get('schema_version') != 2:
+                        raise ValueError('unsupported single-stage Twin decision schema')
+                    if decision.get('architecture') != 'single_stage_v1':
+                        raise ValueError('unsupported single-stage Twin architecture')
+                    pre_stage = decision.get('pre_stage')
+                    if not isinstance(pre_stage, dict):
+                        raise ValueError('missing Twin aspect pre-stage trace')
+                    if pre_stage.get('architecture') != 'twin_aspect_v1':
+                        raise ValueError('unsupported Twin aspect architecture')
+                    if not isinstance(pre_stage.get('semantic_query_text'), str):
+                        raise ValueError('invalid Twin semantic query trace')
+                    retrieval = decision.get('retrieval')
+                    if not isinstance(retrieval, dict):
+                        raise ValueError('missing single-stage Twin retrieval trace')
+                    if set(retrieval) != {'normal_case_ids', 'miss_case_ids'}:
+                        raise ValueError('invalid single-stage Twin retrieval stores')
+                    if any(
+                        not isinstance(retrieval.get(key), list)
+                        or any(not isinstance(case, dict) for case in retrieval[key])
+                        for key in ('normal_case_ids', 'miss_case_ids')
+                    ):
+                        raise ValueError('invalid single-stage Twin evidence')
+                    if not isinstance(decision.get('case_ids'), list):
+                        raise ValueError('invalid single-stage Twin case IDs')
+                    if any(not isinstance(case, dict) for case in decision['case_ids']):
+                        raise ValueError('invalid single-stage Twin case reference')
+                    expected_case_ids = (
+                        retrieval['normal_case_ids'] + retrieval['miss_case_ids']
+                    )
+                    if decision['case_ids'] != expected_case_ids:
+                        raise ValueError('single-stage Twin evidence lists differ')
+                    if not isinstance(decision.get('rationale'), str):
+                        raise ValueError('invalid single-stage Twin rationale')
+                    if not isinstance(decision.get('action_source'), str):
+                        raise ValueError('invalid single-stage Twin action source')
+                    action = decision.get('action')
+                    if not isinstance(action, dict):
+                        raise ValueError('invalid single-stage Twin action trace')
+                    shot_type = action.get('shot_type')
+                    if shot_type != shot.get('shot_type'):
+                        raise ValueError('single-stage Twin trace shot type differs from predicted shot')
+                    if (
+                        isinstance(shot_type, bool)
+                        or not isinstance(shot_type, int)
+                        or shot_type not in range(1, 12)
+                    ):
+                        raise ValueError('invalid single-stage Twin shot type')
+                    coordinate_keys = ('landing_x', 'landing_y', 'moving_x', 'moving_y')
+                    if shot_type == 11:
+                        if any(action.get(key) is not None for key in coordinate_keys):
+                            raise ValueError('missed single-stage Twin trace coordinates must be null')
+                        if any(shot.get(key) is not None for key in coordinate_keys):
+                            raise ValueError('missed predicted coordinates must be null')
+                    else:
+                        for coordinate_key in coordinate_keys:
+                            traced_value = action.get(coordinate_key)
+                            predicted_value = shot.get(coordinate_key)
+                            if (
+                                isinstance(traced_value, bool)
+                                or isinstance(predicted_value, bool)
+                                or not isinstance(traced_value, (int, float))
+                                or not isinstance(predicted_value, (int, float))
+                                or not math.isfinite(float(traced_value))
+                                or not math.isfinite(float(predicted_value))
+                                or not -1.0 <= float(traced_value) <= 1.0
+                                or not -1.0 <= float(predicted_value) <= 1.0
+                                or not math.isclose(
+                                    float(traced_value),
+                                    float(predicted_value),
+                                    rel_tol=0.0,
+                                    abs_tol=1e-9,
+                                )
+                            ):
+                                raise ValueError(
+                                    f'single-stage Twin trace {coordinate_key} differs from predicted shot'
+                                )
+                elif document.get('algorithm') in {'naive_rag', 'timerag', 'twin'}:
                     decision = shot.get('decision')
                     if not isinstance(decision, dict):
                         raise ValueError('missing RAG decision trace')

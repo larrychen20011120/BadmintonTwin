@@ -31,6 +31,7 @@ from Scripts.plot_rally_profiles import (  # noqa: E402
 
 DEFAULT_PLAYER = "NG Ka Long Angus"
 DEFAULT_OUTPUT_DIR = "Experiments/rally_profiles/paper"
+FONT_SCALE = 2.0
 CLUSTER_COLORS = ["#2369A0", "#D64B3C", "#8A5AA8", "#159A9C", "#D99B2B"]
 HEATMAP_LABELS = {
     "attack_shot_ratio": "Attack",
@@ -72,7 +73,7 @@ def _draw_compact_court(ax):
         "NET",
         ha="center",
         va="center",
-        fontsize=8,
+        fontsize=8 * FONT_SCALE,
         color="#7D1732",
         zorder=5,
         bbox={
@@ -132,27 +133,37 @@ def _plot_pca(ax, train, profile, colors):
             xytext=(4, 4),
             textcoords="offset points",
             color=color,
-            fontsize=12,
+            fontsize=12 * FONT_SCALE,
             fontweight="bold",
         )
 
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.set_title("(a) Rally clusters", loc="left", fontsize=14, fontweight="bold")
-    ax.tick_params(labelsize=12.5)
+    ax.set_title(
+        "(a) Rally clusters",
+        loc="left",
+        fontsize=14 * FONT_SCALE,
+        fontweight="bold",
+        pad=8 * FONT_SCALE,
+    )
+    ax.tick_params(labelsize=12.5 * FONT_SCALE)
     ax.grid(color="#DDE2E6", linewidth=0.4, alpha=0.75)
 
 
 def _plot_centroid_heatmap(ax, profile, colors, figure):
     centers = _profile_center_matrix(profile)
     image = ax.imshow(centers, cmap="RdBu_r", vmin=-2, vmax=2, aspect="auto")
-    ax.set_yticks(range(len(colors)), [f"C{i}" for i in range(len(colors))], fontsize=13)
+    ax.set_yticks(
+        range(len(colors)),
+        [f"C{i}" for i in range(len(colors))],
+        fontsize=13 * FONT_SCALE,
+    )
     ax.set_xticks(
         range(len(CLUSTER_FEATURE_COLUMNS)),
         [HEATMAP_LABELS[feature] for feature in CLUSTER_FEATURE_COLUMNS],
         rotation=48,
         ha="right",
-        fontsize=11.5,
+        fontsize=11.5 * FONT_SCALE,
     )
     for cluster_id, tick in enumerate(ax.get_yticklabels()):
         tick.set_color(colors[cluster_id])
@@ -167,19 +178,20 @@ def _plot_centroid_heatmap(ax, profile, colors, figure):
                     f"{value:+.1f}",
                     ha="center",
                     va="center",
-                    fontsize=10,
+                    fontsize=10 * FONT_SCALE,
                     color="white" if abs(value) >= 1.1 else "#20272D",
                     fontweight="bold",
                 )
     ax.set_title(
         "(b) Cluster centroid deviations",
         loc="left",
-        fontsize=14,
+        fontsize=14 * FONT_SCALE,
         fontweight="bold",
+        pad=8 * FONT_SCALE,
     )
     colorbar = figure.colorbar(image, ax=ax, fraction=0.035, pad=0.018)
-    colorbar.set_label("Player-relative z", fontsize=12)
-    colorbar.ax.tick_params(labelsize=11.5)
+    colorbar.set_label("Player-relative z", fontsize=12 * FONT_SCALE)
+    colorbar.ax.tick_params(labelsize=11.5 * FONT_SCALE)
 
 
 def _plot_landing_density(ax, landing, cluster_id, color):
@@ -224,17 +236,18 @@ def _plot_landing_density(ax, landing, cluster_id, color):
     ax.set_title(
         f"C{cluster_id}",
         color=color,
-        fontsize=13,
+        fontsize=13 * FONT_SCALE,
         fontweight="bold",
-        pad=5,
+        pad=12 * FONT_SCALE,
     )
 
 
 def _instruction_text_layout(cluster, card_width):
     label = str(cluster.get("label") or "Unlabeled tactical mode")
-    label_font_size = 12.0 if card_width >= 2.5 else 11.2
+    label_font_size = (12.0 if card_width >= 2.5 else 11.2) * FONT_SCALE
     label_width = max(
-        16, round(card_width * 72 * 0.88 / (label_font_size * 0.58))
+        round(16 / FONT_SCALE),
+        round(card_width * 72 * 0.88 / (label_font_size * 0.58)),
     )
     label_text = textwrap.fill(
         label,
@@ -243,13 +256,14 @@ def _instruction_text_layout(cluster, card_width):
     )
     instruction = str(cluster.get("instruction") or "No saved instruction.")
     if len(instruction) > 175:
-        instruction_font_size = 10.0
+        instruction_font_size = 10.0 * FONT_SCALE
     elif len(instruction) > 145:
-        instruction_font_size = 10.3
+        instruction_font_size = 10.3 * FONT_SCALE
     else:
-        instruction_font_size = 10.6
+        instruction_font_size = 10.6 * FONT_SCALE
     instruction_width = max(
-        20, round(card_width * 72 * 0.88 / (instruction_font_size * 0.54))
+        round(20 / FONT_SCALE),
+        round(card_width * 72 * 0.88 / (instruction_font_size * 0.60)),
     )
     instruction_text = textwrap.fill(instruction, width=instruction_width)
     label_lines = label_text.count("\n") + 1
@@ -277,7 +291,7 @@ def _instruction_box_height(clusters, figure_width, selected_k):
         required_heights.append(
             _instruction_text_layout(cluster, card_width)[-1]
         )
-    return float(np.clip(max(required_heights), 1.4, 2.6))
+    return max(max(required_heights), 1.4 * FONT_SCALE)
 
 
 def _draw_justified_paragraph(
@@ -341,7 +355,7 @@ def _draw_justified_paragraph(
             word_x += (word_width + gap_width) / axis_width
 
 
-def _plot_instruction(ax, cluster, color):
+def _plot_instruction(ax, cluster, color, center_content=False):
     from matplotlib.patches import FancyBboxPatch
 
     ax.set_xlim(0, 1)
@@ -370,9 +384,35 @@ def _plot_instruction(ax, cluster, color):
         instruction_font_size,
         _,
     ) = _instruction_text_layout(cluster, card_width)
+    label_line_height = label_font_size * 1.08 / (72 * card_height)
+    instruction_y = 0.91 - label_lines * label_line_height - 0.035
+    instruction_lines = instruction_text.count("\n") + 1
+    available_height = max(0.1, instruction_y - 0.1)
+    required_height = instruction_lines * instruction_font_size * 1.16 / (72 * card_height)
+    if required_height > available_height:
+        instruction_font_size = max(
+            9.6 * FONT_SCALE,
+            instruction_font_size * available_height / required_height,
+        )
+        instruction = str(cluster.get("instruction") or "No saved instruction.")
+        instruction_width = max(
+            round(20 / FONT_SCALE),
+            round(card_width * 72 * 0.88 / (instruction_font_size * 0.60)),
+        )
+        instruction_text = textwrap.fill(instruction, width=instruction_width)
+    if center_content:
+        instruction_lines = instruction_text.count("\n") + 1
+        instruction_height = (
+            instruction_lines * instruction_font_size * 1.16 / (72 * card_height)
+        )
+        content_height = label_lines * label_line_height + 0.035 + instruction_height
+        label_y = min(0.91, 0.5 + content_height / 2)
+        instruction_y = label_y - label_lines * label_line_height - 0.035
+    else:
+        label_y = 0.91
     ax.text(
         0.06,
-        0.91,
+        label_y,
         label_text,
         transform=ax.transAxes,
         fontsize=label_font_size,
@@ -382,20 +422,6 @@ def _plot_instruction(ax, cluster, color):
         linespacing=1.08,
         clip_on=True,
     )
-    label_line_height = label_font_size * 1.08 / (72 * card_height)
-    instruction_y = 0.91 - label_lines * label_line_height - 0.035
-    instruction_lines = instruction_text.count("\n") + 1
-    available_height = max(0.1, instruction_y - 0.1)
-    required_height = instruction_lines * instruction_font_size * 1.16 / (72 * card_height)
-    if required_height > available_height:
-        instruction_font_size = max(
-            9.6, instruction_font_size * available_height / required_height
-        )
-        instruction = str(cluster.get("instruction") or "No saved instruction.")
-        instruction_width = max(
-            20, round(card_width * 72 * 0.88 / (instruction_font_size * 0.54))
-        )
-        instruction_text = textwrap.fill(instruction, width=instruction_width)
     _draw_justified_paragraph(
         ax,
         instruction_text,
@@ -427,11 +453,17 @@ def _render_figure(player_name, profile, prepared, output_path):
     colors = CLUSTER_COLORS[:selected_k]
     plt.rcParams.update({
         "font.family": "DejaVu Sans",
-        "font.size": 12,
+        "font.size": 12 * FONT_SCALE,
+        "axes.titlesize": 12 * FONT_SCALE,
+        "axes.labelsize": 12 * FONT_SCALE,
         "axes.titlecolor": "#172026",
         "axes.labelcolor": "#34404A",
+        "xtick.labelsize": 12 * FONT_SCALE,
+        "ytick.labelsize": 12 * FONT_SCALE,
         "xtick.color": "#4E5962",
         "ytick.color": "#4E5962",
+        "legend.fontsize": 12 * FONT_SCALE,
+        "figure.titlesize": 12 * FONT_SCALE,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     })
@@ -441,8 +473,8 @@ def _render_figure(player_name, profile, prepared, output_path):
     card_height = 2.1 + box_height
     pca_height = {3: 2.1, 4: 2.2, 5: 2.3}[selected_k]
     heatmap_height = 1.9
-    pca_label_gap = 0.5
-    heatmap_label_gap = 1.25
+    pca_label_gap = 0.5 * FONT_SCALE
+    heatmap_label_gap = 1.75 * FONT_SCALE
     figure_height = (
         pca_height
         + pca_label_gap
@@ -481,7 +513,7 @@ def _render_figure(player_name, profile, prepared, output_path):
         0,
         0.25,
         "(c) Tactical landing patterns and instructions",
-        fontsize=14,
+        fontsize=14 * FONT_SCALE,
         fontweight="bold",
         color="#172026",
         va="bottom",
@@ -514,12 +546,154 @@ def _render_figure(player_name, profile, prepared, output_path):
         plt.close(fig)
 
 
+def _render_side_by_side_figure(player_name, profile, prepared, output_path):
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ValueError("matplotlib is required; install the project's analysis extra") from exc
+
+    train, _, landing = prepared
+    selected_k = int(profile["selected_k"])
+    if selected_k not in {3, 4, 5}:
+        raise ValueError(
+            f"This paper layout supports K=3, K=4, or K=5; {player_name!r} has K={selected_k}"
+        )
+    colors = CLUSTER_COLORS[:selected_k]
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 12 * FONT_SCALE,
+        "axes.titlesize": 12 * FONT_SCALE,
+        "axes.labelsize": 12 * FONT_SCALE,
+        "axes.titlecolor": "#172026",
+        "axes.labelcolor": "#34404A",
+        "xtick.labelsize": 12 * FONT_SCALE,
+        "ytick.labelsize": 12 * FONT_SCALE,
+        "xtick.color": "#4E5962",
+        "ytick.color": "#4E5962",
+        "legend.fontsize": 12 * FONT_SCALE,
+        "figure.titlesize": 12 * FONT_SCALE,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
+
+    sorted_clusters = sorted(profile["clusters"], key=lambda item: int(item["cluster_id"]))
+    figure_width = 28.0
+    outer_wspace = 0.13
+    card_wspace = 0.08
+    left_width_ratio = 1.3
+    right_width_ratio = 1.15
+    court_width_ratio = 0.85
+    instruction_width_ratio = 2.05
+    usable_width = figure_width * (0.985 - 0.03)
+    outer_ratio_sum = left_width_ratio + right_width_ratio
+    outer_unit_width = usable_width / (
+        outer_ratio_sum + outer_wspace * outer_ratio_sum / 2
+    )
+    right_panel_width = outer_unit_width * right_width_ratio
+    card_ratio_sum = court_width_ratio + instruction_width_ratio
+    card_unit_width = right_panel_width / (
+        card_ratio_sum + card_wspace * card_ratio_sum / 2
+    )
+    instruction_width = card_unit_width * instruction_width_ratio
+    instruction_height = max(
+        _instruction_text_layout(cluster, instruction_width)[-1]
+        for cluster in sorted_clusters
+    )
+    row_height = max(2.8, instruction_height + 0.5)
+    figure_height = max(10.5, (1.0 + selected_k * row_height + 0.6) / 0.92)
+
+    fig = plt.figure(figsize=(figure_width, figure_height), facecolor="white")
+    outer = fig.add_gridspec(
+        1,
+        2,
+        width_ratios=[left_width_ratio, right_width_ratio],
+        left=0.03,
+        right=0.985,
+        top=0.97,
+        bottom=0.05,
+        wspace=outer_wspace,
+    )
+
+    left = outer[0, 0].subgridspec(
+        4,
+        1,
+        height_ratios=[3.0, 0.8, 2.4, 1.8],
+        hspace=0.04,
+    )
+    pca_ax = fig.add_subplot(left[0, 0])
+    heatmap_ax = fig.add_subplot(left[2, 0])
+    _plot_pca(pca_ax, train, profile, colors)
+    _plot_centroid_heatmap(heatmap_ax, profile, colors, fig)
+    for row in (1, 3):
+        spacer_ax = fig.add_subplot(left[row, 0])
+        spacer_ax.axis("off")
+
+    right = outer[0, 1].subgridspec(
+        selected_k + 1,
+        1,
+        height_ratios=[0.2] + [row_height] * selected_k,
+        hspace=0.35,
+    )
+    heading_ax = fig.add_subplot(right[0, 0])
+    heading_ax.axis("off")
+    heading_ax.text(
+        0,
+        1.0,
+        "(c) Tactical landing patterns and instructions",
+        fontsize=14 * FONT_SCALE,
+        fontweight="bold",
+        color="#172026",
+        va="bottom",
+        linespacing=1.05,
+    )
+    for row, cluster in enumerate(sorted_clusters, start=1):
+        cluster_id = int(cluster["cluster_id"])
+        card = right[row, 0].subgridspec(
+            1,
+            2,
+            width_ratios=[court_width_ratio, instruction_width_ratio],
+            wspace=card_wspace,
+        )
+        court_ax = fig.add_subplot(card[0, 0])
+        instruction_ax = fig.add_subplot(card[0, 1])
+        _plot_landing_density(court_ax, landing, cluster_id, colors[cluster_id])
+        _plot_instruction(
+            instruction_ax,
+            cluster,
+            colors[cluster_id],
+            center_content=True,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fig.savefig(
+            output_path,
+            format="pdf",
+            bbox_inches="tight",
+            facecolor="white",
+            metadata={
+                "Title": f"Side-by-side rally profile case study: {player_name}",
+                "Author": "BadmintonTwin",
+                "Subject": "Player-specific rally clusters and tactical instructions",
+            },
+        )
+    finally:
+        plt.close(fig)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "Scripts" / "config.yaml"))
     parser.add_argument("--merged-csv", help="Override paths.merged_csv")
     parser.add_argument("--player", default=DEFAULT_PLAYER)
     parser.add_argument("--output", help="Output PDF path")
+    parser.add_argument(
+        "--side-output",
+        help="Output path for the additional layout with section (c) on the right",
+    )
     return parser.parse_args(argv), parser
 
 
@@ -565,8 +739,15 @@ def run(args):
         / DEFAULT_OUTPUT_DIR
         / f"{sanitize_filename(player_name)}_tactical_profile.pdf"
     )
+    side_output_path = (
+        _project_path(args.side_output)
+        if args.side_output
+        else output_path.with_name(f"{output_path.stem}_side_by_side.pdf")
+    )
     _render_figure(player_name, profile, prepared, output_path)
+    _render_side_by_side_figure(player_name, profile, prepared, side_output_path)
     print(f"Saved paper figure: {output_path}")
+    print(f"Saved side-by-side paper figure: {side_output_path}")
     return output_path
 
 

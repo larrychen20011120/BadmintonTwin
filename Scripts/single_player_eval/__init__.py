@@ -49,6 +49,7 @@ try:
     from .evaluators.random_evaluator import RandomEvaluator
     from .evaluators.timerag_evaluator import TimeRAGEvaluator
     from .evaluators.twin_evaluator import TwinEvaluator
+    from .evaluators.twin_single_stage_evaluator import TwinSingleStageEvaluator
     _evaluators_available = True
 except ImportError as e:
     _evaluators_available = False
@@ -78,5 +79,6 @@ if _evaluators_available:
         'RandomEvaluator',
         'TimeRAGEvaluator',
         'TwinEvaluator',
+        'TwinSingleStageEvaluator',
         'Twin2Evaluator',
     ])
