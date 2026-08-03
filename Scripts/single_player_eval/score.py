@@ -593,7 +593,6 @@ def build_scope(
             target_player_only,
             sequence_samples=sequence_samples,
         ),
-        '_sequence_samples': sequence_samples,
     }
     if label is not None:
         scope['label'] = label
@@ -667,14 +666,7 @@ def aggregate_scope(scopes):
     first = scopes[0]
     scores = {}
     for metric in METRIC_NAMES:
-        if metric in SEQUENCE_METRIC_NAMES:
-            values = [
-                value
-                for scope in scopes
-                for value in scope['_sequence_samples'][metric]
-            ]
-        else:
-            values = [scope['scores'][metric] for scope in scopes]
+        values = [scope['scores'][metric] for scope in scopes]
         scores[metric] = _mean_metric(values)
     result = {
         'support_rallies': first['support_rallies'],
