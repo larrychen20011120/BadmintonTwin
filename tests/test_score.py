@@ -133,7 +133,7 @@ class ScoreTest(unittest.TestCase):
         aggregate = aggregate_hierarchies([perfect, changed])
 
         lcs = aggregate['overall']['scores']['shot_lcs_ratio']
-        self.assertEqual(lcs['valid_values'], 4)
+        self.assertEqual(lcs['valid_values'], 2)
         self.assertGreater(lcs['std'], 0.0)
         self.assertGreater(lcs['mean'], 0.0)
         self.assertLess(lcs['mean'], 1.0)
@@ -152,7 +152,7 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(scores['players']['B']['scores']['shot_lcs_ratio'], 0.0)
         self.assertEqual(scores['overall']['scores']['shot_lcs_ratio'], 0.0)
 
-    def test_average_of_n_uses_all_rally_player_run_samples(self):
+    def test_average_of_n_computes_std_from_run_level_means(self):
         def prediction(a_first, a_second):
             return [
                 shot('A', 1, a_first, 0.0, 0.2),
@@ -173,9 +173,9 @@ class ScoreTest(unittest.TestCase):
         aggregate = aggregate_hierarchies([first_run, second_run])
         player_lcs = aggregate['players']['A']['scores']['shot_lcs_ratio']
 
-        self.assertEqual(player_lcs['valid_values'], 4)
+        self.assertEqual(player_lcs['valid_values'], 2)
         self.assertAlmostEqual(player_lcs['mean'], 0.5)
-        self.assertAlmostEqual(player_lcs['std'], 0.3535533905932738)
+        self.assertAlmostEqual(player_lcs['std'], 0.0)
 
     def test_player_rally_length_js_uses_complete_rally_length(self):
         extended_pred = [
@@ -250,7 +250,7 @@ class ScoreTest(unittest.TestCase):
                 document['results']['average_of_n']['scores']['overall']['scores'][
                     'shot_lcs_ratio'
                 ]['valid_values'],
-                4,
+                2,
             )
             with open(os.path.join(output_dir, 'scores.csv'), encoding='utf-8') as handle:
                 aggregations = {row['aggregation'] for row in csv.DictReader(handle)}
