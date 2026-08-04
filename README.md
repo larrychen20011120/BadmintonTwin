@@ -166,6 +166,13 @@ uv run python Scripts/single_player_eval/score.py \
   --run-root Experiments/bc/trajectories/rally_no_instruct \
   --all \
   --output-dir Experiments/bc/results/rally_no_instruct/all
+
+# Score one specific completed original-instruction run against its training clusters.
+uv run python Scripts/single_player_eval/score.py \
+  --run Experiments/twin/trajectories/rally_instruct/run_003 \
+  --train-reference \
+  --min-cluster-test-rallies 5 \
+  --output-dir Experiments/twin/results/rally_instruct/run_003
 ```
 
 Each evaluation creates a `run_NNN/rallies/` directory and writes one JSON
@@ -177,17 +184,51 @@ Random uses area-first coordinate sampling and a hard limit of
 movement areas 1-24 and cannot sample Missed; later actions may sample areas
 1-32 and Missed. Random shot types are not corrected for serve situations:
 rounds 1-5 sample types 1-10 and later rounds sample types 1-11.
-`score.py` reports the six canonical metrics at the overall, per-player, and
-per-player-cluster levels. LandDTW, MoveDTW, and ShotLCS are calculated after
-each physical rally is split into its two player sequences. Without `--all`,
-these rally-player values are averaged within the latest completed run. With
-`--all`, every valid rally-player-run value contributes directly to the
-reported mean and standard deviation; no best trajectory is selected. The JSD
-metrics retain their scope-level aggregation, and RallyLenJSD uses the complete
-physical rally length. The script writes `scores.json`, `scores.csv`, and the
-terminal report in `table.txt`. Cluster-level scoring uses
+`score.py` reports the six canonical metrics plus max-length-normalized LandDTW
+and MoveDTW at the overall, per-player, and per-player-cluster levels. The
+original DTW metrics divide raw multidimensional DTW by the square root of the
+warping-path length; `land_dtw_maxlen` and `move_dtw_maxlen` divide the same raw
+distance by `max(len(predicted), len(ground_truth))`. Both DTW variants and
+ShotLCS are calculated after each physical rally is split into its two player
+sequences. Without `--all`, these rally-player values are averaged within the
+latest completed run. With `--all`, each run's scope-level mean contributes
+equally to the reported mean and standard deviation; no best trajectory is
+selected. The JSD metrics retain their scope-level aggregation, and RallyLenJSD
+uses the complete physical rally length. The script writes
+`scores.json`, `scores.csv`, and the terminal report in `table.txt`.
+Cluster-level scoring uses
 `rally_profiles.json` only as evaluation metadata; BC and ShuttleNet do not
 receive instructions as model input.
+
+`--run` selects one completed `run_NNN` directory instead of the latest run
+under `--run-root`; it cannot be combined with `--all`. `--train-reference`
+adds original-instruction controllability scores without replacing the
+trajectory metrics. For each player-specific source cluster, it compares the
+generated test distribution and held-out GT diagnostic distribution against
+the GT training rallies listed in `rally_profiles.json`. It reports
+ShotDistJSD, shot-conditioned ShotLandJSD, shot-agnostic OverallLandingJSD,
+and RallyLenJSD separately, with no composite score. OverallLandingJSD pools
+all valid landings into the canonical 18 area groups without conditioning on
+shot type. Clusters with fewer than `--min-cluster-test-rallies` are retained
+in the detailed output but excluded from the headline macro. The macro first
+averages eligible clusters equally within each player, then averages players
+equally.
+
+Train-reference scoring also reports the generated, held-out test, and training
+cluster win rates. A naturally terminated rollout assigns the loss to the
+player whose final missed or out-of-bounds action ended the rally. An
+`action_none` or maximum-length rollout is unresolved and excluded from the win
+rate denominator; a cluster also needs at least the configured number of
+resolved rollouts to enter the headline win-rate macro. The output reports this
+coverage explicitly, including resolved and unresolved training, held-out GT,
+and generated rally counts. Distribution eligibility is shown per metric and
+separately from win-rate eligibility because null distributions and unresolved
+generated outcomes can make their eligible cluster sets differ. Empty generated
+shot or landing distributions are `null` and excluded from that metric's macro.
+The scorer validates the run's merged-data, profile, and split hashes and
+checks trajectory metadata against the run manifest by default. It writes the
+additive `train_reference` JSON section plus
+`train_reference_scores.csv` and `train_reference_outcomes.csv`.
 
 ## Twin memory and embeddings
 
