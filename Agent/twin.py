@@ -694,18 +694,15 @@ class TwinDatabase:
         return self._fallback_annotation(rally_df)
 
     @staticmethod
-    def _validate_rally_annotation(annotation, rally_df):
+    def _validate_aspect_segments(annotation, first_round, last_round):
         if (
             not isinstance(annotation, dict)
             or set(annotation) != {"aspect_segments"}
             or not isinstance(annotation.get("aspect_segments"), dict)
         ):
             return False
-        rounds = rally_df.get("ball_round", pd.Series(dtype=float)).dropna().astype(int)
-        if rounds.empty:
+        if first_round > last_round:
             return False
-        first_round = int(rounds.min())
-        last_round = int(rounds.max())
         aspects = (
             "my_tactical_pattern",
             "my_tempo_movement_dynamics",
@@ -741,6 +738,17 @@ class TwinDatabase:
             if expected_start != last_round + 1:
                 return False
         return True
+
+    @staticmethod
+    def _validate_rally_annotation(annotation, rally_df):
+        rounds = rally_df.get("ball_round", pd.Series(dtype=float)).dropna().astype(int)
+        if rounds.empty:
+            return False
+        return TwinDatabase._validate_aspect_segments(
+            annotation,
+            int(rounds.min()),
+            int(rounds.max()),
+        )
 
     def annotate_rally(self, rally_df, llm=None, use_llm=True):
         """Annotate a single completed rally for inspection or memory construction."""
@@ -1231,37 +1239,47 @@ class TwinAgent(BaseAgent):
         return normalized
 
     @staticmethod
-    def _validate_aspect_response(response):
-        required = {
-            "my_tactical_pattern",
-            "my_tempo_movement_dynamics",
-            "opponent_tactical_pattern",
-            "opponent_tempo_movement_dynamics",
-        }
-        return (
-            isinstance(response, dict)
-            and set(response) == required
-            and all(
-                isinstance(response[key], str)
-                and response[key].strip()
-                and len(response[key].split()) <= 20
-                for key in required
-            )
+    def _validate_aspect_response(response, first_round, last_round):
+        return TwinDatabase._validate_aspect_segments(
+            response,
+            first_round,
+            last_round,
         )
 
-    def _estimate_aspects(self, state_dict, state_history, rally_profile_instruction=""):
-        trajectory_text = self.verbalizer.build_trajectory_text((state_history or []) + [state_dict], state_dict)
+    def _estimate_aspects(self, state_dict, state_history):
+        current_round = max(1, safe_int(state_dict.get("ball_round"), 1))
+        prefix = [
+            stroke
+            for stroke in (state_history or [])
+            if 0 < safe_int(stroke.get("ball_round")) <= current_round
+        ] + [state_dict]
+        observed_rounds = [
+            safe_int(stroke.get("ball_round"))
+            for stroke in prefix
+            if 0 < safe_int(stroke.get("ball_round")) <= current_round
+        ]
+        first_round = min(observed_rounds) if observed_rounds else current_round
+        trajectory_text = self.verbalizer.build_trajectory_text(prefix, state_dict)
         user_prompt = self.aspect_template.render(
             trajectory_text=trajectory_text,
-            rally_profile_instruction=rally_profile_instruction,
+            first_ball_round=first_round,
+            last_ball_round=current_round,
         )
+
+        def validator(value):
+            return self._validate_aspect_response(
+                value,
+                first_round,
+                current_round,
+            )
+
         t0 = time.time()
         response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
             self.llm,
             system_prompt=self.system_prompt,
             user_prompt=user_prompt,
             max_trials=5,
-            validator=self._validate_aspect_response,
+            validator=validator,
         )
         self.tracer.log_generation(
             self.system_prompt,
@@ -1272,17 +1290,30 @@ class TwinAgent(BaseAgent):
             usage=usage,
             stage="aspect",
         )
-        if self._validate_aspect_response(response):
-            aspects = dict(response)
+        if validator(response):
+            annotation = response
             source = "llm"
         else:
-            aspects = {
+            fallback_phases = {
                 "my_tactical_pattern": "Current tactical phase unknown",
                 "my_tempo_movement_dynamics": "Current movement phase unknown",
                 "opponent_tactical_pattern": "Opponent tactical phase unknown",
                 "opponent_tempo_movement_dynamics": "Opponent movement phase unknown",
             }
+            annotation = {
+                "aspect_segments": {
+                    key: [{
+                        "range": [first_round, current_round],
+                        "phase": phase,
+                    }]
+                    for key, phase in fallback_phases.items()
+                },
+            }
             source = "fallback"
+        aspects = {
+            key: TwinDatabase._segment_for_round(segments, current_round)
+            for key, segments in annotation["aspect_segments"].items()
+        }
         aspects["semantic_query_text"] = build_semantic_text(
             aspects["my_tactical_pattern"],
             aspects["my_tempo_movement_dynamics"],
@@ -1388,7 +1419,6 @@ class TwinAgent(BaseAgent):
         aspects, aspect_source = self._estimate_aspects(
             state_dict,
             state_history,
-            profile_instruction,
         )
         query_embedding = encode_texts(
             self.embedding_model,

@@ -191,20 +191,28 @@ class LLMPromptStructureTest(unittest.TestCase):
         ):
             self.assertNotIn(removed_field, content)
 
-    def test_twin_aspect_prompt_does_not_request_semantic_query(self):
+    def test_twin_aspect_prompt_uses_offline_compatible_segments_without_instruction(self):
         content = (PROMPT_ROOT / "twin" / "aspect_user.jinja").read_text()
-        self.assertIn("current dominant phase", content)
+        self.assertIn('"aspect_segments"', content)
+        self.assertIn('"range":', content)
+        self.assertIn('"phase":', content)
+        self.assertIn("first_ball_round", content)
+        self.assertIn("last_ball_round", content)
         self.assertNotIn('"semantic_query_text":', content)
+        self.assertNotIn("rally_profile_instruction", content)
+        self.assertNotIn("Tactical Imitation Instruction", content)
 
     def test_twin_phase_prompts_detect_sustained_turning_points(self):
         memory = (PROMPT_ROOT / "twin" / "memory_user.jinja").read_text()
         aspect = (PROMPT_ROOT / "twin" / "aspect_user.jinja").read_text()
         self.assertIn("Actively identify meaningful turning points", memory)
+        self.assertIn("Actively identify meaningful turning points", aspect)
         self.assertIn("Do not merge clearly different phases", memory)
+        self.assertIn("Do not merge clearly different phases", aspect)
         self.assertIn('"range": [1, 6]', memory)
         self.assertIn('"range": [7, 12]', memory)
-        self.assertIn("phase active at the latest stroke", aspect)
-        self.assertIn("Do not average an earlier phase", aspect)
+        self.assertIn("non-overlapping, gap-free", aspect)
+        self.assertIn("final ball round is a decision state", aspect)
 
     def test_retrieval_summary_is_not_part_of_prompt_contract(self):
         for path in PROMPT_ROOT.rglob("*"):
@@ -321,6 +329,16 @@ class LLMPromptRenderingTest(unittest.TestCase):
         )
 
     def test_rag_templates_render_strictly(self):
+        aspect = render_strict(
+            PROMPT_ROOT / "twin" / "aspect_user.jinja",
+            trajectory_text="Observed current rally prefix.",
+            first_ball_round=1,
+            last_ball_round=4,
+        )
+        self.assertIn("Observed current rally prefix.", aspect)
+        self.assertIn("ball_round=1", aspect)
+        self.assertIn("ball_round=4", aspect)
+
         for algorithm in ("naive_rag", "timerag"):
             for variant in ("norm", "instruct"):
                 stage1 = render_strict(

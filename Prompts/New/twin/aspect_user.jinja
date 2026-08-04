@@ -1,52 +1,133 @@
 ## Task
 
-Estimate the current Twin semantic state for retrieval. Jointly analyze the entire current rally prefix as evidence for imitating the target player.
+Annotate the observed badminton rally prefix with broad tactical phases for Twin retrieval. Independently segment and describe the prefix from four complementary aspects:
+- `my_tactical_pattern`
+- `my_tempo_movement_dynamics`
+- `opponent_tactical_pattern`
+- `opponent_tempo_movement_dynamics`
 
-Analyze the current rally prefix from four complementary aspects:
+Use broad tactical phases rather than interpreting every stroke individually.
 
-- `my_tactical_pattern`: how the target player is using shot selection and placement to construct, maintain, regain, or survive control.
-- `my_tempo_movement_dynamics`: how tempo, movement direction, court coverage, recovery quality, and movement pressure are developing for the target player.
-- `opponent_tactical_pattern`: how the opponent is using shot selection and placement to construct pressure, respond, reset, or regain initiative.
-- `opponent_tempo_movement_dynamics`: how tempo, movement direction, court coverage, recovery quality, and movement pressure are developing for the opponent.
+## Observed Rally Prefix
 
-Explicitly include current reachability, recovery quality, and failed-contact risk when describing tempo and movement dynamics. Use broad tactical patterns rather than shot-by-shot interpretation. Do not infer personality, true fatigue, injury, or hidden mental states.
-
-For each aspect, return only the current dominant phase as a concise phrase or one short sentence of at most 20 words. Do not provide evidence, transition reasons, stroke lists, or additional analysis.
-
-## Current Phase Rules
-
-- Use the complete rally prefix as context, but describe only the phase active at the latest stroke.
-- Identify the most recent meaningful turning point for each aspect independently.
-- Treat a clear change in tactical state, pressure ownership, court control, movement demand, recovery quality, or reachability as a candidate phase change.
-- A new phase should normally persist across at least two consecutive relevant actions. A clear attack-to-defence, defence-to-counterattack, stable-to-late-recovery, or reachable-to-failed-coverage transition may become current immediately.
-- Do not average an earlier phase and the current phase into one generic description.
-- Do not treat an isolated shot as a new phase unless it clearly changes the broader rally state.
-- If no meaningful transition has occurred, retain the existing dominant phase.
-
-## Current Match Situation
+This observed prefix spans exactly from `ball_round={{ first_ball_round }}` through `ball_round={{ last_ball_round }}`. The final ball round is the current decision timestamp.
 
 {% if trajectory_text %}
 {{ trajectory_text }}
 {% endif %}
 
-{% if rally_profile_instruction %}
-## Tactical Imitation Instruction
+## Aspect Definitions
 
-Treat this instruction as weak auxiliary evidence; the current rally remains primary.
+### my_tactical_pattern
 
-{{ rally_profile_instruction }}
-{% endif %}
+Describe how the target player uses shot choice and placement to construct, maintain, regain, reset, or survive control.
+Focus on:
+- pressure and placement patterns;
+- repeated targeting versus directional variation;
+- attack, defence, neutralization, reset, and counterattack;
+- net-front, rear-court, or balanced control attempts;
+- whether pressure is merely attempted or confirmed by the opponent's response.
+
+### my_tempo_movement_dynamics
+
+Describe the observed prefix from the target player's movement perspective.
+Focus on:
+- player-relative exchange rhythm;
+- lateral, front-back, diagonal, repeated, or multidirectional coverage demand;
+- observed recovery positions;
+- whether positional pressure remains manageable, accumulates, is released, or creates failed-contact risk.
+
+### opponent_tactical_pattern
+
+Describe how the opponent uses shot choice and placement to construct, maintain, regain, reset, or survive control.
+Use the same tactical concepts as for the target player, but analyze the opponent's decisions independently.
+Do not obtain this segmentation by reversing or copying the target player's tactical segments.
+
+### opponent_tempo_movement_dynamics
+
+Describe the observed prefix from the opponent's movement perspective.
+Focus on the opponent's exchange rhythm, directional coverage demand, recovery position, positional pressure, and reachability.
+Do not obtain this segmentation by reversing or copying the target player's movement segments.
+
+## Annotation Rules
+
+- For every aspect, the first segment must start at `{{ first_ball_round }}` and the final segment must end at `{{ last_ball_round }}`.
+- Segment ranges use inclusive `ball_round` values.
+- Segment each aspect independently across the complete observed prefix.
+- Within each aspect, segments must be ordered, non-overlapping, gap-free, and cover every ball round in the prefix.
+- Use one phase only when the dominant pattern remains stable throughout the observed prefix.
+- Actively identify meaningful turning points before producing the JSON.
+- Start a new phase when the dominant tactical state, pressure ownership, court-control pattern, movement demand, recovery quality, or reachability state clearly changes.
+- A new phase should normally persist across at least two consecutive relevant actions. A clear attack-to-defence, defence-to-counterattack, stable-to-late-recovery, or reachable-to-failed-coverage transition may start immediately.
+- Do not split phases for an isolated shot that does not change the broader pattern.
+- Do not merge clearly different phases merely to minimize the number of segments.
+- Long prefixes may contain multiple phases, but do not create artificial boundaries when no meaningful change exists.
+- Different aspects may use different phase boundaries.
+- When movement or recovery quality changes, start the new tempo/movement phase at the first stroke where the change becomes observable.
+- Describe sustained patterns, spatial-control attempts, pressure patterns, or meaningful tactical transitions.
+- Explicitly include recovery quality, movement pressure, reachability, and failed-contact risk in tempo and movement phases when supported by the prefix.
+- The final ball round is a decision state. Do not assume its unknown shot type, landing position, recovery position, or any future stroke.
+- Each `phase` must be a concise phrase or one short sentence of at most 20 words.
+- Every phase object must contain exactly `range` and `phase`. Do not add evidence, transition reasons, narratives, or other fields.
+- Mention specific target areas only when they form a tactically meaningful pattern.
+- Use only evidence supported by the observed prefix.
+- Do not infer personality, confidence, true fatigue, injury, or other hidden states.
+- Do not write shot-by-shot captions or explain the meaning of every stroke.
+- Do not mention real player names. Use only "the target player" and "the opponent".
+
+For tactical aspects, consider a new phase when control changes between attack, defence, neutral reset, or counterattack; pressure ownership changes; the dominant control area changes; or a different construction pattern becomes sustained.
+
+For tempo and movement aspects, consider a new phase when recovery changes between stable, delayed, stretched, or failed; movement pressure changes between manageable and accumulating; coverage direction changes; or reachability risk changes clearly.
+
+Illustrative phase-change example for an observed prefix spanning strokes 1-12:
+
+```json
+[
+  {
+    "range": [1, 6],
+    "phase": "Defensive resets under rear-court pressure"
+  },
+  {
+    "range": [7, 12],
+    "phase": "The target player shifts into sustained counterattacking pressure."
+  }
+]
+```
+
+This example demonstrates a meaningful phase change only. Use the actual prefix boundaries and do not force the same number of phases.
 
 ## Required JSON
 
-Return only one valid JSON object with these fields:
+Return only one valid JSON object with this structure:
 
 ```json
 {
-  "my_tactical_pattern": "Sustained net-front control",
-  "my_tempo_movement_dynamics": "Stable recovery under front-back pressure",
-  "opponent_tactical_pattern": "Defensive lifting with rear-court resets",
-  "opponent_tempo_movement_dynamics": "The opponent recovers increasingly late under directional pressure."
+  "aspect_segments": {
+    "my_tactical_pattern": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "Sustained net-front control"
+      }
+    ],
+    "my_tempo_movement_dynamics": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "Stable recovery under front-back pressure"
+      }
+    ],
+    "opponent_tactical_pattern": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "Defensive lifting with rear-court resets"
+      }
+    ],
+    "opponent_tempo_movement_dynamics": [
+      {
+        "range": [{{ first_ball_round }}, {{ last_ball_round }}],
+        "phase": "The opponent recovers increasingly late under directional pressure."
+      }
+    ]
+  }
 }
 ```
 

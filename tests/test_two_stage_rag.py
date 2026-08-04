@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 import pandas as pd
@@ -209,7 +210,7 @@ class TwoStageRAGTest(unittest.TestCase):
         self.assertNotIn("(distance", agent.llm.prompts[1])
         self.assertIn("historical windows", agent.llm.prompts[0])
 
-    def twin_agent(self, responses):
+    def twin_agent(self, responses, instruction_mode="no_instruct"):
         database = TwinDatabase(dataframe(), "Player A", 0)
         database.build_with_fallback()
         model = FakeEmbeddingModel()
@@ -222,11 +223,12 @@ class TwoStageRAGTest(unittest.TestCase):
             embedding_model_name="fake/model",
             enable_tracing=False,
             conditioned_top_k=3,
+            instruction_mode=instruction_mode,
         )
         agent.llm = FakeLLM(responses)
         return agent
 
-    def twin_single_stage_agent(self, responses):
+    def twin_single_stage_agent(self, responses, instruction_mode="no_instruct"):
         database = TwinDatabase(dataframe(), "Player A", 0)
         database.build_with_fallback()
         model = FakeEmbeddingModel()
@@ -238,6 +240,7 @@ class TwoStageRAGTest(unittest.TestCase):
             embedding_model=model,
             embedding_model_name="fake/model",
             enable_tracing=False,
+            instruction_mode=instruction_mode,
         )
         agent.llm = FakeLLM(responses)
         return agent
@@ -278,7 +281,8 @@ class TwoStageRAGTest(unittest.TestCase):
 
         self.assertEqual(action[0], 2)
         self.assertEqual(len(agent.llm.prompts), 3)
-        self.assertIn("Estimate the current Twin semantic state", agent.llm.prompts[0])
+        self.assertIn("Annotate the observed badminton rally prefix", agent.llm.prompts[0])
+        self.assertIn('"aspect_segments"', agent.llm.prompts[0])
         self.assertIn("Successful Return Evidence", agent.llm.prompts[1])
         self.assertNotIn('"landing_x"', agent.llm.prompts[1])
         self.assertIn('Action: {"shot_type": "Clear"', agent.llm.prompts[2])
@@ -328,6 +332,98 @@ class TwoStageRAGTest(unittest.TestCase):
         self.assertIn("retrieval", agent.last_decision_trace)
         self.assertNotIn("stage2", agent.last_decision_trace)
 
+    def test_twin_selects_each_aspect_segment_at_the_current_round(self):
+        response = {
+            "aspect_segments": {
+                "my_tactical_pattern": [
+                    {"range": [1, 2], "phase": "Earlier defensive construction"},
+                    {"range": [3, 4], "phase": "Current counterattacking construction"},
+                ],
+                "my_tempo_movement_dynamics": [
+                    {"range": [1, 4], "phase": "Stable recovery across the prefix"},
+                ],
+                "opponent_tactical_pattern": [
+                    {"range": [1, 3], "phase": "Earlier rear-court pressure"},
+                    {"range": [4, 4], "phase": "Current defensive reset"},
+                ],
+                "opponent_tempo_movement_dynamics": [
+                    {"range": [1, 1], "phase": "Initial stable recovery"},
+                    {"range": [2, 4], "phase": "Current delayed recovery"},
+                ],
+            }
+        }
+        agent = self.twin_agent([response])
+        current_info = info()
+        current_info["round"] = [4]
+        state_dict = agent._build_state_dict_from_env(STATE, current_info)
+        history = [
+            {"ball_round": ball_round, "player_type": 2}
+            for ball_round in (1, 2, 3)
+        ]
+
+        aspects, source = agent._estimate_aspects(state_dict, history)
+
+        self.assertEqual(source, "llm")
+        self.assertEqual(aspects["my_tactical_pattern"], "Current counterattacking construction")
+        self.assertEqual(aspects["my_tempo_movement_dynamics"], "Stable recovery across the prefix")
+        self.assertEqual(aspects["opponent_tactical_pattern"], "Current defensive reset")
+        self.assertEqual(aspects["opponent_tempo_movement_dynamics"], "Current delayed recovery")
+        self.assertNotIn("Earlier defensive construction", aspects["semantic_query_text"])
+
+    def test_twin_aspect_segment_validator_rejects_invalid_coverage_and_types(self):
+        valid = aspect_response(1, 4)
+        valid["aspect_segments"]["my_tactical_pattern"] = [
+            {"range": [1, 2], "phase": "Initial phase"},
+            {"range": [3, 4], "phase": "Current phase"},
+        ]
+        self.assertTrue(TwinAgent._validate_aspect_response(valid, 1, 4))
+
+        gap = copy.deepcopy(valid)
+        gap["aspect_segments"]["my_tactical_pattern"][1]["range"] = [4, 4]
+        self.assertFalse(TwinAgent._validate_aspect_response(gap, 1, 4))
+
+        boolean_range = copy.deepcopy(valid)
+        boolean_range["aspect_segments"]["my_tactical_pattern"][0]["range"] = [True, 2]
+        self.assertFalse(TwinAgent._validate_aspect_response(boolean_range, 1, 4))
+
+        wrong_end = copy.deepcopy(valid)
+        wrong_end["aspect_segments"]["opponent_tactical_pattern"][0]["range"] = [1, 3]
+        self.assertFalse(TwinAgent._validate_aspect_response(wrong_end, 1, 4))
+
+    def test_twin_instruction_stays_out_of_retrieval_and_in_action_stages(self):
+        instruction = "Aggressive Profile. Prefer attacking pressure."
+        current_info = info()
+        current_info["rally_profile_instruction"] = instruction
+        stage1 = {
+            "rationale": "The Twin evidence supports a legal Clear.",
+            "outcome": "returned",
+            "shot_type": "Clear",
+        }
+        agent = self.twin_agent(
+            [aspect_response(), stage1, placement_response()],
+            instruction_mode="instruct",
+        )
+
+        agent.predict(STATE, current_info, launch=False)
+
+        self.assertNotIn(instruction, agent.llm.prompts[0])
+        self.assertIn(instruction, agent.llm.prompts[1])
+        self.assertIn(instruction, agent.llm.prompts[2])
+
+        action_response = {
+            "rationale": "The Twin evidence supports a complete Clear action.",
+            "action": BaseAgent.build_prompt_action(2, 0.3, 0.4, -0.2, -0.1),
+        }
+        single_stage = self.twin_single_stage_agent(
+            [aspect_response(), action_response],
+            instruction_mode="instruct",
+        )
+
+        single_stage.predict(STATE, current_info, launch=False)
+
+        self.assertNotIn(instruction, single_stage.llm.prompts[0])
+        self.assertIn(instruction, single_stage.llm.prompts[1])
+
     def test_single_stage_twin_supports_missed_action_in_the_same_call(self):
         response = {
             "rationale": "The missed memories indicate failed contact.",
@@ -359,12 +455,26 @@ class FakeEmbeddingModel:
         return np.asarray(rows)
 
 
-def aspect_response():
+def aspect_response(first_round=2, last_round=2):
     return {
-        "my_tactical_pattern": "Controlled return construction.",
-        "my_tempo_movement_dynamics": "Balanced recovery pressure.",
-        "opponent_tactical_pattern": "Sustained attacking pressure.",
-        "opponent_tempo_movement_dynamics": "Forward recovery pressure.",
+        "aspect_segments": {
+            "my_tactical_pattern": [{
+                "range": [first_round, last_round],
+                "phase": "Controlled return construction.",
+            }],
+            "my_tempo_movement_dynamics": [{
+                "range": [first_round, last_round],
+                "phase": "Balanced recovery pressure.",
+            }],
+            "opponent_tactical_pattern": [{
+                "range": [first_round, last_round],
+                "phase": "Sustained attacking pressure.",
+            }],
+            "opponent_tempo_movement_dynamics": [{
+                "range": [first_round, last_round],
+                "phase": "Forward recovery pressure.",
+            }],
+        },
     }
 
 

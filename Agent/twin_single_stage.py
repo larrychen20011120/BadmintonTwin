@@ -119,7 +119,6 @@ class TwinSingleStageAgent(TwinAgent):
         aspects, aspect_source = self._estimate_aspects(
             state_dict,
             state_history,
-            profile_instruction,
         )
         query_embedding = encode_texts(
             self.embedding_model,
