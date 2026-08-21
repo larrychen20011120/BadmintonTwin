@@ -27,6 +27,14 @@ TWIN_RAG_TEMPLATE_PATHS = tuple(
     for stage in (1, 2)
     for variant in ("no_instruct", "instruct")
 )
+SINGLE_STAGE_DIRECT_TEMPLATE_PATHS = (
+    PROMPT_ROOT / "naive_rag_single_stage" / "action.jinja",
+    PROMPT_ROOT / "naive_rag_single_stage" / "action_instruct.jinja",
+    PROMPT_ROOT / "timerag_single_stage" / "action.jinja",
+    PROMPT_ROOT / "timerag_single_stage" / "action_instruct.jinja",
+    PROMPT_ROOT / "twin_single_stage" / "action_direct.jinja",
+    PROMPT_ROOT / "twin_single_stage" / "action_direct_instruct.jinja",
+)
 
 
 def render_strict(path, **context):
@@ -48,10 +56,16 @@ class LLMPromptStructureTest(unittest.TestCase):
             resolve_prompt_variant("shifted", "invalid")
 
     def test_prompts_are_grouped_by_algorithm(self):
-        expected = set(ONE_STAGE_TEMPLATE_PATHS) | set(RAG_TEMPLATE_PATHS) | set(TWIN_RAG_TEMPLATE_PATHS) | {
+        expected = (
+            set(ONE_STAGE_TEMPLATE_PATHS)
+            | set(RAG_TEMPLATE_PATHS)
+            | set(TWIN_RAG_TEMPLATE_PATHS)
+            | set(SINGLE_STAGE_DIRECT_TEMPLATE_PATHS)
+            | {
             PROMPT_ROOT / "twin" / "aspect_user.jinja",
             PROMPT_ROOT / "twin" / "memory_user.jinja",
-        }
+            }
+        )
         self.assertTrue(all(path.is_file() for path in expected))
         self.assertEqual(list(PROMPT_ROOT.glob("*.jinja")), [])
 
@@ -61,12 +75,12 @@ class LLMPromptStructureTest(unittest.TestCase):
             "Court Area Definitions",
             "Coordinate System",
             "Valid grid coordinates",
-            "semantic area must match",
             "Missed shot",
             "Serve short",
             "Smash Defence",
         ):
             self.assertIn(text, content)
+        self.assertNotIn("semantic area must match", content)
 
     def test_one_stage_templates_define_shared_contract(self):
         for path in ONE_STAGE_TEMPLATE_PATHS:
@@ -81,6 +95,22 @@ class LLMPromptStructureTest(unittest.TestCase):
                     or "jointly analyzing" in content
                     or "Make one joint decision" in content
                 )
+                self.assertNotIn('"landing_area"', content)
+                self.assertNotIn('"moving_area"', content)
+
+    def test_single_stage_direct_templates_return_only_complete_results(self):
+        for path in SINGLE_STAGE_DIRECT_TEMPLATE_PATHS:
+            with self.subTest(path=path):
+                content = path.read_text()
+                for field in (
+                    '"outcome"', '"shot_type"', '"landing_x"', '"landing_y"',
+                    '"moving_x"', '"moving_y"',
+                ):
+                    self.assertIn(field, content)
+                self.assertIn("Do not output reasoning", content)
+                self.assertNotIn('"case_assessments":', content)
+                self.assertNotIn('"rationale":', content)
+                self.assertNotIn('"summary":', content)
 
     def test_rag_agents_use_two_stage_templates(self):
         for algorithm in ("naive_rag", "timerag", "twin"):
@@ -100,12 +130,16 @@ class LLMPromptStructureTest(unittest.TestCase):
             self.assertIn('"placement"', stage2)
             self.assertIn("Do not include shot_type", stage2)
             self.assertNotIn("selected_shot_type", stage2)
+            self.assertNotIn('"landing_area"', stage2)
+            self.assertNotIn('"moving_area"', stage2)
         stage1 = (PROMPT_ROOT / "twin" / "stage1_no_instruct.jinja").read_text()
         stage2 = (PROMPT_ROOT / "twin" / "stage2_no_instruct.jinja").read_text()
         self.assertIn('"outcome": "returned"', stage1)
         self.assertNotIn('"landing_x"', stage1)
         self.assertIn('"placement"', stage2)
         self.assertIn("Do not include shot_type", stage2)
+        self.assertNotIn('"landing_area"', stage2)
+        self.assertNotIn('"moving_area"', stage2)
 
     def test_rag_prompts_use_stage_specific_evidence_without_distance(self):
         for path in RAG_TEMPLATE_PATHS + TWIN_RAG_TEMPLATE_PATHS:
@@ -118,11 +152,119 @@ class LLMPromptStructureTest(unittest.TestCase):
                 self.assertIn(expected_field, content)
                 self.assertNotIn("case.description", content)
                 self.assertNotIn("case.distance", content)
-                self.assertNotIn("distance", content.lower())
                 self.assertIn("evidence-driven behavior simulation", content)
                 self.assertIn("not tactical optimization", content)
                 self.assertIn("movement", content)
                 self.assertIn("score pressure", content)
+
+    def test_rag_action_prompts_use_evidence_aligned_current_contexts(self):
+        for variant in ("norm", "instruct"):
+            for stage in (1, 2):
+                naive = (
+                    PROMPT_ROOT / "naive_rag" / f"stage{stage}_{variant}.jinja"
+                ).read_text()
+                timerag = (
+                    PROMPT_ROOT / "timerag" / f"stage{stage}_{variant}.jinja"
+                ).read_text()
+                self.assertIn("Current Decision Context", naive)
+                self.assertNotIn("prior rally actions", naive)
+                self.assertIn("independently in display order", naive.lower())
+                self.assertIn("Current Temporal Window", timerag)
+                self.assertIn("independently in display order", timerag.lower())
+                if stage == 1:
+                    self.assertIn("success ranks 1 through", naive)
+                    self.assertIn("then miss ranks", naive)
+                    self.assertIn("success ranks 1 through", timerag)
+                    self.assertIn("then miss ranks", timerag)
+                self.assertIn('"case_assessments"', naive)
+                self.assertIn("Output exactly", naive)
+                self.assertIn('"impact"', naive)
+                self.assertIn('"factors"', naive)
+                self.assertIn("1-4 word noun phrase", naive)
+                self.assertNotIn('"selected_cases"', naive)
+                self.assertNotIn('"decision_reason"', naive)
+                self.assertNotIn('"case_tags"', naive)
+                self.assertNotIn('"tags"', naive)
+                self.assertNotIn('"brief_notes"', naive)
+                self.assertNotIn('"summary"', naive)
+                self.assertIn('"case_assessments"', timerag)
+                self.assertIn("Output exactly", timerag)
+                self.assertIn('"impact"', timerag)
+                self.assertIn('"factors"', timerag)
+                self.assertIn("1-4 word noun phrase", timerag)
+                self.assertNotIn('"selected_cases"', timerag)
+                self.assertNotIn('"decision_reason"', timerag)
+                self.assertNotIn('"case_tags"', timerag)
+                self.assertNotIn('"tags"', timerag)
+                self.assertNotIn('"brief_notes"', timerag)
+                self.assertNotIn('"summary"', timerag)
+
+        for variant in ("no_instruct", "instruct"):
+            for stage in (1, 2):
+                twin = (
+                    PROMPT_ROOT / "twin" / f"stage{stage}_{variant}.jinja"
+                ).read_text()
+                self.assertIn("Current Decision Context", twin)
+                self.assertNotIn("prior rally actions", twin)
+                self.assertIn("independently in display order", twin.lower())
+                if stage == 1:
+                    self.assertIn("success ranks 1 through", twin)
+                    self.assertIn("then miss ranks", twin)
+                self.assertIn('"case_assessments"', twin)
+                self.assertIn("Output exactly", twin)
+                self.assertIn('"impact"', twin)
+                self.assertIn('"factors"', twin)
+                self.assertNotIn('"selected_cases"', twin)
+                self.assertNotIn('"decision_reason"', twin)
+                self.assertNotIn('"case_tags"', twin)
+                self.assertNotIn('"tags"', twin)
+                self.assertNotIn('"brief_notes"', twin)
+                self.assertNotIn('"summary"', twin)
+
+            single = (
+                PROMPT_ROOT / "twin_single_stage" / f"action_{variant}.jinja"
+            ).read_text()
+            self.assertIn("Current Decision Context", single)
+            self.assertIn("memory.decision_description", single)
+            self.assertNotIn("complete current rally", single)
+            self.assertIn("independently in display order", single.lower())
+            self.assertIn("miss ranks 1 through", single)
+            self.assertIn("then success ranks", single)
+            self.assertIn('"case_assessments"', single)
+            self.assertIn("Output exactly", single)
+            self.assertIn('"impact"', single)
+            self.assertIn('"factors"', single)
+            self.assertNotIn('"selected_cases"', single)
+            self.assertNotIn('"decision_reason"', single)
+            self.assertNotIn('"case_tags"', single)
+            self.assertNotIn('"tags"', single)
+            self.assertNotIn('"brief_notes"', single)
+            self.assertNotIn('"summary"', single)
+
+        current_action_prompts = (
+            RAG_TEMPLATE_PATHS
+            + TWIN_RAG_TEMPLATE_PATHS
+            + tuple(
+                PROMPT_ROOT / "twin_single_stage" / f"action_{variant}.jinja"
+                for variant in ("no_instruct", "instruct")
+            )
+        )
+        for path in current_action_prompts:
+            with self.subTest(path=path):
+                content = path.read_text()
+                lowered = content.lower()
+                self.assertIn("case_assessments", content)
+                self.assertIn("independently", lowered)
+                self.assertIn("references to other", lowered)
+                self.assertNotIn('"summary"', content)
+                self.assertNotIn('"note"', content)
+                self.assertNotIn('"role"', content)
+                self.assertNotIn('"aspects"', content)
+                for ranking_phrase in (
+                    "most similar", "least similar", "nearest",
+                    "highest-scoring", "greater weight", "ordered from",
+                ):
+                    self.assertNotIn(ranking_phrase, content)
 
     def test_stage1_prompts_hardcode_serve_and_rally_shot_types(self):
         rally_types = (
@@ -147,9 +289,8 @@ class LLMPromptStructureTest(unittest.TestCase):
             stage2 = (PROMPT_ROOT / algorithm / "stage2_instruct.jinja").read_text()
             for content in (stage1, stage2):
                 self.assertIn("## Tactical Imitation Instruction", content)
-                self.assertIn("weak auxiliary information", content)
-                self.assertIn("Keep the prediction case-driven", content)
-                self.assertIn("otherwise similarly relevant", content)
+                self.assertIn("only to break a tie", content)
+                self.assertIn("never to", content)
                 self.assertNotIn("Player Profile Evidence", content)
             self.assertNotIn(
                 "rally_profile_instruction",
@@ -162,9 +303,8 @@ class LLMPromptStructureTest(unittest.TestCase):
         for stage in (1, 2):
             content = (PROMPT_ROOT / "twin" / f"stage{stage}_instruct.jinja").read_text()
             self.assertIn("## Tactical Imitation Instruction", content)
-            self.assertIn("weak auxiliary information", content)
-            self.assertIn("Keep the prediction case-driven", content)
-            self.assertIn("otherwise similarly relevant", content)
+            self.assertIn("only to break a tie", content)
+            self.assertIn("never to", content)
             self.assertNotIn(
                 "rally_profile_instruction",
                 (PROMPT_ROOT / "twin" / f"stage{stage}_no_instruct.jinja").read_text(),
@@ -288,17 +428,48 @@ class LLMPromptRenderingTest(unittest.TestCase):
         self.assertIn("Attack. Attack more.", instructed)
         self.assertIn("Tactical Imitation Instruction", instructed)
 
+    def test_single_stage_rag_instruction_templates_render_strictly(self):
+        context = {
+            "trajectory_text": "Current decision context.",
+            "normal_cases": [{"stage2_description": "Successful action."}],
+            "miss_cases": [{"stage2_description": "Missed action."}],
+            "rally_profile_instruction": (
+                "Front-Court Pressure. Prefer front-court pressure."
+            ),
+        }
+        for algorithm in ("naive_rag_single_stage", "timerag_single_stage"):
+            with self.subTest(algorithm=algorithm):
+                normal_path = PROMPT_ROOT / algorithm / "action.jinja"
+                instructed_path = PROMPT_ROOT / algorithm / "action_instruct.jinja"
+                normal = render_strict(
+                    normal_path,
+                    trajectory_text=context["trajectory_text"],
+                    normal_cases=context["normal_cases"],
+                    miss_cases=context["miss_cases"],
+                )
+                instructed = render_strict(instructed_path, **context)
+
+                self.assertNotIn("rally_profile_instruction", normal_path.read_text())
+                self.assertNotIn("Tactical Imitation Instruction", normal)
+                self.assertIn("Tactical Imitation Instruction", instructed)
+                self.assertIn(context["rally_profile_instruction"], instructed)
+                self.assertIn("only to break a tie", instructed)
+                self.assertIn("stronger", instructed)
+                self.assertIn('"landing_x"', instructed)
+                self.assertNotIn('"case_assessments":', instructed)
+
     def test_single_stage_twin_templates_render_complete_actions_strictly(self):
         memory = {
             "score": 0.9,
             "state_similarity": 0.8,
             "semantic_similarity": 1.0,
+            "decision_description": "Historical decision snapshot.",
             "context_text": "Twin semantic context.",
             "reachability_text": "The player returned the shuttle.",
             "action_verbalization": 'Action: {"shot_type": "Clear"}',
         }
         context = {
-            "trajectory_text": "Complete current rally.",
+            "trajectory_text": "Current decision snapshot.",
             "semantic_query_text": "Current Twin semantic query.",
             "normal_memories": [memory],
             "miss_memories": [memory],
@@ -309,14 +480,77 @@ class LLMPromptRenderingTest(unittest.TestCase):
                 PROMPT_ROOT / "twin_single_stage" / f"action_{variant}.jinja",
                 **context,
             )
-            self.assertIn("Complete current rally.", rendered)
+            self.assertIn("Current decision snapshot.", rendered)
+            self.assertIn("Historical decision snapshot.", rendered)
+            self.assertNotIn("score=", rendered)
+            self.assertNotIn("state=", rendered)
+            self.assertNotIn("semantic=", rendered)
             self.assertIn('"landing_x"', rendered)
+            self.assertNotIn('"landing_area"', rendered)
+            self.assertNotIn('"moving_area"', rendered)
             self.assertIn("Retrieved Missed-Shot Twin Memories", rendered)
             self.assertIn("Retrieved Successful Return Twin Memories", rendered)
             self.assertEqual(
                 "Attack. Prefer attacking returns." in rendered,
                 variant == "instruct",
             )
+
+        direct_instruct = render_strict(
+            PROMPT_ROOT / "twin_single_stage" / "action_direct_instruct.jinja",
+            **context,
+        )
+        self.assertIn("Tactical Imitation Instruction", direct_instruct)
+        self.assertIn(context["rally_profile_instruction"], direct_instruct)
+        self.assertIn("weak tie-breaker", direct_instruct)
+        self.assertIn('"outcome"', direct_instruct)
+        self.assertNotIn('"case_assessments"', direct_instruct)
+
+    def test_twin_early_round_prompts_omit_semantic_query_and_context(self):
+        stage1_context = {
+            **self._stage1_context(),
+            "semantic_enabled": False,
+        }
+        stage2_context = {
+            **self._stage2_context(),
+            "semantic_enabled": False,
+        }
+        for variant in ("no_instruct", "instruct"):
+            for stage, context in ((1, stage1_context), (2, stage2_context)):
+                rendered = render_strict(
+                    PROMPT_ROOT / "twin" / f"stage{stage}_{variant}.jinja",
+                    **context,
+                )
+                self.assertNotIn("Current Twin Semantic Query", rendered)
+                self.assertNotIn("Twin semantic query.", rendered)
+                self.assertNotIn("Twin semantic context", rendered)
+
+        memory = {
+            "decision_description": "Historical decision snapshot.",
+            "context_text": "Twin semantic context.",
+            "reachability_text": "The player returned the shuttle.",
+            "action_verbalization": 'Action: {"shot_type": "Clear"}',
+        }
+        context = {
+            "trajectory_text": "Current decision snapshot.",
+            "semantic_enabled": False,
+            "semantic_query_text": "Current Twin semantic query.",
+            "normal_memories": [memory],
+            "miss_memories": [memory],
+            "rally_profile_instruction": "Attack. Prefer attacking returns.",
+        }
+        for filename in (
+            "action_no_instruct.jinja",
+            "action_instruct.jinja",
+            "action_direct.jinja",
+            "action_direct_instruct.jinja",
+        ):
+            rendered = render_strict(
+                PROMPT_ROOT / "twin_single_stage" / filename,
+                **context,
+            )
+            self.assertNotIn("Current Twin Semantic Query", rendered)
+            self.assertNotIn("Current Twin semantic query.", rendered)
+            self.assertNotIn("Twin semantic context.", rendered)
 
     def test_pure_llm_normalizes_shared_history_from_each_player_view(self):
         agent = PureLLMAgent.__new__(PureLLMAgent)

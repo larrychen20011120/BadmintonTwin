@@ -1,0 +1,53 @@
+# Task
+Predict the player's complete next action directly from the current decision context{% if semantic_enabled|default(true) %}, Twin semantic query,{% endif %} and retrieved Twin memories. This is behavior imitation, not tactical optimization.
+
+## Current Decision Context
+{{ trajectory_text }}
+
+{% if semantic_enabled|default(true) %}
+## Current Twin Semantic Query
+{{ semantic_query_text }}
+{% endif %}
+
+## Successful Return Twin Memories
+{% for memory in normal_memories %}
+Memory {{ loop.index }}:
+Historical decision context:
+{{ memory.decision_description }}
+{% if semantic_enabled|default(true) %}
+Twin semantic context:
+{{ memory.context_text }}
+{% endif %}
+Reachability:
+{{ memory.reachability_text }}
+Observed next action:
+{{ memory.action_verbalization }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Missed Return Twin Memories
+{% for memory in miss_memories %}
+Memory {{ loop.index }}:
+Historical decision context:
+{{ memory.decision_description }}
+{% if semantic_enabled|default(true) %}
+Twin semantic context:
+{{ memory.context_text }}
+{% endif %}
+Reachability:
+{{ memory.reachability_text }}
+Observed next action:
+{{ memory.action_verbalization }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Output
+Return only one JSON object with the final result. Do not output reasoning, analysis, case selection, case assessments, markdown, or extra fields.
+{
+  "outcome": "<returned or missed>",
+  "shot_type": "<exact legal shot type, or null when missed>",
+  "landing_x": <integer 0 to 355, or null when missed>,
+  "landing_y": <integer 0 to 480, or null when missed>,
+  "moving_x": <integer 0 to 355, or null when missed>,
+  "moving_y": <integer 0 to 480, or null when missed>
+}
+
+For a serve, use only Serve short or Serve long. For a non-serve return, use only Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, or Drop. For missed, set shot_type and all four coordinates to null.

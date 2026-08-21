@@ -60,7 +60,6 @@ The half court is divided into 17 semantic areas.
 - y increases from the baseline toward the net.
 - Valid grid coordinates satisfy 0 <= x <= 355 and 0 <= y <= 480.
 - All non-missed landing and recovery coordinates must be integers.
-- The semantic area must match its integer coordinate.
 
 # Shot Types
 ## Serve
@@ -77,3 +76,5 @@ The half court is divided into 17 semantic areas.
 ## Neutral
 - **Drive**
 - **Net Shot**
+## Failed Return
+- **Missed shot**

@@ -20,6 +20,13 @@ Prompts/Preprocessing/rally_intent_system.md
 Prompts/Preprocessing/rally_intent_user.jinja
 Schemas/Preprocessing/rally_intent_schema.json
 *.json
+!Schemas/Agent/rag_stage1_grounded_schema.json
+!Schemas/Agent/rag_stage1_direct_schema.json
+!Schemas/Agent/rag_stage2_grounded_schema.json
+!Schemas/Agent/rag_stage2_direct_schema.json
+!Schemas/Agent/twin_single_stage_grounded_schema.json
+!Schemas/Agent/twin_single_stage_direct_schema.json
+!Schemas/Agent/rag_single_stage_direct_schema.json
 *.txt
 
 AGENTS.md

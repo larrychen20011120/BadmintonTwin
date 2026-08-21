@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TwinSingleStageGroundedResponse",
+  "type": "object",
+  "properties": {
+    "case_assessments": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {"type": "string", "enum": ["success", "miss"]},
+          "retrieval_rank": {"type": "integer", "minimum": 1},
+          "impact": {"type": "string", "enum": ["support", "conflict", "irrelevant"]},
+          "factors": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z]+(?:[-'][a-z]+)*(?: [a-z]+(?:[-'][a-z]+)*){0,3}$"
+            }
+          }
+        },
+        "required": ["source", "retrieval_rank", "impact", "factors"],
+        "additionalProperties": false
+      }
+    },
+    "action": {
+      "type": "object",
+      "properties": {
+        "shot_type": {"type": "string", "enum": ["Serve short", "Serve long", "Clear", "Push Shot", "Smash", "Smash Defence", "Drive", "Net Shot", "Lob", "Drop", "Missed shot"]},
+        "landing_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+        "landing_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480},
+        "moving_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+        "moving_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480}
+      },
+      "required": ["shot_type", "landing_x", "landing_y", "moving_x", "moving_y"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["case_assessments", "action"],
+  "additionalProperties": false
+}

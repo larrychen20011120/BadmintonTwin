@@ -197,7 +197,9 @@ timerag:
 
 # Twin (aspect-memory retrieval) 參數
 twin:
-  lambda_weight: 0.5
+  lambda_weight: 0.4
+  semantic_start_ball_round: 3
+  online_terminal_aspect_repair: true
   embedding_batch_size: 128
   embedding_dtype: "float32"  # float32 | float16
   normalize_embeddings: true
@@ -228,10 +230,10 @@ embedding:
 retrieval:
   architecture: two_stage_v1
   stage1:
-    normal_top_k: 10
-    miss_top_k: 5
+    normal_top_k: 7
+    miss_top_k: 7
   stage2:
-    conditioned_top_k: 10
+    conditioned_top_k: 7
 
 # 評估參數
 evaluation:
@@ -241,6 +243,7 @@ evaluation:
   start_method: "spawn"
   instruction_mode: "no_instruct"  # no_instruct | instruct
   instruction_variant: "original"  # original | opposite | random_other | rewrite
+  case_grounding: true
   rollout_extra_steps: 2
   save_decision_trace: true
 

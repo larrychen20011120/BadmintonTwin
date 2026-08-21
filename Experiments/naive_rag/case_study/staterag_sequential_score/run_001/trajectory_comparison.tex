@@ -1,0 +1,37 @@
+% Requires: \usepackage{xcolor,booktabs,tabularx,array}
+\definecolor{normalgray}{HTML}{4F5965}
+\definecolor{defensiveblue}{HTML}{2457A6}
+\definecolor{frontgreen}{HTML}{178A62}
+\definecolor{driveorange}{HTML}{D66B20}
+\begin{table*}[t]
+\raggedright
+\footnotesize
+\renewcommand{\arraystretch}{1.10}
+\begin{tabularx}{\textwidth}{*{4}{>{\raggedright\arraybackslash}X}}
+\toprule
+\textcolor{normalgray}{\textbf{Normal}} & \textcolor{defensiveblue}{\textbf{Deep defensive resets}} & \textcolor{frontgreen}{\textbf{Front-court net pressure}} & \textcolor{driveorange}{\textbf{Back-to-front drive pressure}} \\
+\addlinespace[2pt]
+No tactical instruction. & Focus on deep defensive resets to extend rallies and maintain distance from the opponent. & Focus all shots on the front court to force the opponent to the net and keep rallies short. & Drive hard to the back corners to force the opponent deep, then immediately attack the net with sharp drives. \\
+\addlinespace[2pt]
+\textit{Player serves; score 9--0.} & \textit{Player serves; score 2--0.} & \textit{Player serves; score 11--0.} & \textit{Player serves; score 1--0.} \\
+\midrule
+\mbox{\textbf{1.} \textbf{Player}: Short serve $\rightarrow$ MC} & \mbox{\textbf{1.} \textbf{Player}: Short serve $\rightarrow$ FC} & \mbox{\textbf{1.} \textbf{Player}: Short serve $\rightarrow$ \textcolor{frontgreen}{\textbf{FC}}} & \mbox{\textbf{1.} \textbf{Player}: Short serve $\rightarrow$ \textcolor{driveorange}{\textbf{FC}}} \\
+\mbox{\textbf{2.} \textcolor{gray}{Opponent}: Push $\rightarrow$ RC} & \mbox{\textbf{2.} \textcolor{gray}{Opponent}: Push $\rightarrow$ MC} & \mbox{\textbf{2.} \textcolor{gray}{Opponent}: Net $\rightarrow$ FC} & \mbox{\textbf{2.} \textcolor{gray}{Opponent}: Push $\rightarrow$ RC} \\
+\mbox{\textbf{3.} \textbf{Player}: Smash $\rightarrow$ RL} & \mbox{\textbf{3.} \textbf{Player}: \textcolor{defensiveblue}{\textbf{Clear}} $\rightarrow$ \textcolor{defensiveblue}{\textbf{RC}}} & \mbox{\textbf{3.} \textbf{Player}: Lob $\rightarrow$ RC} & \mbox{\textbf{3.} \textbf{Player}: \textcolor{driveorange}{\textbf{Smash}} $\rightarrow$ \textcolor{driveorange}{\textbf{RL}}} \\
+\mbox{\textbf{4.} \textcolor{gray}{Opponent}: Smash Def. $\rightarrow$ FR} & \mbox{\textbf{4.} \textcolor{gray}{Opponent}: Drive $\rightarrow$ MR} & \mbox{\textbf{4.} \textcolor{gray}{Opponent}: Clear $\rightarrow$ RC} & \mbox{\textbf{4.} \textcolor{gray}{Opponent}: Smash Def. $\rightarrow$ FR} \\
+\mbox{\textbf{5.} \textbf{Player}: Push $\rightarrow$ RC} & \mbox{\textbf{5.} \textbf{Player}: Drive $\rightarrow$ MC} & \mbox{\textbf{5.} \textbf{Player}: Clear $\rightarrow$ \textcolor{frontgreen}{\textbf{FC}}} & \mbox{\textbf{5.} \textbf{Player}: Push $\rightarrow$ \textcolor{driveorange}{\textbf{RR}}} \\
+\mbox{\textbf{6.} \textcolor{gray}{Opponent}: Smash $\rightarrow$ RR} & \mbox{\textbf{6.} \textcolor{gray}{Opponent}: Drive $\rightarrow$ MC} & \mbox{\textbf{6.} \textcolor{gray}{Opponent}: Smash $\rightarrow$ MC} & \mbox{\textbf{6.} \textcolor{gray}{Opponent}: Clear $\rightarrow$ RR} \\
+\mbox{\textcolor{gray}{\ldots}} & \mbox{\textbf{7.} \textbf{Player}: \textcolor{defensiveblue}{\textbf{Smash Def.}} $\rightarrow$ MC} & \mbox{\textbf{7.} \textbf{Player}: Smash Def. $\rightarrow$ \textcolor{frontgreen}{\textbf{FC}}} & \mbox{\textcolor{gray}{\ldots}} \\
+\mbox{\textbf{18.} \textcolor{gray}{Opponent}: Drop $\rightarrow$ ML} & \mbox{\textbf{8.} \textcolor{gray}{Opponent}: Smash $\rightarrow$ MC} & \mbox{\textbf{8.} \textcolor{gray}{Opponent}: Net $\rightarrow$ FC} & \mbox{\textbf{14.} \textcolor{gray}{Opponent}: Drop $\rightarrow$ MC} \\
+\mbox{\textbf{19.} \textbf{Player}: Net $\rightarrow$ FR} & \mbox{\textbf{9.} \textbf{Player}: \textcolor{defensiveblue}{\textbf{Smash Def.}} $\rightarrow$ FC} & \mbox{\textbf{9.} \textbf{Player}: Lob $\rightarrow$ DRC} & \mbox{\textbf{15.} \textbf{Player}: \textcolor{driveorange}{\textbf{Net}} $\rightarrow$ \textcolor{driveorange}{\textbf{FL}}} \\
+\mbox{\textbf{20.} \textcolor{gray}{Opponent}: Net $\rightarrow$ FL} & \mbox{\textbf{10.} \textcolor{gray}{Opponent}: Net $\rightarrow$ FC} &  & \mbox{\textbf{16.} \textcolor{gray}{Opponent}: Lob $\rightarrow$ RC} \\
+\mbox{\textbf{21.} \textbf{Player}: Lob $\rightarrow$ RR} & \mbox{\textbf{11.} \textbf{Player}: Lob $\rightarrow$ DLC} &  & \mbox{\textbf{17.} \textbf{Player}: Clear $\rightarrow$ \textcolor{driveorange}{\textbf{RR}}} \\
+\mbox{\textbf{22.} \textcolor{gray}{Opponent}: Clear $\rightarrow$ RR} &  &  & \mbox{\textbf{18.} \textcolor{gray}{Opponent}: Clear $\rightarrow$ RC} \\
+\mbox{\textbf{23.} \textbf{Player}: Smash $\rightarrow$ MR-line} &  &  & \mbox{\textbf{19.} \textbf{Player}: Clear $\rightarrow$ DRC} \\
+\midrule
+\mbox{\textbf{Result.} Opponent wins (Out of bounds).} & \mbox{\textbf{Result.} Opponent wins (Out of bounds).} & \mbox{\textbf{Result.} Opponent wins (Out of bounds).} & \mbox{\textbf{Result.} Opponent wins (Out of bounds).} \\
+\bottomrule
+\end{tabularx}
+\caption{Normal play and three instruction-conditioned rallies. Each column is top-aligned and numbered independently; Player denotes the instructed policy and Opponent the other agent. Long trajectories retain their opening and ending actions with omitted middle actions marked by ellipsis. Colored phrases indicate instruction-aligned Player behavior, and each result reports the winner and terminal outcome. Area abbreviations: F/M/R denote front/mid/rear, C/L/R denote center/left/right, and DLC/DRC denote deep left/right corners.}
+\label{tab:staterag-instruction-rallies}
+\end{table*}

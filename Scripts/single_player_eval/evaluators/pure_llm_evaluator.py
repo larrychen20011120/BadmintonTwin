@@ -15,7 +15,7 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
     def __init__(self, player_name=None, device='cuda', skip_first_n=0,
                  enable_tracing=True, save_trajectories=False,
                  output_experiment=None, all_rallies=False,
-                 instruction_mode='no_instruct'):
+                 instruction_mode='no_instruct', save_prompt_traces=False):
         if instruction_mode not in ('instruct', 'no_instruct'):
             raise ValueError("instruction_mode must be 'instruct' or 'no_instruct'")
         BaseEvaluator.__init__(
@@ -30,6 +30,7 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
         )
 
         self.enable_tracing = enable_tracing
+        self.save_prompt_traces = bool(save_prompt_traces)
         self.all_rallies = all_rallies
         self.instruction_mode = instruction_mode
         self.prompt_variant = 'shifted' if instruction_mode == 'instruct' else 'norm'
@@ -73,6 +74,7 @@ class PureLLMEvaluator(NaiveRAGEvaluator):
             host_url=llm_config.get('host_url'),
             enable_tracing=self.enable_tracing,
             prompt_variant=self.prompt_variant,
+            save_prompt_traces=self.save_prompt_traces,
         )
         print(f"[PureLLM] Agent created for {player_name}")
         return agent

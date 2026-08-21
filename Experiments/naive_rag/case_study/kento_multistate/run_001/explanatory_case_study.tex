@@ -1,0 +1,47 @@
+% Requires: \usepackage{xcolor,booktabs,tabularx,array}
+\definecolor{normalgray}{HTML}{4F5965}
+\definecolor{wideblue}{HTML}{2457A6}
+\definecolor{netgreen}{HTML}{178A62}
+\definecolor{deeporange}{HTML}{D66B20}
+\begin{table*}[t]
+\raggedright
+\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{*{4}{>{\raggedright\arraybackslash}X}}
+\toprule
+\textcolor{normalgray}{\textbf{\large Normal play}} & \textcolor{wideblue}{\textbf{\large Wide front-court switching with extended rallies}} & \textcolor{netgreen}{\textbf{\large Aggressive short-court net play}} & \textcolor{deeporange}{\textbf{\large Deep back-court defensive reset}} \\
+\addlinespace[2pt]
+No tactical instruction; follow the learned normal policy. & Target the wide front corners and switch depth frequently to force long, wide exchanges. & Attack aggressively with short, sharp shots to the front court to force errors and minimize movement. & Focus on deep back-court placements to keep the opponent at bay and avoid wide or short shots. \\
+\addlinespace[2pt]
+\textit{\textbf{Starting situation.} Source match 3, set 2, rally 13. Kento MOMOTA serves against CHOU Tien Chen at 6--6. Their normalized court positions are (-0.01, 0.50) and (-0.22, 0.17), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 3, set 2, rally 13. Kento MOMOTA serves against CHOU Tien Chen at 6--6. Their normalized court positions are (-0.01, 0.50) and (-0.22, 0.17), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 3, set 2, rally 13. Kento MOMOTA serves against CHOU Tien Chen at 6--6. Their normalized court positions are (-0.01, 0.50) and (-0.22, 0.17), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 3, set 2, rally 13. Kento MOMOTA serves against CHOU Tien Chen at 6--6. Their normalized court positions are (-0.01, 0.50) and (-0.22, 0.17), respectively. Every case starts from this identical situation with an empty rally history.} \\
+\midrule
+1. Player: Serve short to Front Center & 1. Player: Serve short to Front Center & 1. Player: Serve short to Front Center & 1. Player: Serve short to Front Center \\
+2. Opponent: Push Shot to Rear Right Side & 2. Opponent: Push Shot to Rear Center & 2. Opponent: Push Shot to Rear Right Side & 2. Opponent: Push Shot to Rear Right Side \\
+3. Player: Smash to Mid Center & 3. Player: \textcolor{wideblue}{\textbf{Drop to Front Right Side}} & 3. Player: Clear to Rear Right Side & 3. Player: \textcolor{deeporange}{\textbf{Clear to Rear Left Side}} \\
+4. Opponent: Smash Defence to Mid Center & 4. Opponent: Net Shot to Front Left Side & 4. Opponent: Smash to Mid Left Side & 4. Opponent: Clear to Rear Right Side \\
+5. Player: Smash Defence to Mid Center & 5. Player: \textcolor{wideblue}{\textbf{Net Shot to Front Right Side}} & 5. Player: \textcolor{netgreen}{\textbf{Smash Defence to Front Left Side}} & 5. Player: Drop to Front Right Side \\
+6. Opponent: Push Shot to Mid Center & 6. Opponent: Net Shot to Front Left Side & 6. Opponent: Net Shot to Front Right Side & 6. Opponent: Net Shot to Front Left Side \\
+7. Player: Smash Defence to Front Center & 7. Player: \textcolor{wideblue}{\textbf{Lob to Rear Center}} & 7. Player: \textcolor{netgreen}{\textbf{Net Shot to Front Left Side}} & 7. Player: \textcolor{deeporange}{\textbf{Lob to Rear Left Side}} \\
+8. Opponent: Net Shot to Front Left Side & 8. Opponent: Smash to Rear Right Side & 8. Opponent: Lob to Deep Right Corner & 8. Opponent: Clear to Rear Right Side \\
+9. Player: Push Shot to Deep Left Corner & 9. Player: \textcolor{wideblue}{\textbf{Smash Defence to Front Center}} &  & 9. Player: Smash to Mid Right Side \\
+ & 10. Opponent: Net Shot to Front Center &  & 10. Opponent: Smash Defence to Front Left Side \\
+ & 11. Player: Push Shot to Mid Left Side &  & 11. Player: \textcolor{deeporange}{\textbf{Push Shot to Rear Right Side}} \\
+ & 12. Opponent: Smash to Mid Left Side &  & 12. Opponent: Clear to Rear Left Side Line \\
+ & 13. Player: \textcolor{wideblue}{\textbf{Smash Defence to Front Right Side}} &  &  \\
+ & 14. Opponent: Push Shot to Rear Center &  &  \\
+ & 15. Player: \textcolor{wideblue}{\textbf{Clear to Rear Right Side}} &  &  \\
+ & 16. Opponent: Smash to Mid Center &  &  \\
+ & 17. Player: \textcolor{wideblue}{\textbf{Smash Defence to Front Left Side}} &  &  \\
+ & 18. Opponent: Push Shot to Rear Right Side &  &  \\
+ & 19. Player: Smash to Mid Left Side &  &  \\
+ & 20. Opponent: Smash Defence to Mid Right Side &  &  \\
+ & 21. Player: Missed shot &  &  \\
+\midrule
+\textbf{Instruction alignment.} \textcolor{normalgray}{Reference trajectory without a tactical instruction.} & \textbf{Instruction alignment.} \textcolor{wideblue}{Strong alignment: four wide front-court landings and seven depth switches.} & \textbf{Instruction alignment.} \textcolor{netgreen}{Partial alignment: the fifth and seventh shots stay in the front court, and the seventh is an attacking Net Shot.} & \textbf{Instruction alignment.} \textcolor{deeporange}{Partial alignment: the third-shot Clear and seventh-shot Lob reset play to the back court; the eleventh shot also stays deep.} \\
+\addlinespace[2pt]
+\textbf{Result.} CHOU Tien Chen wins after Kento MOMOTA's Push Shot lands out of bounds. & \textbf{Result.} CHOU Tien Chen wins after Kento MOMOTA misses the shuttle. & \textbf{Result.} Kento MOMOTA wins after CHOU Tien Chen's Lob lands out of bounds. & \textbf{Result.} Kento MOMOTA wins after CHOU Tien Chen's Clear lands out of bounds. \\
+\bottomrule
+\end{tabularx}
+\caption{Four StateRAG trajectories from one identical starting situation. The selected cases provide interpretable instruction-following behavior and varied terminal outcomes, including a missed shot. Colored action phrases mark Player shots or short sequences that align with the instruction in the same column; uncolored actions provide context. Player denotes Kento MOMOTA and Opponent denotes CHOU Tien Chen.}
+\label{tab:kento-explanatory-case-study}
+\end{table*}

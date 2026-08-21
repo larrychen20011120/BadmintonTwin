@@ -31,9 +31,10 @@ class NaiveRAGEvaluator(BaseEvaluator):
     def __init__(self, player_name=None, experiment='rally', device='cuda', skip_first_n=0,
                   train_split_path=None, conditioned_top_k=None, enable_tracing=True,
                   save_trajectories=False,
-                 style_shift_instruction_mode='auto', verbose_style_shift=False,
-                 output_experiment=None, all_rallies=False,
-                 instruction_mode='no_instruct'):
+                  style_shift_instruction_mode='auto', verbose_style_shift=False,
+                   output_experiment=None, all_rallies=False,
+                   instruction_mode='no_instruct', case_grounding=True,
+                   action_architecture='two_stage_v1', save_prompt_traces=False):
         """
         Args:
             player_name: 選手名稱
@@ -54,6 +55,20 @@ class NaiveRAGEvaluator(BaseEvaluator):
         self.all_rallies = all_rallies
         self.instruction_mode = instruction_mode
         self.prompt_variant = 'shifted' if instruction_mode == 'instruct' else 'norm'
+        if action_architecture not in {'two_stage_v1', 'single_stage_v1'}:
+            raise ValueError(f'Unsupported action architecture: {action_architecture}')
+        if action_architecture == 'single_stage_v1':
+            if case_grounding:
+                raise ValueError('Single-stage NaiveRAG supports direct output only')
+        self.action_architecture = action_architecture
+        self.algorithm_name = (
+            'naive_rag_single_stage'
+            if action_architecture == 'single_stage_v1' else 'naive_rag'
+        )
+        if not isinstance(case_grounding, bool):
+            raise TypeError('case_grounding must be a bool')
+        self.case_grounding = case_grounding
+        self.save_prompt_traces = bool(save_prompt_traces)
         
         # 設定train split路徑
         self.train_split_path = train_split_path or self.config['paths']['rally_split']
@@ -62,9 +77,10 @@ class NaiveRAGEvaluator(BaseEvaluator):
         retrieval_config = self.config.get('retrieval', {})
         stage1_config = retrieval_config.get('stage1', {})
         stage2_config = retrieval_config.get('stage2', {})
-        self.retrieval_architecture = retrieval_config.get('architecture', 'two_stage_v1')
-        if self.retrieval_architecture != 'two_stage_v1':
+        configured_architecture = retrieval_config.get('architecture', 'two_stage_v1')
+        if configured_architecture != 'two_stage_v1':
             raise ValueError('NaiveRAG requires retrieval.architecture=two_stage_v1')
+        self.retrieval_architecture = action_architecture
         self.normal_top_k = int(stage1_config.get('normal_top_k', 10))
         self.miss_top_k = int(stage1_config.get('miss_top_k', 5))
         self.conditioned_top_k = int(
@@ -96,7 +112,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
         self.agent = self._get_agent(self.player_name) if self.player_name is not None else None
 
         self.print_runtime_parameters(
-            "naive_rag",
+            self.algorithm_name,
             top_k=self.conditioned_top_k,
             normal_top_k=self.normal_top_k,
             miss_top_k=self.miss_top_k,
@@ -105,6 +121,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
             extra_rows=[
                 ("database_dir", self.database_dir),
                 ("prompt_variant", self.prompt_variant),
+                ("case_grounding", self.case_grounding),
             ],
         )
     
@@ -138,6 +155,9 @@ class NaiveRAGEvaluator(BaseEvaluator):
             conditioned_top_k=self.conditioned_top_k,
             enable_tracing=self.enable_tracing,
             prompt_variant=self.prompt_variant,
+            case_grounding=self.case_grounding,
+            action_architecture=self.action_architecture,
+            save_prompt_traces=self.save_prompt_traces,
         )
         print(f"[NaiveRAG] Agent created for {player_name}")
         
@@ -158,7 +178,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
         return self.agents[player_name]
     
     def get_algorithm_name(self):
-        return "naive_rag"
+        return self.algorithm_name
     
     def _state_to_env_format(self, state_18):
         """Convert 18-dim state to env format"""
@@ -253,6 +273,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
         current_state = torch.tensor(state_values, dtype=torch.float32)
         termination_reason = 'max_rollout_reached'
         last_action = None
+        prompt_traces = []
 
         while len(rally_pred_full_seq) < max_rollout_steps:
             current_player_id = int(current_state[17].item())
@@ -263,6 +284,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
             state_for_pred = current_state
             info = self.build_rollout_info(match_id, rally_num, state_for_pred, last_action)
             info.update({
+                'set': set_num,
                 'current_player_name': current_player_name,
                 'opponent_player_name': opponent_name,
                 'rally_history': list(rally_history),
@@ -276,7 +298,16 @@ class NaiveRAGEvaluator(BaseEvaluator):
             action, reason = current_agent.predict(
                 self._state_to_env_format(state_for_pred), info, launch
             )
+            prompt_trace = None
+            if getattr(self, 'save_prompt_traces', False):
+                prompt_trace = current_agent.tracer.consume_local_trace()
+                if prompt_trace is None:
+                    raise RuntimeError('Missing local prompt trace for generated action')
             if action is None:
+                if prompt_trace is not None:
+                    prompt_trace['action_source'] = 'action_none'
+                    prompt_trace['fallback_source'] = None
+                    prompt_traces.append(prompt_trace)
                 termination_reason = 'action_none'
                 break
 
@@ -297,6 +328,26 @@ class NaiveRAGEvaluator(BaseEvaluator):
                     },
                     'action_source': 'agent',
                 }
+            if prompt_trace is not None:
+                action_source = decision['action_source']
+                fallback_source = decision.get('fallback_source')
+                if (
+                    prompt_trace.get('final_action', {}).get('shot_type')
+                    == 'default_fallback'
+                ):
+                    action_source = 'fallback_default'
+                    fallback_source = 'default_action'
+                elif prompt_trace.get('agent') == 'pure_llm':
+                    action_source = 'llm'
+                elif fallback_source is None:
+                    fallback_parts = [
+                        part for part in action_source.split('+')
+                        if part.startswith('fallback')
+                    ]
+                    fallback_source = '+'.join(fallback_parts) or None
+                prompt_trace['action_source'] = action_source
+                prompt_trace['fallback_source'] = fallback_source
+                prompt_traces.append(prompt_trace)
             rally_pred_full_seq.append(build_pred_shot(
                 current_player_name, int(output_shot), land_2d, move_2d, ball_round,
                 decision=decision,
@@ -316,7 +367,7 @@ class NaiveRAGEvaluator(BaseEvaluator):
             current_state = next_state
             last_action = action
 
-        return {
+        trajectory = {
             'match_id': match_id,
             'set': set_num,
             'rally': rally_num,
@@ -337,6 +388,9 @@ class NaiveRAGEvaluator(BaseEvaluator):
                 rollout_limit=max_rollout_steps,
             ),
         }
+        if getattr(self, 'save_prompt_traces', False):
+            trajectory['_prompt_traces'] = prompt_traces
+        return trajectory
 
     def simulate(self, records=None):
         dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)

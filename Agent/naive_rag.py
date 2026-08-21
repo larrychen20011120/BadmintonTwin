@@ -938,7 +938,9 @@ class NaiveRAGAgent(BaseAgent):
     def __init__(self, player_name, database, model_name=None,
                  api_key=None, host=None, port=None, base_url=None,
                  host_url=None, normal_top_k=10, miss_top_k=5,
-                 conditioned_top_k=10, enable_tracing=True, prompt_variant="norm"):
+                 conditioned_top_k=10, enable_tracing=True, prompt_variant="norm",
+                 case_grounding=True, action_architecture="two_stage_v1",
+                 save_prompt_traces=False):
         """
         Initialize NaiveRAG Agent.
         
@@ -958,10 +960,37 @@ class NaiveRAGAgent(BaseAgent):
         self.miss_top_k = int(miss_top_k)
         self.conditioned_top_k = int(conditioned_top_k)
         if min(self.normal_top_k, self.miss_top_k, self.conditioned_top_k) < 1:
-            raise ValueError('Two-stage retrieval top-k values must all be positive')
-        self.retrieval_architecture = 'two_stage_v1'
+            raise ValueError('RAG retrieval top-k values must all be positive')
+        if action_architecture not in {'two_stage_v1', 'single_stage_v1'}:
+            raise ValueError(f'Unsupported action architecture: {action_architecture}')
+        if action_architecture == 'single_stage_v1' and case_grounding:
+            raise ValueError('Single-stage NaiveRAG supports direct output only')
+        self.retrieval_architecture = action_architecture
         self.prompt_variant = prompt_variant
-        self.tracer = BadmintonTracer("naive_rag", player_name, enable_tracing)
+        if not isinstance(case_grounding, bool):
+            raise TypeError('case_grounding must be a bool')
+        self.case_grounding = case_grounding
+        if action_architecture == 'single_stage_v1':
+            self.action_schema, self.action_schema_name = (
+                self.get_rag_single_stage_response_schema()
+            )
+        else:
+            self.stage1_schema, self.stage1_schema_name = self.get_rag_response_schema(
+                1, case_grounding
+            )
+            self.stage2_schema, self.stage2_schema_name = self.get_rag_response_schema(
+                2, case_grounding
+            )
+        tracer_name = (
+            'naive_rag_single_stage'
+            if action_architecture == 'single_stage_v1' else 'naive_rag'
+        )
+        self.tracer = BadmintonTracer(
+            tracer_name,
+            player_name,
+            enable_tracing,
+            capture_local=save_prompt_traces,
+        )
         
         # Trajectory tracking for current rally
         self.trajectory = []  # list of state_dicts for the current rally
@@ -984,18 +1013,28 @@ class NaiveRAGAgent(BaseAgent):
         
         # Load prompts
         prompt_root = os.path.join(project_path, "Prompts", "New")
-        prompt_dir = os.path.join(prompt_root, "naive_rag")
         template_suffix = 'instruct' if prompt_variant == 'shifted' else 'norm'
         if prompt_variant not in {'norm', 'shifted'}:
             raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
-
         with open(os.path.join(prompt_root, "simulate_system.md"), "r") as f:
             self.system_prompt = f.read()
-        
-        with open(os.path.join(prompt_dir, f'stage1_{template_suffix}.jinja'), "r") as f:
-            self.stage1_template = Template(f.read())
-        with open(os.path.join(prompt_dir, f'stage2_{template_suffix}.jinja'), "r") as f:
-            self.stage2_template = Template(f.read())
+
+        if action_architecture == 'single_stage_v1':
+            action_filename = (
+                'action_instruct.jinja'
+                if template_suffix == 'instruct' else 'action.jinja'
+            )
+            action_path = os.path.join(
+                prompt_root, 'naive_rag_single_stage', action_filename
+            )
+            with open(action_path, 'r', encoding='utf-8') as f:
+                self.action_template = Template(f.read())
+        else:
+            prompt_dir = os.path.join(prompt_root, "naive_rag")
+            with open(os.path.join(prompt_dir, f'stage1_{template_suffix}.jinja'), "r") as f:
+                self.stage1_template = Template(f.read())
+            with open(os.path.join(prompt_dir, f'stage2_{template_suffix}.jinja'), "r") as f:
+                self.stage2_template = Template(f.read())
 
     @staticmethod
     def _parse_llm_action(response):
@@ -1032,45 +1071,232 @@ class NaiveRAGAgent(BaseAgent):
         return references
 
     @staticmethod
+    def _stage1_assessment_references(case_assessments, normal_refs, miss_refs):
+        references = {'success': normal_refs, 'miss': miss_refs}
+        assessment_references = []
+        for annotation in case_assessments:
+            reference = dict(
+                references[annotation['source']][annotation['retrieval_rank'] - 1]
+            )
+            reference.update({
+                'source': annotation['source'],
+                'impact': annotation['impact'],
+                'factors': list(annotation['factors']),
+            })
+            assessment_references.append(reference)
+        return assessment_references
+
+    @staticmethod
+    def _stage2_assessment_references(case_assessments, stage2_refs):
+        assessment_references = []
+        for annotation in case_assessments:
+            reference = dict(stage2_refs[annotation['retrieval_rank'] - 1])
+            reference['impact'] = annotation['impact']
+            reference['factors'] = list(annotation['factors'])
+            assessment_references.append(reference)
+        return assessment_references
+
+    @staticmethod
     def _nearest_case(cases):
         if not cases:
             return None
         return min(cases, key=lambda case: (float(case['distance']), int(case['record_id'])))
 
     def _stage1_fallback(self, retrieval, launch):
-        candidates = retrieval['normal_cases'] + retrieval['miss_cases']
-        nearest = self._nearest_case(candidates)
+        case_assessments = []
+        if self.case_grounding:
+            case_assessments = [
+                {'source': 'success', 'retrieval_rank': rank,
+                 'impact': 'irrelevant', 'factors': ['assessment unavailable']}
+                for rank in range(1, len(retrieval['normal_cases']) + 1)
+            ] + [
+                {'source': 'miss', 'retrieval_rank': rank,
+                 'impact': 'irrelevant', 'factors': ['assessment unavailable']}
+                for rank in range(1, len(retrieval['miss_cases']) + 1)
+            ]
+        ranked_candidates = [
+            (case, 'success', rank)
+            for rank, case in enumerate(retrieval['normal_cases'], 1)
+        ] + [
+            (case, 'miss', rank)
+            for rank, case in enumerate(retrieval['miss_cases'], 1)
+        ]
+        nearest_entry = min(
+            ranked_candidates,
+            key=lambda item: (float(item[0]['distance']), int(item[0]['record_id'])),
+            default=None,
+        )
+        nearest = nearest_entry[0] if nearest_entry is not None else None
         if nearest is not None:
             shot_type = int(float(nearest['player_type']))
             outcome = 'missed' if shot_type == 11 else 'returned'
             return {
-                'rationale': 'Stage 1 fallback copied the nearest legal evidence outcome.',
+                'case_assessments': case_assessments,
                 'outcome': outcome,
                 'shot_type': shot_type,
             }, 'fallback_nearest_case'
         return {
-            'rationale': 'Stage 1 fallback used the deterministic legal default.',
+            'case_assessments': case_assessments,
             'outcome': 'returned',
             'shot_type': 1 if launch else 2,
         }, 'fallback_default'
 
     def _stage2_fallback(self, conditioned_cases):
+        case_assessments = (
+            [
+                {'retrieval_rank': rank, 'impact': 'irrelevant',
+                 'factors': ['assessment unavailable']}
+                for rank in range(1, len(conditioned_cases) + 1)
+            ]
+            if self.case_grounding else []
+        )
         nearest = self._nearest_case(conditioned_cases)
         if nearest is None:
             return {
-                'rationale': 'Stage 2 fallback used neutral placement because no conditioned evidence exists.',
+                'case_assessments': case_assessments,
                 'landing_x': 0.0,
                 'landing_y': 0.0,
                 'moving_x': 0.0,
                 'moving_y': 0.0,
             }, 'fallback_neutral'
         return {
-            'rationale': 'Stage 2 fallback copied placement from the nearest shot-conditioned case.',
+            'case_assessments': case_assessments,
             'landing_x': float(nearest['landing_x']),
             'landing_y': float(nearest['landing_y']),
             'moving_x': float(nearest['moving_x']),
             'moving_y': float(nearest['moving_y']),
         }, 'fallback_nearest_conditioned_case'
+
+    def _single_stage_fallback(self, retrieval, launch):
+        nearest = self._nearest_case(
+            retrieval['normal_cases'] + retrieval['miss_cases']
+        )
+        if nearest is None:
+            return {
+                'outcome': 'returned',
+                'shot_type': 1 if launch else 2,
+                'landing_x': 0.0,
+                'landing_y': 0.0,
+                'moving_x': 0.0,
+                'moving_y': 0.0,
+            }, 'fallback_default'
+        shot_type = int(float(nearest['player_type']))
+        if shot_type == 11:
+            return {
+                'outcome': 'missed',
+                'shot_type': 11,
+                'landing_x': None,
+                'landing_y': None,
+                'moving_x': None,
+                'moving_y': None,
+            }, 'fallback_nearest_case'
+        return {
+            'outcome': 'returned',
+            'shot_type': shot_type,
+            'landing_x': float(nearest['landing_x']),
+            'landing_y': float(nearest['landing_y']),
+            'moving_x': float(nearest['moving_x']),
+            'moving_y': float(nearest['moving_y']),
+        }, 'fallback_nearest_case'
+
+    def _predict_single_stage(self, state, state_dict, retrieval, context, launch,
+                              rally_profile_instruction=''):
+        normal_cases = self.verbalizer.build_stage2_cases(
+            retrieval['normal_cases'], is_serve=launch
+        )
+        miss_cases = self.verbalizer.build_stage2_cases(
+            retrieval['miss_cases'], is_serve=launch
+        )
+        prompt = self.action_template.render(
+            trajectory_text=context['trajectory_text'],
+            normal_cases=normal_cases,
+            miss_cases=miss_cases,
+            rally_profile_instruction=rally_profile_instruction,
+        )
+        available_types = self.database.available_shot_types(launch=launch)
+        started_at = time.time()
+        response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
+            self.llm,
+            system_prompt=self.system_prompt,
+            user_prompt=prompt,
+            schema=self.action_schema,
+            schema_name=self.action_schema_name,
+            max_trials=2,
+            validator=lambda candidate: BaseAgent.validate_rag_single_stage_response(
+                candidate, launch=launch, available_types=available_types
+            ),
+        )
+        self.tracer.log_generation(
+            self.system_prompt,
+            prompt,
+            response,
+            latency_ms=int((time.time() - started_at) * 1000),
+            raw_llm_output=raw_llm_output,
+            usage=usage,
+            stage='action',
+        )
+        parsed = BaseAgent.parse_rag_single_stage_response(
+            response, launch=launch, available_types=available_types
+        )
+        if parsed is None:
+            parsed, action_source = self._single_stage_fallback(retrieval, launch)
+        else:
+            action_source = 'llm'
+
+        shot_type = int(parsed['shot_type'])
+        if shot_type == 11:
+            landing_x = landing_y = moving_x = moving_y = 0.0
+        else:
+            landing_x = float(parsed['landing_x'])
+            landing_y = float(parsed['landing_y'])
+            moving_x = float(parsed['moving_x'])
+            moving_y = float(parsed['moving_y'])
+        if self.trajectory:
+            self.trajectory[-1].update({
+                'player_type': shot_type,
+                'landing_x': landing_x,
+                'landing_y': landing_y,
+                'moving_x': moving_x,
+                'moving_y': moving_y,
+            })
+
+        action = (
+            shot_type,
+            state[-1] if len(state) > 0 else None,
+            [landing_x, landing_y],
+            [moving_x, moving_y],
+            [0.1] * 10,
+        )
+        normal_refs = self._case_references(retrieval['normal_cases'], 1, 'normal')
+        miss_refs = self._case_references(retrieval['miss_cases'], 1, 'miss')
+        case_ids = normal_refs + miss_refs
+        self._last_case_ids = case_ids
+        self.last_decision_trace = {
+            'schema_version': 6,
+            'architecture': 'single_stage_v1',
+            'case_grounding': False,
+            'outcome': parsed['outcome'],
+            'retrieval': {
+                'normal_case_ids': normal_refs,
+                'miss_case_ids': miss_refs,
+            },
+            'case_ids': case_ids,
+            'case_assessments': [],
+            'action': {
+                'shot_type': shot_type,
+                'landing_x': None if shot_type == 11 else landing_x,
+                'landing_y': None if shot_type == 11 else landing_y,
+                'moving_x': None if shot_type == 11 else moving_x,
+                'moving_y': None if shot_type == 11 else moving_y,
+            },
+            'action_source': action_source,
+        }
+        self.tracer.end_trace({
+            'shot_type': shot_type,
+            'landing': [landing_x, landing_y],
+            'movement': [moving_x, moving_y],
+        }, '')
+        return action, ''
     
     def predict(self, state, info, launch):
         """
@@ -1159,20 +1385,32 @@ class NaiveRAGAgent(BaseAgent):
         )
         experiences = retrieval_result['normal_cases'] + retrieval_result['miss_cases']
         t1 = time.time()
+        retrieval_stage = (
+            'single_stage'
+            if self.retrieval_architecture == 'single_stage_v1' else 'stage1'
+        )
         self.tracer.log_retrieval(
-            state_dict, experiences, "naive_rag", int((t1 - t0) * 1000), stage='stage1'
+            state_dict,
+            experiences,
+            'naive_rag',
+            int((t1 - t0) * 1000),
+            stage=retrieval_stage,
         )
         
-        # Build context for LLM using verbalizer
-        rally_history = info.get('rally_history')
-        if rally_history is not None:
-            state_history = self._normalize_history_for_player(rally_history)
-        else:
-            state_history = self.trajectory[:-1] if len(self.trajectory) > 1 else None
+        # Point retrieval compares the current decision state with point cases.
         context = self.verbalizer.build_prompt_context_nl(
-            state_dict, [], launch=launch, state_history=state_history
+            state_dict, [], launch=launch, state_history=None
         )
         available_types = self.database.available_shot_types(launch=launch)
+        if self.retrieval_architecture == 'single_stage_v1':
+            return self._predict_single_stage(
+                state,
+                state_dict,
+                retrieval_result,
+                context,
+                launch,
+                info.get('rally_profile_instruction', ''),
+            )
         stage1_context = {
             **context,
             'normal_cases': self.verbalizer.build_stage1_cases(
@@ -1182,18 +1420,31 @@ class NaiveRAGAgent(BaseAgent):
                 retrieval_result['miss_cases']
             ),
             'rally_profile_instruction': info.get('rally_profile_instruction', ''),
+            'case_grounding': self.case_grounding,
         }
         stage1_prompt = self.stage1_template.render(**stage1_context)
+        stage1_schema = (
+            BaseAgent.constrain_case_assessment_count(
+                self.stage1_schema,
+                len(retrieval_result['normal_cases']) + len(retrieval_result['miss_cases']),
+            )
+            if self.case_grounding else self.stage1_schema
+        )
         t0 = time.time()
         stage1_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
             self.llm,
             system_prompt=self.system_prompt,
             user_prompt=stage1_prompt,
-            max_trials=5,
+            schema=stage1_schema,
+            schema_name=self.stage1_schema_name,
+            max_trials=2,
             validator=lambda response: BaseAgent.validate_rag_stage1_response(
                 response,
                 launch=launch,
                 available_types=available_types,
+                case_grounding=self.case_grounding,
+                normal_cases=retrieval_result['normal_cases'],
+                miss_cases=retrieval_result['miss_cases'],
             ),
         )
         t1 = time.time()
@@ -1208,6 +1459,9 @@ class NaiveRAGAgent(BaseAgent):
             stage1_response,
             launch=launch,
             available_types=available_types,
+            case_grounding=self.case_grounding,
+            normal_cases=retrieval_result['normal_cases'],
+            miss_cases=retrieval_result['miss_cases'],
         )
         if stage1 is None:
             stage1, stage1_source = self._stage1_fallback(retrieval_result, launch)
@@ -1220,18 +1474,21 @@ class NaiveRAGAgent(BaseAgent):
         stage1_miss_refs = self._case_references(
             retrieval_result['miss_cases'], 1, 'miss'
         )
+        stage1_assessment_refs = self._stage1_assessment_references(
+            stage1['case_assessments'], stage1_normal_refs, stage1_miss_refs
+        )
         shot_type = int(stage1['shot_type'])
         stage2_refs = []
+        stage2_assessment_refs = []
         if shot_type == 11:
             landing_x = landing_y = moving_x = moving_y = 0.0
             stage2 = {
                 'status': 'skipped_missed',
                 'conditioned_shot_type': None,
                 'case_ids': [],
-                'rationale': '',
+                'case_assessments': [],
                 'source': 'skipped',
             }
-            reasoning = stage1['rationale']
         else:
             t0 = time.time()
             conditioned_cases = self.database.retrieve_by_shot_type(
@@ -1254,20 +1511,34 @@ class NaiveRAGAgent(BaseAgent):
                 state_dict,
                 conditioned_cases,
                 launch=launch,
-                state_history=state_history,
+                state_history=None,
             )
             stage2_context.update({
                 'conditioned_cases': stage2_context['cases'],
                 'selected_shot_type': INDEX2EN_SHOT[shot_type],
                 'rally_profile_instruction': info.get('rally_profile_instruction', ''),
+                'case_grounding': self.case_grounding,
             })
             stage2_prompt = self.stage2_template.render(**stage2_context)
+            stage2_schema = (
+                BaseAgent.constrain_case_assessment_count(
+                    self.stage2_schema, len(conditioned_cases)
+                )
+                if self.case_grounding else self.stage2_schema
+            )
             t0 = time.time()
             stage2_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
                 self.llm,
                 system_prompt=self.system_prompt,
                 user_prompt=stage2_prompt,
-                max_trials=5,
+                schema=stage2_schema,
+                schema_name=self.stage2_schema_name,
+                max_trials=2,
+                validator=lambda response: BaseAgent.validate_rag_stage2_response(
+                    response,
+                    case_grounding=self.case_grounding,
+                    conditioned_cases=conditioned_cases,
+                ),
             )
             t1 = time.time()
             self.tracer.log_generation(
@@ -1279,7 +1550,11 @@ class NaiveRAGAgent(BaseAgent):
                 usage=usage,
                 stage='stage2',
             )
-            placement = BaseAgent.parse_rag_stage2_response(stage2_response)
+            placement = BaseAgent.parse_rag_stage2_response(
+                stage2_response,
+                case_grounding=self.case_grounding,
+                conditioned_cases=conditioned_cases,
+            )
             if placement is None:
                 placement, stage2_source = self._stage2_fallback(conditioned_cases)
             else:
@@ -1294,14 +1569,17 @@ class NaiveRAGAgent(BaseAgent):
                 'shot_conditioned',
                 conditioned_shot_type=shot_type,
             )
+            stage2_assessment_refs = self._stage2_assessment_references(
+                placement['case_assessments'], stage2_refs
+            )
             stage2 = {
                 'status': 'completed',
                 'conditioned_shot_type': shot_type,
                 'case_ids': stage2_refs,
-                'rationale': placement['rationale'],
+                'case_assessments': stage2_assessment_refs,
                 'source': stage2_source,
             }
-            reasoning = f"Stage 1: {stage1['rationale']} Stage 2: {placement['rationale']}"
+        reasoning = ''
         
         # Update the last trajectory state with the actual player_type and landing/moving
         # This ensures the next iteration will show the correct shot info in history
@@ -1328,21 +1606,23 @@ class NaiveRAGAgent(BaseAgent):
             "movement": [moving_x, moving_y],
         }, reasoning)
         all_case_ids = stage1_normal_refs + stage1_miss_refs + stage2_refs
+        all_case_assessments = stage1_assessment_refs + stage2_assessment_refs
         self._last_case_ids = all_case_ids
         self.last_decision_trace = {
-            'schema_version': 2,
+            'schema_version': 6,
             'architecture': self.retrieval_architecture,
+            'case_grounding': self.case_grounding,
             'stage1': {
                 'normal_case_ids': stage1_normal_refs,
                 'miss_case_ids': stage1_miss_refs,
+                'case_assessments': stage1_assessment_refs,
                 'outcome': stage1['outcome'],
                 'shot_type': None if shot_type == 11 else shot_type,
-                'rationale': stage1['rationale'],
                 'source': stage1_source,
             },
             'stage2': stage2,
             'case_ids': all_case_ids,
-            'rationale': reasoning,
+            'case_assessments': all_case_assessments,
             'action': {
                 'shot_type': int(shot_type),
                 'landing_x': None if shot_type == 11 else float(landing_x),

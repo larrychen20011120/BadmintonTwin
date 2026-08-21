@@ -2,6 +2,7 @@ import os
 import time
 import json
 import sys
+import copy
 
 project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.append(project_path)
@@ -49,13 +50,17 @@ def simplify_naive_rag_experiences(experiences, stage=None):
     simplified = []
     for exp in experiences:
         verbalization = exp.get("case_verbalization", {})
-        description = verbalization.get(f"{stage}_description") if stage else None
+        description_stage = "stage2" if stage == "single_stage" else stage
+        description = (
+            verbalization.get(f"{description_stage}_description")
+            if description_stage else None
+        )
         if stage is not None:
             simplified.append({
                 "record_id": exp.get("record_id"),
                 "similarity": round(exp.get("similarity", 0), 4),
                 "distance": round(exp.get("distance", 0), 4),
-                f"{stage}_description": (
+                f"{description_stage}_description": (
                     description or "Stage-specific description unavailable."
                 ),
             })
@@ -92,13 +97,17 @@ def simplify_timerag_windows(windows, stage=None):
     simplified = []
     for win in windows:
         verbalization = win.get("case_verbalization", {})
-        description = verbalization.get(f"{stage}_description") if stage else None
+        description_stage = "stage2" if stage == "single_stage" else stage
+        description = (
+            verbalization.get(f"{description_stage}_description")
+            if description_stage else None
+        )
         if stage is not None:
             simplified.append({
                 "window_id": win.get("window_id"),
                 "similarity": round(win.get("similarity", 0), 4),
                 "distance": round(win.get("distance", 0), 4),
-                f"{stage}_description": (
+                f"{description_stage}_description": (
                     description or "Stage-specific description unavailable."
                 ),
             })
@@ -143,52 +152,79 @@ def simplify_timerag_windows(windows, stage=None):
 
 def simplify_twin_segments(segments):
     """Summarize current aspect-memory retrieval results."""
-    return [
-        {
+    simplified = []
+    for memory in segments:
+        item = {
             "memory_id": memory.get("memory_id"),
             "shot_type": memory.get("player_type"),
             "outcome": memory.get("outcome_type"),
             "score": round(memory.get("score", 0), 4),
             "state_similarity": round(memory.get("state_similarity", 0), 4),
-            "semantic_similarity": round(memory.get("semantic_similarity", 0), 4),
-            "semantic_text": memory.get("semantic_text", ""),
         }
-        for memory in segments
-    ]
+        if "distance" in memory:
+            item["distance"] = round(memory["distance"], 4)
+        if "retrieval_mode" in memory:
+            item["retrieval_mode"] = memory["retrieval_mode"]
+        if "semantic_similarity" in memory:
+            item["semantic_similarity"] = round(
+                memory["semantic_similarity"], 4
+            )
+        if "semantic_text" in memory:
+            item["semantic_text"] = memory["semantic_text"]
+        simplified.append(item)
+    return simplified
 
 
 class BadmintonTracer:
-    def __init__(self, agent_name, player_name, enable_tracing=True):
+    def __init__(self, agent_name, player_name, enable_tracing=True,
+                 capture_local=False):
         self.agent_name = agent_name
         self.player_name = player_name
         self.enable_tracing = enable_tracing
         self.client = None
+        self.capture_local = bool(capture_local)
         if enable_tracing:
             self.client = _get_langfuse_client()
         self._active_trace = None
+        self._active_local_trace = None
+        self._last_local_trace = None
 
     @property
     def enabled(self):
         return self.enable_tracing and self.client is not None
 
     def start_trace(self, state_dict, info, launch):
+        rally = info.get("rally", 0)
+        ball_round = info.get("round", [1])[-1] if isinstance(info.get("round"), list) else info.get("round", 1)
+        player_score = info.get("score", [0, 0])[0] if info.get("score") else 0
+        opponent_score = info.get("score", [0, 0])[1] if info.get("score") else 0
+
+        trace_input = {
+            "shot_type": state_dict.get("opponent_type", "?"),
+            "player_area": state_dict.get("player_location_area", "?"),
+            "opponent_area": state_dict.get("opponent_location_area", "?"),
+            "hit_area": state_dict.get("hit_position_area", "?"),
+            "launch": bool(launch),
+        }
+        if self.capture_local:
+            self._active_local_trace = {
+                "agent": self.agent_name,
+                "player": self.player_name,
+                "match_id": info.get("match_id"),
+                "set": info.get("set"),
+                "rally": rally,
+                "ball_round": ball_round,
+                "score": [player_score, opponent_score],
+                "launch": bool(launch),
+                "input": copy.deepcopy(trace_input),
+                "retrievals": [],
+                "generations": [],
+            }
+
         if not self.enabled:
             return None
 
         try:
-            rally = info.get("rally", 0)
-            ball_round = info.get("round", [1])[-1] if isinstance(info.get("round"), list) else info.get("round", 1)
-            player_score = info.get("score", [0, 0])[0] if info.get("score") else 0
-            opponent_score = info.get("score", [0, 0])[1] if info.get("score") else 0
-
-            trace_input = {
-                "shot_type": state_dict.get("opponent_type", "?"),
-                "player_area": state_dict.get("player_location_area", "?"),
-                "opponent_area": state_dict.get("opponent_location_area", "?"),
-                "hit_area": state_dict.get("hit_position_area", "?"),
-                "launch": launch,
-            }
-
             trace_id = self.client.create_trace_id()
             self._active_trace = self.client.start_observation(
                 trace_context={"trace_id": trace_id},
@@ -209,15 +245,20 @@ class BadmintonTracer:
             return None
 
     def log_retrieval(self, query, results, result_type, latency_ms=0, stage=None):
-        if not self.enabled or self._active_trace is None:
+        if not self.capture_local and (not self.enabled or self._active_trace is None):
             return
 
         try:
+            opponent_shot = query.get("opponent_type", 0)
+            try:
+                opponent_shot = int(opponent_shot)
+            except (TypeError, ValueError):
+                pass
             query_simple = {
                 "player_area": query.get("player_location_area", "?"),
                 "opponent_area": query.get("opponent_location_area", "?"),
                 "hit_area": query.get("hit_position_area", "?"),
-                "opponent_shot": int(query.get("opponent_type", 0)),
+                "opponent_shot": opponent_shot,
             }
 
             if result_type == "naive_rag":
@@ -228,6 +269,19 @@ class BadmintonTracer:
                 simplified = simplify_twin_segments(results)
             else:
                 simplified = results
+
+            if self.capture_local and self._active_local_trace is not None:
+                self._active_local_trace["retrievals"].append({
+                    "stage": stage or "retrieval",
+                    "type": result_type,
+                    "query": copy.deepcopy(query),
+                    "count": len(simplified),
+                    "cases": copy.deepcopy(simplified),
+                    "latency_ms": int(latency_ms),
+                })
+
+            if not self.enabled or self._active_trace is None:
+                return
 
             span = self._active_trace.start_observation(
                 name=f"{stage}-retrieval" if stage else "retrieval",
@@ -241,6 +295,16 @@ class BadmintonTracer:
 
     def log_generation(self, system_prompt, user_prompt, response, latency_ms=0,
                        raw_llm_output="", usage=None, stage=None):
+        if self.capture_local and self._active_local_trace is not None:
+            self._active_local_trace["generations"].append({
+                "stage": stage or "generation",
+                "user_prompt": user_prompt,
+                "parsed_response": copy.deepcopy(response),
+                "raw_output": raw_llm_output or "",
+                "usage": copy.deepcopy(usage or {}),
+                "latency_ms": int(latency_ms),
+            })
+
         if not self.enabled or self._active_trace is None:
             return
 
@@ -269,6 +333,12 @@ class BadmintonTracer:
             print(f"[Langfuse] log_generation error: {e}")
 
     def end_trace(self, action_dict, reasoning):
+        if self.capture_local and self._active_local_trace is not None:
+            self._active_local_trace["final_action"] = copy.deepcopy(action_dict)
+            self._active_local_trace["reasoning"] = reasoning or ""
+            self._last_local_trace = self._active_local_trace
+            self._active_local_trace = None
+
         if not self.enabled or self._active_trace is None:
             return
 
@@ -284,3 +354,8 @@ class BadmintonTracer:
             print(f"[Langfuse] end_trace error: {e}")
         finally:
             self._active_trace = None
+
+    def consume_local_trace(self):
+        trace = self._last_local_trace
+        self._last_local_trace = None
+        return trace

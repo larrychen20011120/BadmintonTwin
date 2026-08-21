@@ -8,6 +8,7 @@ vllm serve Qwen/Qwen3.5-4B \
     --generation-config vllm \
     --default-chat-template-kwargs '{"enable_thinking": false}' \
     --reasoning-parser qwen3 \
+    --structured-outputs-config.backend xgrammar \
     --enable-force-include-usage \
     --language-model-only \
     --enable-prefix-caching

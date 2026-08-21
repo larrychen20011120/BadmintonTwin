@@ -53,7 +53,8 @@ class TwinEvaluator(BaseEvaluator):
                  train_split_path=None, conditioned_top_k=None, lambda_weight=None,
                  enable_tracing=True, save_trajectories=False, output_experiment=None,
                  all_rallies=False,
-                 instruction_mode="no_instruct"):
+                 instruction_mode="no_instruct", case_grounding=True,
+                 save_prompt_traces=False):
         if instruction_mode not in {"instruct", "no_instruct"}:
             raise ValueError("instruction_mode must be instruct or no_instruct")
         super().__init__(
@@ -68,6 +69,8 @@ class TwinEvaluator(BaseEvaluator):
         )
         self.all_rallies = all_rallies
         self.instruction_mode = instruction_mode
+        self.case_grounding = bool(case_grounding)
+        self.save_prompt_traces = bool(save_prompt_traces)
         self.train_split_path = train_split_path or self.config["paths"]["rally_split"]
 
         twin_config = self.config.get("twin", {})
@@ -84,6 +87,12 @@ class TwinEvaluator(BaseEvaluator):
         self.lambda_weight = float(
             lambda_weight if lambda_weight is not None else twin_config.get("lambda_weight", 0.5)
         )
+        self.semantic_start_ball_round = int(
+            twin_config.get("semantic_start_ball_round", 3)
+        )
+        self.online_terminal_aspect_repair = twin_config.get(
+            "online_terminal_aspect_repair", True
+        )
         required_top_k = [self.normal_top_k, self.miss_top_k]
         if self.uses_conditioned_retrieval:
             required_top_k.append(self.conditioned_top_k)
@@ -91,6 +100,10 @@ class TwinEvaluator(BaseEvaluator):
             raise ValueError("Twin retrieval top-k values must all be positive")
         if not 0.0 <= self.lambda_weight <= 1.0:
             raise ValueError("Twin lambda_weight must be between 0 and 1")
+        if self.semantic_start_ball_round < 1:
+            raise ValueError("Twin semantic_start_ball_round must be at least 1")
+        if not isinstance(self.online_terminal_aspect_repair, bool):
+            raise TypeError("Twin online_terminal_aspect_repair must be a bool")
 
         self.embedding_settings = resolve_embedding_settings(config=self.config)
         self.embedding_provider = self.embedding_settings["provider"]
@@ -151,6 +164,9 @@ class TwinEvaluator(BaseEvaluator):
                 ("embedding_provider", self.embedding_provider),
                 ("embedding_model", self.embedding_model_name),
                 ("instruction_mode", self.instruction_mode),
+                ("case_grounding", self.case_grounding),
+                ("semantic_start_ball_round", self.semantic_start_ball_round),
+                ("online_terminal_aspect_repair", self.online_terminal_aspect_repair),
             ],
         )
 
@@ -230,6 +246,10 @@ class TwinEvaluator(BaseEvaluator):
             instruction_mode=self.instruction_mode,
             embedding_provider=self.embedding_provider,
             embedding_dimension=self.embedding_dimension,
+            case_grounding=self.case_grounding,
+            save_prompt_traces=self.save_prompt_traces,
+            semantic_start_ball_round=self.semantic_start_ball_round,
+            online_terminal_aspect_repair=self.online_terminal_aspect_repair,
         )
 
     def _get_agent(self, player_name):
@@ -329,6 +349,7 @@ class TwinEvaluator(BaseEvaluator):
         current_state = torch.tensor(state_values, dtype=torch.float32)
         termination_reason = "max_rollout_reached"
         last_action = None
+        prompt_traces = []
 
         while len(pred_sequence) < rollout_limit:
             player_id = int(current_state[17].item())
@@ -338,6 +359,7 @@ class TwinEvaluator(BaseEvaluator):
             opponent = next(player for player in players if player != current_player)
             info = self.build_rollout_info(match_id, rally_num, current_state, last_action)
             info.update({
+                "set": set_num,
                 "current_player_name": current_player,
                 "opponent_player_name": opponent,
                 "rally_history": list(rally_history),
@@ -350,13 +372,34 @@ class TwinEvaluator(BaseEvaluator):
                 info,
                 launch=ball_round == 1,
             )
+            prompt_trace = None
+            if getattr(self, "save_prompt_traces", False):
+                prompt_trace = agents[current_player].tracer.consume_local_trace()
+                if prompt_trace is None:
+                    raise RuntimeError("Missing local prompt trace for generated action")
             if action is None:
+                if prompt_trace is not None:
+                    prompt_trace["action_source"] = "action_none"
+                    prompt_trace["fallback_source"] = None
+                    prompt_traces.append(prompt_trace)
                 termination_reason = "action_none"
                 break
             output_shot, _, output_land, output_move, _ = action
             landing = [float(output_land[0]), float(output_land[1])]
             moving = [float(output_move[0]), float(output_move[1])]
             decision = dict(agents[current_player].last_decision_trace or {})
+            if prompt_trace is not None:
+                action_source = decision.get("action_source", "agent")
+                fallback_source = decision.get("fallback_source")
+                if fallback_source is None:
+                    fallback_parts = [
+                        part for part in action_source.split("+")
+                        if part.startswith("fallback")
+                    ]
+                    fallback_source = "+".join(fallback_parts) or None
+                prompt_trace["action_source"] = action_source
+                prompt_trace["fallback_source"] = fallback_source
+                prompt_traces.append(prompt_trace)
             pred_sequence.append(build_pred_shot(
                 current_player,
                 int(output_shot),
@@ -378,7 +421,7 @@ class TwinEvaluator(BaseEvaluator):
 
         for agent in agents.values():
             agent.on_rally_end(rally_history)
-        return {
+        trajectory = {
             "match_id": match_id,
             "set": set_num,
             "rally": rally_num,
@@ -399,6 +442,9 @@ class TwinEvaluator(BaseEvaluator):
                 rollout_limit=rollout_limit,
             ),
         }
+        if getattr(self, "save_prompt_traces", False):
+            trajectory["_prompt_traces"] = prompt_traces
+        return trajectory
 
     def simulate(self, records=None):
         dataset = load_rally_dataset(self.test_split_path, self.rally_profiles_path)

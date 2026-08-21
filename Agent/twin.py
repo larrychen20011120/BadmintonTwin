@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 import time
+import copy
 
 import numpy as np
 import pandas as pd
@@ -966,6 +967,58 @@ class TwinDatabase:
             results.append(memory)
         return results
 
+    def _retrieve_state_only_from_indices(self, query_state, indices, top_k=5):
+        """Retrieve with Twin's numeric state metric and no semantic artifacts."""
+        if not self.memories:
+            return []
+        indices = list(indices)
+        if not indices:
+            return []
+        continuous, discrete = self._feature_arrays(indices)
+        query_continuous = np.array([
+            safe_float(query_state.get(key)) for key in self.continuous_keys
+        ], dtype=np.float32)
+        query_discrete = np.array([
+            safe_float(query_state.get(key)) for key in self.discrete_keys
+        ], dtype=np.float32)
+        continuous_dist = np.sqrt(
+            np.sum((continuous - query_continuous) ** 2, axis=1)
+        )
+        discrete_dist = np.mean(discrete != query_discrete, axis=1)
+        distances = continuous_dist + discrete_dist
+        state_similarity = np.exp(-distances)
+        ranked = sorted(
+            range(len(indices)),
+            key=lambda local_idx: (
+                float(distances[local_idx]),
+                int(indices[local_idx]),
+            ),
+        )[:top_k]
+
+        semantic_fields = {
+            "semantic_text",
+            "my_tactical_pattern",
+            "my_tempo_movement_dynamics",
+            "opponent_tactical_pattern",
+            "opponent_tempo_movement_dynamics",
+            "semantic_similarity",
+            "context_text",
+        }
+        results = []
+        for local_idx in ranked:
+            memory_idx = int(indices[local_idx])
+            memory = {
+                key: value
+                for key, value in self.memories[memory_idx].items()
+                if key not in semantic_fields
+            }
+            memory["distance"] = float(distances[local_idx])
+            memory["score"] = float(state_similarity[local_idx])
+            memory["state_similarity"] = float(state_similarity[local_idx])
+            memory["retrieval_mode"] = "state_only"
+            results.append(memory)
+        return results
+
     def retrieve(self, query_state, query_embedding, top_k=5, lambda_weight=0.5):
         return self._retrieve_from_indices(
             query_state,
@@ -1027,6 +1080,44 @@ class TwinDatabase:
             launch=launch,
         )
 
+    def retrieve_state_only_stage1(self, query_state, normal_top_k=10, miss_top_k=5,
+                                   launch=False):
+        legal_types = {1, 10} if launch else set(range(2, 10))
+        normal_indices = [
+            idx for idx in self.memory_stores.get("normal", [])
+            if safe_int(self.memories[idx].get("player_type")) in legal_types
+        ]
+        normal_memories = self._retrieve_state_only_from_indices(
+            query_state, normal_indices, top_k=normal_top_k
+        )
+        miss_memories = self._retrieve_state_only_from_indices(
+            query_state,
+            self.memory_stores.get("miss", []),
+            top_k=miss_top_k,
+        )
+        nearest_normal = normal_memories[0] if normal_memories else {}
+        nearest_miss = miss_memories[0] if miss_memories else {}
+        return {
+            "normal_cases": normal_memories,
+            "miss_cases": miss_memories,
+            "summary": {
+                **self.stats,
+                "retrieval_mode": "state_only",
+                "normal_top_k": int(normal_top_k),
+                "miss_top_k": int(miss_top_k),
+                "retrieved_normal_count": int(len(normal_memories)),
+                "retrieved_miss_count": int(len(miss_memories)),
+                "nearest_normal_score": nearest_normal.get("score"),
+                "nearest_miss_score": nearest_miss.get("score"),
+                "nearest_normal_state_similarity": nearest_normal.get(
+                    "state_similarity"
+                ),
+                "nearest_miss_state_similarity": nearest_miss.get(
+                    "state_similarity"
+                ),
+            },
+        }
+
     def available_shot_types(self, launch=False):
         legal_types = {1, 10} if launch else set(range(2, 10))
         return sorted({
@@ -1055,6 +1146,29 @@ class TwinDatabase:
             indices,
             top_k=top_k,
             lambda_weight=lambda_weight,
+        )
+
+    def retrieve_state_only_by_shot_type(self, query_state, shot_type, top_k=10):
+        shot_type = safe_int(shot_type)
+        if shot_type == 11:
+            raise ValueError("Missed shot cannot be used for Twin Stage 2 retrieval")
+        coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
+        indices = []
+        for idx in self.memory_stores.get("normal", []):
+            memory = self.memories[idx]
+            if safe_int(memory.get("player_type")) != shot_type:
+                continue
+            coordinates = [
+                safe_float(memory.get(key), default=np.nan)
+                for key in coordinate_keys
+            ]
+            if all(
+                np.isfinite(value) and -1.0 <= value <= 1.0
+                for value in coordinates
+            ):
+                indices.append(idx)
+        return self._retrieve_state_only_from_indices(
+            query_state, indices, top_k=top_k
         )
 
     def save(self, filepath):
@@ -1130,7 +1244,9 @@ class TwinAgent(BaseAgent):
                  normalize_embeddings=True, embedding_dtype="float32",
                  embedding_model=None, enable_tracing=True,
                  instruction_mode="no_instruct", embedding_provider="local",
-                 embedding_dimension=None):
+                 embedding_dimension=None, case_grounding=True,
+                 save_prompt_traces=False, semantic_start_ball_round=3,
+                 online_terminal_aspect_repair=True):
         super().__init__(player_name)
         self.database = database
         self.normal_top_k = int(normal_top_k)
@@ -1144,9 +1260,21 @@ class TwinAgent(BaseAgent):
         if instruction_mode not in {"instruct", "no_instruct"}:
             raise ValueError("instruction_mode must be instruct or no_instruct")
         self.instruction_mode = instruction_mode
+        self.case_grounding = bool(case_grounding)
+        self.semantic_start_ball_round = int(semantic_start_ball_round)
+        if self.semantic_start_ball_round < 1:
+            raise ValueError("semantic_start_ball_round must be at least 1")
+        if not isinstance(online_terminal_aspect_repair, bool):
+            raise TypeError("online_terminal_aspect_repair must be a bool")
+        self.online_terminal_aspect_repair = online_terminal_aspect_repair
         self.retrieval_architecture = "two_stage_v1"
         self.pre_stage_architecture = "twin_aspect_v1"
-        self.tracer = BadmintonTracer("twin", player_name, enable_tracing)
+        self.tracer = BadmintonTracer(
+            "twin",
+            player_name,
+            enable_tracing,
+            capture_local=save_prompt_traces,
+        )
         self.verbalizer = NaiveRAGVerbalizer()
         self.embedding_model_name = embedding_model_name
         self.embedding_provider = embedding_provider
@@ -1191,6 +1319,12 @@ class TwinAgent(BaseAgent):
             self.stage2_template = Template(f.read())
         with open(os.path.join(prompt_dir, "aspect_user.jinja"), "r") as f:
             self.aspect_template = Template(f.read())
+        self.stage1_response_schema, self.stage1_schema_name = (
+            BaseAgent.get_rag_response_schema(1, self.case_grounding)
+        )
+        self.stage2_response_schema, self.stage2_schema_name = (
+            BaseAgent.get_rag_response_schema(2, self.case_grounding)
+        )
 
     def _build_state_dict_from_env(self, state, info):
         player_score = info["score"][0] if info.get("score") else 0
@@ -1246,6 +1380,77 @@ class TwinAgent(BaseAgent):
             last_round,
         )
 
+    @staticmethod
+    def _repair_online_terminal_aspects(annotation, first_round, last_round):
+        """Extend only otherwise-valid aspects that omit exactly the last round."""
+        if (
+            not isinstance(annotation, dict)
+            or set(annotation) != {"aspect_segments"}
+            or not isinstance(annotation.get("aspect_segments"), dict)
+            or first_round > last_round
+        ):
+            return annotation, []
+        aspect_names = (
+            "my_tactical_pattern",
+            "my_tempo_movement_dynamics",
+            "opponent_tactical_pattern",
+            "opponent_tempo_movement_dynamics",
+        )
+        if set(annotation["aspect_segments"]) != set(aspect_names):
+            return annotation, []
+
+        repaired = copy.deepcopy(annotation)
+        repaired_aspects = []
+        for aspect in aspect_names:
+            segments = repaired["aspect_segments"].get(aspect)
+            if not isinstance(segments, list) or not segments:
+                return annotation, []
+            expected_start = first_round
+            for segment in segments:
+                if not isinstance(segment, dict) or set(segment) != {"range", "phase"}:
+                    return annotation, []
+                interval = segment.get("range")
+                if (
+                    not isinstance(interval, list)
+                    or len(interval) != 2
+                    or any(
+                        isinstance(value, bool) or not isinstance(value, int)
+                        for value in interval
+                    )
+                ):
+                    return annotation, []
+                start, end = interval
+                phase = segment.get("phase")
+                if (
+                    start != expected_start
+                    or end < start
+                    or end > last_round
+                    or not isinstance(phase, str)
+                    or not phase.strip()
+                    or len(phase.split()) > 20
+                ):
+                    return annotation, []
+                expected_start = end + 1
+            final_end = segments[-1]["range"][1]
+            if final_end == last_round:
+                continue
+            if final_end != last_round - 1:
+                return annotation, []
+            segments[-1]["range"][1] = last_round
+            repaired_aspects.append(aspect)
+
+        if not TwinDatabase._validate_aspect_segments(
+            repaired, first_round, last_round
+        ):
+            return annotation, []
+        return repaired, repaired_aspects
+
+    def _semantic_enabled(self, state_dict):
+        return (
+            max(1, safe_int(state_dict.get("ball_round"), 1))
+            >= self.semantic_start_ball_round
+        )
+
     def _estimate_aspects(self, state_dict, state_history):
         current_round = max(1, safe_int(state_dict.get("ball_round"), 1))
         prefix = [
@@ -1266,12 +1471,24 @@ class TwinAgent(BaseAgent):
             last_ball_round=current_round,
         )
 
+        repair_metadata = {"aspects": []}
+
         def validator(value):
-            return self._validate_aspect_response(
-                value,
-                first_round,
-                current_round,
-            )
+            candidate = value
+            repaired_aspects = []
+            if self.online_terminal_aspect_repair:
+                candidate, repaired_aspects = self._repair_online_terminal_aspects(
+                    value, first_round, current_round
+                )
+            if not self._validate_aspect_response(
+                candidate, first_round, current_round
+            ):
+                return False
+            if repaired_aspects:
+                value.clear()
+                value.update(candidate)
+                repair_metadata["aspects"] = repaired_aspects
+            return True
 
         t0 = time.time()
         response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
@@ -1290,9 +1507,12 @@ class TwinAgent(BaseAgent):
             usage=usage,
             stage="aspect",
         )
-        if validator(response):
+        if self._validate_aspect_response(response, first_round, current_round):
             annotation = response
-            source = "llm"
+            source = (
+                "llm_terminal_extension"
+                if repair_metadata["aspects"] else "llm"
+            )
         else:
             fallback_phases = {
                 "my_tactical_pattern": "Current tactical phase unknown",
@@ -1320,22 +1540,40 @@ class TwinAgent(BaseAgent):
             aspects["opponent_tactical_pattern"],
             aspects["opponent_tempo_movement_dynamics"],
         )
-        return aspects, source
-
-    def _format_stage1_cases(self, memories):
-        return [
-            {
-                "case_id": memory["memory_id"],
-                "stage1_description": self.verbalizer.build_case_verbalization(memory)["stage1_description"],
+        repair = None
+        if repair_metadata["aspects"]:
+            repair = {
+                "type": "extend_one_terminal_round",
+                "aspects": list(repair_metadata["aspects"]),
+                "from_round": current_round - 1,
+                "to_round": current_round,
             }
-            for memory in memories
-        ]
+        return aspects, source, repair
 
-    def _format_stage2_cases(self, memories):
+    def _format_stage1_cases(self, memories, include_semantics=True):
+        cases = []
+        for memory in memories:
+            description = self.verbalizer.build_case_verbalization(memory)["stage1_description"]
+            semantic_text = (
+                str(memory.get("semantic_text", "")).strip()
+                if include_semantics else ""
+            )
+            if semantic_text:
+                description = f"{description}\nTwin semantic context:\n{semantic_text}"
+            cases.append({
+                "case_id": memory["memory_id"],
+                "stage1_description": description,
+            })
+        return cases
+
+    def _format_stage2_cases(self, memories, include_semantics=True):
         cases = []
         for memory in memories:
             description = self.verbalizer.build_case_verbalization(memory)["stage2_description"]
-            semantic_text = str(memory.get("semantic_text", "")).strip()
+            semantic_text = (
+                str(memory.get("semantic_text", "")).strip()
+                if include_semantics else ""
+            )
             if semantic_text:
                 description = f"{description}\nTwin semantic context:\n{semantic_text}"
             cases.append({
@@ -1355,12 +1593,38 @@ class TwinAgent(BaseAgent):
                 "rank": rank,
                 "score": float(case["score"]),
                 "state_similarity": float(case["state_similarity"]),
-                "semantic_similarity": float(case["semantic_similarity"]),
             }
+            if "semantic_similarity" in case:
+                reference["semantic_similarity"] = float(
+                    case["semantic_similarity"]
+                )
+            if "distance" in case:
+                reference["distance"] = float(case["distance"])
             if conditioned_shot_type is not None:
                 reference["conditioned_shot_type"] = int(conditioned_shot_type)
             references.append(reference)
         return references
+
+    @staticmethod
+    def _map_case_assessments(case_assessments, reference_groups, stage):
+        mapped = []
+        for annotation in case_assessments or []:
+            if stage == 1:
+                source = annotation.get("source")
+                group = "normal" if source in {"success", "normal"} else "miss"
+            else:
+                group = "conditioned"
+            rank = safe_int(annotation.get("retrieval_rank"))
+            references = reference_groups.get(group, [])
+            if rank < 1 or rank > len(references):
+                continue
+            reference = dict(references[rank - 1])
+            if stage == 1:
+                reference["source"] = annotation.get("source")
+            reference["impact"] = annotation["impact"]
+            reference["factors"] = list(annotation["factors"])
+            mapped.append(reference)
+        return mapped
 
     @staticmethod
     def _nearest_case(cases):
@@ -1369,32 +1633,51 @@ class TwinAgent(BaseAgent):
         return max(cases, key=lambda case: (float(case["score"]), str(case["memory_id"])))
 
     def _stage1_fallback(self, retrieval, launch):
+        case_assessments = []
+        if self.case_grounding:
+            case_assessments = [
+                {"source": "success", "retrieval_rank": rank,
+                 "impact": "irrelevant", "factors": ["assessment unavailable"]}
+                for rank in range(1, len(retrieval["normal_cases"]) + 1)
+            ] + [
+                {"source": "miss", "retrieval_rank": rank,
+                 "impact": "irrelevant", "factors": ["assessment unavailable"]}
+                for rank in range(1, len(retrieval["miss_cases"]) + 1)
+            ]
         nearest = self._nearest_case(retrieval["normal_cases"] + retrieval["miss_cases"])
         if nearest is not None:
             shot_type = safe_int(nearest.get("player_type"))
             return {
-                "rationale": "Stage 1 fallback copied the nearest legal Twin memory outcome.",
+                "case_assessments": case_assessments,
                 "outcome": "missed" if shot_type == 11 else "returned",
                 "shot_type": shot_type,
             }, "fallback_nearest_case"
         return {
-            "rationale": "Stage 1 fallback used the deterministic legal default.",
+            "case_assessments": case_assessments,
             "outcome": "returned",
             "shot_type": 1 if launch else 2,
         }, "fallback_default"
 
     def _stage2_fallback(self, conditioned_cases):
+        case_assessments = (
+            [
+                {"retrieval_rank": rank, "impact": "irrelevant",
+                 "factors": ["assessment unavailable"]}
+                for rank in range(1, len(conditioned_cases) + 1)
+            ]
+            if self.case_grounding else []
+        )
         nearest = self._nearest_case(conditioned_cases)
         if nearest is None:
             return {
-                "rationale": "Stage 2 fallback used neutral placement because no conditioned Twin memory exists.",
+                "case_assessments": case_assessments,
                 "landing_x": 0.0,
                 "landing_y": 0.0,
                 "moving_x": 0.0,
                 "moving_y": 0.0,
             }, "fallback_neutral"
         return {
-            "rationale": "Stage 2 fallback copied placement from the nearest shot-conditioned Twin memory.",
+            "case_assessments": case_assessments,
             "landing_x": float(nearest["landing_x"]),
             "landing_y": float(nearest["landing_y"]),
             "moving_x": float(nearest["moving_x"]),
@@ -1416,29 +1699,46 @@ class TwinAgent(BaseAgent):
 
         self.tracer.start_trace(state_dict, info, launch)
         profile_instruction = info.get("rally_profile_instruction", "")
-        aspects, aspect_source = self._estimate_aspects(
-            state_dict,
-            state_history,
-        )
-        query_embedding = encode_texts(
-            self.embedding_model,
-            [aspects["semantic_query_text"]],
-            self.embedding_dim,
-            self.embedding_batch_size,
-            normalize_embeddings=self.normalize_embeddings,
-            input_type="query",
-            model_name=self.embedding_model_name,
-        )[0]
+        semantic_enabled = self._semantic_enabled(state_dict)
+        aspect_repair = None
+        if semantic_enabled:
+            aspects, aspect_source, aspect_repair = self._estimate_aspects(
+                state_dict,
+                state_history,
+            )
+            query_embedding = encode_texts(
+                self.embedding_model,
+                [aspects["semantic_query_text"]],
+                self.embedding_dim,
+                self.embedding_batch_size,
+                normalize_embeddings=self.normalize_embeddings,
+                input_type="query",
+                model_name=self.embedding_model_name,
+            )[0]
+            retrieval_mode = "state_semantic"
+        else:
+            aspects = {}
+            aspect_source = "skipped_early_round"
+            query_embedding = None
+            retrieval_mode = "state_only"
 
         t0 = time.time()
-        retrieval_result = self.database.retrieve_stage1(
-            state_dict,
-            query_embedding,
-            normal_top_k=self.normal_top_k,
-            miss_top_k=self.miss_top_k,
-            lambda_weight=self.lambda_weight,
-            launch=launch,
-        )
+        if semantic_enabled:
+            retrieval_result = self.database.retrieve_stage1(
+                state_dict,
+                query_embedding,
+                normal_top_k=self.normal_top_k,
+                miss_top_k=self.miss_top_k,
+                lambda_weight=self.lambda_weight,
+                launch=launch,
+            )
+        else:
+            retrieval_result = self.database.retrieve_state_only_stage1(
+                state_dict,
+                normal_top_k=self.normal_top_k,
+                miss_top_k=self.miss_top_k,
+                launch=launch,
+            )
         memories = retrieval_result["normal_cases"] + retrieval_result["miss_cases"]
         t1 = time.time()
         self.tracer.log_retrieval(
@@ -1446,26 +1746,46 @@ class TwinAgent(BaseAgent):
         )
 
         context = self.verbalizer.build_prompt_context_nl(
-            state_dict, [], launch=launch, state_history=state_history
+            state_dict, [], launch=launch, state_history=None
         )
         available_types = self.database.available_shot_types(launch=launch)
+        stage1_normal_cases = self._format_stage1_cases(
+            retrieval_result["normal_cases"], include_semantics=semantic_enabled
+        )
+        stage1_miss_cases = self._format_stage1_cases(
+            retrieval_result["miss_cases"], include_semantics=semantic_enabled
+        )
         stage1_prompt = self.stage1_template.render(
             trajectory_text=context["trajectory_text"],
-            semantic_query_text=aspects["semantic_query_text"],
-            normal_cases=self._format_stage1_cases(retrieval_result["normal_cases"]),
-            miss_cases=self._format_stage1_cases(retrieval_result["miss_cases"]),
+            semantic_enabled=semantic_enabled,
+            semantic_query_text=aspects.get("semantic_query_text", ""),
+            normal_cases=stage1_normal_cases,
+            miss_cases=stage1_miss_cases,
             rally_profile_instruction=profile_instruction,
+            case_grounding=self.case_grounding,
+        )
+        stage1_schema = (
+            BaseAgent.constrain_case_assessment_count(
+                self.stage1_response_schema,
+                len(retrieval_result["normal_cases"]) + len(retrieval_result["miss_cases"]),
+            )
+            if self.case_grounding else self.stage1_response_schema
         )
         t0 = time.time()
         stage1_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
             self.llm,
+            schema=stage1_schema,
+            schema_name=self.stage1_schema_name,
             system_prompt=self.system_prompt,
             user_prompt=stage1_prompt,
-            max_trials=5,
+            max_trials=2,
             validator=lambda response: BaseAgent.validate_rag_stage1_response(
                 response,
                 launch=launch,
                 available_types=available_types,
+                case_grounding=self.case_grounding,
+                normal_cases=retrieval_result["normal_cases"],
+                miss_cases=retrieval_result["miss_cases"],
             ),
         )
         t1 = time.time()
@@ -1480,6 +1800,9 @@ class TwinAgent(BaseAgent):
             stage1_response,
             launch=launch,
             available_types=available_types,
+            case_grounding=self.case_grounding,
+            normal_cases=retrieval_result["normal_cases"],
+            miss_cases=retrieval_result["miss_cases"],
         )
         if stage1 is None:
             stage1, stage1_source = self._stage1_fallback(retrieval_result, launch)
@@ -1492,7 +1815,13 @@ class TwinAgent(BaseAgent):
         stage1_miss_refs = self._case_references(
             retrieval_result["miss_cases"], 1, "miss"
         )
+        stage1_assessed = self._map_case_assessments(
+            stage1.get("case_assessments", []),
+            {"normal": stage1_normal_refs, "miss": stage1_miss_refs},
+            stage=1,
+        )
         stage2_refs = []
+        stage2_assessed = []
         shot_type = int(stage1["shot_type"])
         if shot_type == 11:
             landing_x = landing_y = moving_x = moving_y = 0.0
@@ -1500,19 +1829,25 @@ class TwinAgent(BaseAgent):
                 "status": "skipped_missed",
                 "conditioned_shot_type": None,
                 "case_ids": [],
-                "rationale": "",
+                "case_assessments": [],
                 "source": "skipped",
             }
-            reasoning = stage1["rationale"]
         else:
             t0 = time.time()
-            conditioned_cases = self.database.retrieve_by_shot_type(
-                state_dict,
-                query_embedding,
-                shot_type,
-                top_k=self.conditioned_top_k,
-                lambda_weight=self.lambda_weight,
-            )
+            if semantic_enabled:
+                conditioned_cases = self.database.retrieve_by_shot_type(
+                    state_dict,
+                    query_embedding,
+                    shot_type,
+                    top_k=self.conditioned_top_k,
+                    lambda_weight=self.lambda_weight,
+                )
+            else:
+                conditioned_cases = self.database.retrieve_state_only_by_shot_type(
+                    state_dict,
+                    shot_type,
+                    top_k=self.conditioned_top_k,
+                )
             if any(safe_int(case.get("player_type")) != shot_type for case in conditioned_cases):
                 raise ValueError("Twin shot-conditioned retrieval returned a different shot type")
             self.tracer.log_retrieval(
@@ -1522,19 +1857,37 @@ class TwinAgent(BaseAgent):
                 int((time.time() - t0) * 1000),
                 stage="stage2",
             )
+            stage2_cases = self._format_stage2_cases(
+                conditioned_cases, include_semantics=semantic_enabled
+            )
             stage2_prompt = self.stage2_template.render(
                 trajectory_text=context["trajectory_text"],
-                semantic_query_text=aspects["semantic_query_text"],
+                semantic_enabled=semantic_enabled,
+                semantic_query_text=aspects.get("semantic_query_text", ""),
                 selected_shot_type=INDEX2EN_SHOT[shot_type],
-                conditioned_cases=self._format_stage2_cases(conditioned_cases),
+                conditioned_cases=stage2_cases,
                 rally_profile_instruction=profile_instruction,
+                case_grounding=self.case_grounding,
+            )
+            stage2_schema = (
+                BaseAgent.constrain_case_assessment_count(
+                    self.stage2_response_schema, len(conditioned_cases)
+                )
+                if self.case_grounding else self.stage2_response_schema
             )
             t0 = time.time()
             stage2_response, raw_llm_output, usage = BaseAgent.get_verified_response_or_none(
                 self.llm,
+                schema=stage2_schema,
+                schema_name=self.stage2_schema_name,
                 system_prompt=self.system_prompt,
                 user_prompt=stage2_prompt,
-                max_trials=5,
+                max_trials=2,
+                validator=lambda response: BaseAgent.validate_rag_stage2_response(
+                    response,
+                    case_grounding=self.case_grounding,
+                    conditioned_cases=conditioned_cases,
+                ),
             )
             self.tracer.log_generation(
                 self.system_prompt,
@@ -1545,7 +1898,11 @@ class TwinAgent(BaseAgent):
                 usage=usage,
                 stage="stage2",
             )
-            placement = BaseAgent.parse_rag_stage2_response(stage2_response)
+            placement = BaseAgent.parse_rag_stage2_response(
+                stage2_response,
+                case_grounding=self.case_grounding,
+                conditioned_cases=conditioned_cases,
+            )
             if placement is None:
                 placement, stage2_source = self._stage2_fallback(conditioned_cases)
             else:
@@ -1560,14 +1917,19 @@ class TwinAgent(BaseAgent):
                 "shot_conditioned",
                 conditioned_shot_type=shot_type,
             )
+            stage2_assessed = self._map_case_assessments(
+                placement.get("case_assessments", []),
+                {"conditioned": stage2_refs},
+                stage=2,
+            )
             stage2 = {
                 "status": "completed",
                 "conditioned_shot_type": shot_type,
                 "case_ids": stage2_refs,
-                "rationale": placement["rationale"],
+                "case_assessments": stage2_assessed,
                 "source": stage2_source,
             }
-            reasoning = f"Stage 1: {stage1['rationale']} Stage 2: {placement['rationale']}"
+        reasoning = ""
 
         if self.trajectory:
             self.trajectory[-1].update({
@@ -1580,12 +1942,16 @@ class TwinAgent(BaseAgent):
         action = (shot_type, state[-1] if len(state) > 0 else None, [landing_x, landing_y], [moving_x, moving_y], [0.1] * 10)
         self.tracer.end_trace({"shot_type": int(shot_type), "landing": [landing_x, landing_y], "movement": [moving_x, moving_y]}, reasoning)
         all_case_ids = stage1_normal_refs + stage1_miss_refs + stage2_refs
+        case_assessments = stage1_assessed + stage2_assessed
         self._last_case_ids = all_case_ids
-        self.last_decision_trace = {
-            "schema_version": 2,
-            "architecture": self.retrieval_architecture,
-            "pre_stage": {
-                "architecture": self.pre_stage_architecture,
+        pre_stage = {
+            "architecture": self.pre_stage_architecture,
+            "semantic_enabled": semantic_enabled,
+            "activation_ball_round": self.semantic_start_ball_round,
+            "source": aspect_source,
+        }
+        if semantic_enabled:
+            pre_stage.update({
                 "semantic_query_text": aspects["semantic_query_text"],
                 "aspects": {
                     key: aspects.get(key, "")
@@ -1596,19 +1962,27 @@ class TwinAgent(BaseAgent):
                         "opponent_tempo_movement_dynamics",
                     )
                 },
-                "source": aspect_source,
-            },
+            })
+            if aspect_repair is not None:
+                pre_stage["repair"] = aspect_repair
+        source_prefix = aspect_source if semantic_enabled else "state_only"
+        self.last_decision_trace = {
+            "schema_version": 7,
+            "architecture": self.retrieval_architecture,
+            "case_grounding": self.case_grounding,
+            "retrieval_mode": retrieval_mode,
+            "pre_stage": pre_stage,
             "stage1": {
                 "normal_case_ids": stage1_normal_refs,
                 "miss_case_ids": stage1_miss_refs,
                 "outcome": stage1["outcome"],
                 "shot_type": None if shot_type == 11 else shot_type,
-                "rationale": stage1["rationale"],
                 "source": stage1_source,
+                "case_assessments": stage1_assessed,
             },
             "stage2": stage2,
             "case_ids": all_case_ids,
-            "rationale": reasoning,
+            "case_assessments": case_assessments,
             "action": {
                 "shot_type": shot_type,
                 "landing_x": None if shot_type == 11 else landing_x,
@@ -1617,9 +1991,9 @@ class TwinAgent(BaseAgent):
                 "moving_y": None if shot_type == 11 else moving_y,
             },
             "action_source": (
-                f"{aspect_source}+{stage1_source}"
+                f"{source_prefix}+{stage1_source}"
                 if shot_type == 11 else
-                f"{aspect_source}+{stage1_source}+{stage2['source']}"
+                f"{source_prefix}+{stage1_source}+{stage2['source']}"
             ),
         }
         return action, reasoning

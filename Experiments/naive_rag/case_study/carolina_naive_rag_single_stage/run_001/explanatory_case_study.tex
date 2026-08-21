@@ -1,0 +1,50 @@
+% Requires: \usepackage{xcolor,booktabs,tabularx,array}
+\definecolor{normalgray}{HTML}{4F5965}
+\definecolor{switchblue}{HTML}{2457A6}
+\definecolor{attackorange}{HTML}{D66B20}
+\definecolor{resetgreen}{HTML}{178A62}
+\begin{table*}[t]
+\raggedright
+\scriptsize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{*{4}{>{\raggedright\arraybackslash}X}}
+\toprule
+\textcolor{normalgray}{\textbf{\large Normal play}} & \textcolor{switchblue}{\textbf{\large C0: High-switching deep court rally}} & \textcolor{attackorange}{\textbf{\large C1: Aggressive mid-court drive with deep placement}} & \textcolor{resetgreen}{\textbf{\large C2: Deep back-court defensive reset}} \\
+\addlinespace[2pt]
+No tactical instruction; follow the learned normal policy. & Focus on consistent depth and rapid switching between front and back courts while moving laterally to extend the rally. & Drive aggressively into the mid-court area with heavy depth to force the opponent to move back and limit their recovery options. & Focus on deep back-court placement to extend rallies and maintain defensive positioning. \\
+\addlinespace[2pt]
+\textit{\textbf{Starting situation.} Source match 98, set 2, rally 1. Carolina MARIN serves against Akane YAMAGUCHI at 0--0. Their normalized court positions are (-0.02, 0.37) and (-0.28, 0.20), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 98, set 2, rally 1. Carolina MARIN serves against Akane YAMAGUCHI at 0--0. Their normalized court positions are (-0.02, 0.37) and (-0.28, 0.20), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 98, set 2, rally 1. Carolina MARIN serves against Akane YAMAGUCHI at 0--0. Their normalized court positions are (-0.02, 0.37) and (-0.28, 0.20), respectively. Every case starts from this identical situation with an empty rally history.} & \textit{\textbf{Starting situation.} Source match 98, set 2, rally 1. Carolina MARIN serves against Akane YAMAGUCHI at 0--0. Their normalized court positions are (-0.02, 0.37) and (-0.28, 0.20), respectively. Every case starts from this identical situation with an empty rally history.} \\
+\midrule
+1. Player: Serve short to Front Center & 1. Player: Serve long to Rear Center & 1. Player: Serve long to Rear Center & 1. Player: Serve long to Rear Center \\
+2. Opponent: Net Shot to Front Left Side & 2. Opponent: Drop to Front Center & 2. Opponent: Smash to Mid Center & 2. Opponent: Smash to Mid Center \\
+3. Player: Net Shot to Front Center & 3. Player: \textcolor{switchblue}{\textbf{Net Shot to Front Center}} & 3. Player: \textcolor{attackorange}{\textbf{Drive to Mid Center}} & 3. Player: Smash Defence to Mid Center \\
+4. Opponent: Lob to Rear Center & 4. Opponent: Net Shot to Front Right Side & 4. Opponent: Smash Defence to Front Left Side & 4. Opponent: Net Shot to Front Center \\
+5. Player: Clear to Rear Center & 5. Player: \textcolor{switchblue}{\textbf{Lob to Rear Center}} & 5. Player: \textcolor{attackorange}{\textbf{Push Shot to Mid Right Side}} & 5. Player: \textcolor{resetgreen}{\textbf{Lob to Rear Center}} \\
+6. Opponent: Smash to Mid Right Side & 6. Opponent: Drop to Front Left Side & 6. Opponent: Smash Defence to Front Left Side & 6. Opponent: Clear to Rear Center \\
+7. Player: Smash Defence to Mid Left Side & 7. Player: \textcolor{switchblue}{\textbf{Net Shot to Front Right Side}} & 7. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 7. Player: \textcolor{resetgreen}{\textbf{Clear to Rear Center}} \\
+8. Opponent: Lob to Rear Right Side & 8. Opponent: Lob to Rear Right Side & 8. Opponent: Smash Defence to Front Left Side & 8. Opponent: Drop to Front Right Side \\
+9. Player: Drive to Mid Left Side & 9. Player: \textcolor{switchblue}{\textbf{Drop to Mid Right Side}} & 9. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 9. Player: Net Shot to Front Center \\
+10. Opponent: Drive to Mid Left Side & 10. Opponent: Push Shot to Mid Right Side & 10. Opponent: Smash Defence to Front Left Side & 10. Opponent: Net Shot to Front Center \\
+11. Player: Drive to Rear Right Side & 11. Player: \textcolor{switchblue}{\textbf{Clear to Mid Left Side}} & 11. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 11. Player: Net Shot to Front Center \\
+12. Opponent: Smash Defence to Front Left Side & 12. Opponent: Drop to Front Right Side & 12. Opponent: Smash Defence to Front Left Side & 12. Opponent: Net Shot to Front Center \\
+13. Player: Push Shot to Mid Right Side & 13. Player: \textcolor{switchblue}{\textbf{Net Shot to Front Left Side}} & 13. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 13. Player: Net Shot to Front Center \\
+14. Opponent: Drop to Front Center & 14. Opponent: Lob to Rear Center & 14. Opponent: Smash Defence to Front Left Side & 14. Opponent: Net Shot to Front Center \\
+15. Player: Net Shot to Front Right Side & 15. Player: \textcolor{switchblue}{\textbf{Clear to Mid Right Side}} & 15. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 15. Player: \textcolor{resetgreen}{\textbf{Lob to Rear Center}} \\
+16. Opponent: Lob to Rear Center & 16. Opponent: Clear to Rear Left Side & 16. Opponent: Smash Defence to Front Left Side & 16. Opponent: Smash to Mid Right Side \\
+17. Player: Smash to Mid Center & 17. Player: \textcolor{switchblue}{\textbf{Clear to Rear Center}} & 17. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 17. Player: Smash Defence to Mid Center \\
+18. Opponent: Smash Defence to Mid Center & 18. Opponent: Drop to Front Center & 18. Opponent: Smash Defence to Front Left Side & 18. Opponent: Push Shot to Rear Right Side \\
+19. Player: Push Shot to Rear Center & 19. Player: \textcolor{switchblue}{\textbf{Net Shot to Front Center}} & 19. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 19. Player: Smash to Mid Center \\
+20. Opponent: Clear to Rear Center & 20. Opponent: Net Shot to Front Center & 20. Opponent: Smash Defence to Front Left Side & 20. Opponent: Smash Defence to Front Right Side \\
+21. Player: Clear to Rear Center & 21. Player: \textcolor{switchblue}{\textbf{Net Shot to Front Center}} & 21. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 21. Player: Net Shot to Front Right Side \\
+22. Opponent: Drop to Mid Center & 22. Opponent: Net Shot to Front Center & 22. Opponent: Smash Defence to Front Left Side & 22. Opponent: Net Shot to Front Left Side \\
+23. Player: Net Shot to Front Right Side & 23. Player: \textcolor{switchblue}{\textbf{Lob to Rear Center}} & 23. Player: \textcolor{attackorange}{\textbf{Drive to Mid Right Side}} & 23. Player: Push Shot to Deep Left Corner \\
+24. Opponent: Lob to Rear Right Side & 24. Opponent: Drop to Front Center & 24. Opponent: Smash Defence to Front Left Side &  \\
+\midrule
+\textbf{Instruction alignment.} \textcolor{normalgray}{Reference trajectory without a tactical instruction.} & \textbf{Instruction alignment.} \textcolor{switchblue}{Strong alignment: 4 front-to-back switches, 2 left-to-right switches, and 3 back-court landings across a 24-shot rally.} & \textbf{Instruction alignment.} \textcolor{attackorange}{Strong alignment: 11 attacking shots land in the middle or back court to pressure the opponent with depth.} & \textbf{Instruction alignment.} \textcolor{resetgreen}{Strong alignment: 3 defensive reset shots and 3 total placements reach the back court.} \\
+\addlinespace[2pt]
+\textbf{Result.} Carolina MARIN wins when the rally reaches the maximum shot limit. & \textbf{Result.} Carolina MARIN wins when the rally reaches the maximum shot limit. & \textbf{Result.} Carolina MARIN wins when the rally reaches the maximum shot limit. & \textbf{Result.} Akane YAMAGUCHI wins after Carolina MARIN's Push Shot lands out of bounds. \\
+\bottomrule
+\end{tabularx}
+\caption{Carolina MARIN single-stage NaiveRAG trajectories from one identical starting situation. Every condition has ten independent rollouts. The selected set first maximizes terminal-outcome diversity and then minimizes the rally-length range. Colored Player actions mark shots or sequences aligned with the instruction in the same column. Opponent denotes Akane YAMAGUCHI.}
+\label{tab:carolina-balanced-case-study}
+\end{table*}

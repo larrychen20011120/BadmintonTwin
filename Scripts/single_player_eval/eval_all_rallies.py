@@ -17,6 +17,7 @@ import traceback
 import numpy as np
 import torch
 import yaml
+from tqdm import tqdm
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -25,14 +26,22 @@ if PROJECT_ROOT not in sys.path:
 
 from Preprocessing.rally_data import load_rally_dataset, rally_key
 from Scripts.single_player_eval.trajectory_store import (
+    completed_prompt_trace_keys,
     completed_rally_keys,
     create_run_directory,
     save_manifest,
+    save_prompt_trace,
     save_trajectory,
 )
 
 
-RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin', 'twin_single_stage'}
+SINGLE_STAGE_DIRECT_RAG_ALGORITHMS = {
+    'naive_rag_single_stage', 'timerag_single_stage',
+}
+RAG_ALGORITHMS = {
+    'naive_rag', 'timerag', 'twin', 'twin_single_stage',
+    *SINGLE_STAGE_DIRECT_RAG_ALGORITHMS,
+}
 TWO_STAGE_RAG_ALGORITHMS = {'naive_rag', 'timerag', 'twin'}
 TWIN_ALGORITHMS = {'twin', 'twin_single_stage'}
 PARALLEL_LLM_ALGORITHMS = RAG_ALGORITHMS | {'pure_llm'}
@@ -40,6 +49,14 @@ INSTRUCTION_VARIANTS = {'original', 'opposite', 'random_other', 'rewrite'}
 _WORKER_EVALUATOR = None
 _WORKER_OUTPUT_DIR = None
 _WORKER_METADATA = None
+_WORKER_PROMPT_TRACE_DIR = None
+
+
+def _base_algorithm(algorithm):
+    return {
+        'naive_rag_single_stage': 'naive_rag',
+        'timerag_single_stage': 'timerag',
+    }.get(algorithm, algorithm)
 
 
 def load_config():
@@ -66,23 +83,29 @@ def _safe_settings(config, args, dataset):
         'base_url': llm.get('base_url'),
         'host_url': llm.get('host_url'),
     }, ensure_ascii=True, sort_keys=True)
+    base_algorithm = _base_algorithm(args.algorithm)
     prompt_dir = os.path.join(PROJECT_ROOT, 'Prompts', 'New', args.algorithm)
     system_prompt_path = os.path.join(PROJECT_ROOT, 'Prompts', 'New', 'simulate_system.md')
+    schema_dir = os.path.join(PROJECT_ROOT, 'Schemas', 'Agent')
+    grounding_mode = 'grounded' if args.case_grounding else 'direct'
     implementation_paths = {
-        'agent': os.path.join(PROJECT_ROOT, 'Agent', f'{args.algorithm}.py'),
+        'agent': os.path.join(PROJECT_ROOT, 'Agent', f'{base_algorithm}.py'),
         'base_agent': os.path.join(PROJECT_ROOT, 'Agent', 'base_agent.py'),
         'evaluator': os.path.join(
             PROJECT_ROOT,
             'Scripts',
             'single_player_eval',
             'evaluators',
-            f'{args.algorithm}_evaluator.py',
+            f'{base_algorithm}_evaluator.py',
         ),
         'trajectory_store': os.path.join(
             PROJECT_ROOT, 'Scripts', 'single_player_eval', 'trajectory_store.py'
         ),
         'transition': os.path.join(PROJECT_ROOT, 'Utils', 'helper.py'),
         'llm_client': os.path.join(PROJECT_ROOT, 'Utils', 'llm.py'),
+        'local_trace_capture': os.path.join(
+            PROJECT_ROOT, 'Utils', 'langfuse_tracing.py'
+        ),
         'badminton_config': os.path.join(PROJECT_ROOT, 'Utils', 'badminton_config.py'),
     }
     if args.algorithm in TWIN_ALGORITHMS:
@@ -106,11 +129,15 @@ def _safe_settings(config, args, dataset):
         'dataset': 'rally',
         'experiment': 'rally',
         'evaluation_unit': 'physical_rally',
+        'case_grounding': bool(getattr(
+            args, 'case_grounding', args.algorithm in RAG_ALGORITHMS
+        )),
         'instruction_mode': args.instruction_mode,
         'instruction_variant': getattr(args, 'instruction_variant', 'original'),
         'seed': args.seed,
         'device': args.device,
         'limit': args.limit,
+        'save_prompt_traces': bool(getattr(args, 'save_prompt_traces', False)),
         'rollout_extra_steps': config.get('evaluation', {}).get('rollout_extra_steps', 2),
         'implementation_sha256': {
             name: _file_digest(path) for name, path in implementation_paths.items()
@@ -139,7 +166,13 @@ def _safe_settings(config, args, dataset):
             ),
             'tactical_profile_input': args.instruction_mode == 'instruct',
             'prompt_sha256': {
+                'system': _file_digest(system_prompt_path),
                 'user': _file_digest(os.path.join(prompt_dir, prompt_name)),
+            },
+            'structured_output_schema_sha256': {
+                'action': _file_digest(os.path.join(
+                    schema_dir, 'twin_single_stage_direct_schema.json'
+                )),
             },
         })
         return settings
@@ -151,6 +184,7 @@ def _safe_settings(config, args, dataset):
         from Utils.embeddings import resolve_embedding_settings
 
         embedding = resolve_embedding_settings(config=config)
+        twin_config = config.get('twin', {})
         embedding_key = embedding_model_key(
             embedding['model_name'],
             embedding['revision'],
@@ -177,7 +211,16 @@ def _safe_settings(config, args, dataset):
         }
         if single_stage:
             prompt_hashes['action'] = _file_digest(
-                os.path.join(prompt_dir, f'action_{prompt_suffix}.jinja')
+                os.path.join(
+                    prompt_dir,
+                    (
+                        f'action_{prompt_suffix}.jinja'
+                        if args.case_grounding else
+                        'action_direct_instruct.jinja'
+                        if args.instruction_mode == 'instruct' else
+                        'action_direct.jinja'
+                    ),
+                )
             )
         else:
             prompt_hashes.update({
@@ -195,6 +238,16 @@ def _safe_settings(config, args, dataset):
             'stage1_normal_top_k': stage1.get('normal_top_k'),
             'stage1_miss_top_k': stage1.get('miss_top_k'),
             'lambda_weight': args.lambda_weight,
+            'semantic_start_ball_round': int(
+                twin_config.get('semantic_start_ball_round', 3)
+            ),
+            'retrieval_schedule': 'state_only_before_semantic_start',
+            'early_round_retrieval_metric': 'twin_state_v1',
+            'online_terminal_aspect_repair': (
+                'extend_one_round'
+                if twin_config.get('online_terminal_aspect_repair', True)
+                else 'off'
+            ),
             'embedding': {
                 key: embedding.get(key)
                 for key in (
@@ -203,6 +256,23 @@ def _safe_settings(config, args, dataset):
                 )
             },
             'prompt_sha256': prompt_hashes,
+            'structured_output_schema_sha256': {
+                'action': _file_digest(os.path.join(
+                    schema_dir,
+                    (
+                        'twin_single_stage_grounded_schema.json'
+                        if args.case_grounding
+                        else 'rag_single_stage_direct_schema.json'
+                    ),
+                )),
+            } if single_stage else {
+                'stage1': _file_digest(os.path.join(
+                    schema_dir, f'rag_stage1_{grounding_mode}_schema.json'
+                )),
+                'stage2': _file_digest(os.path.join(
+                    schema_dir, f'rag_stage2_{grounding_mode}_schema.json'
+                )),
+            },
             'database_manifest_sha256': (
                 _file_digest(memory_manifest) if os.path.isfile(memory_manifest) else None
             ),
@@ -216,13 +286,22 @@ def _safe_settings(config, args, dataset):
 
     prompt_suffix = 'instruct' if args.instruction_mode == 'instruct' else 'norm'
     database_manifest = os.path.join(
-        config['paths'][args.algorithm]['data'], 'preparation_manifest.json'
+        config['paths'][base_algorithm]['data'], 'preparation_manifest.json'
+    )
+    single_stage = args.algorithm in SINGLE_STAGE_DIRECT_RAG_ALGORITHMS
+    single_stage_action_prompt = (
+        'action_instruct.jinja'
+        if args.instruction_mode == 'instruct' else 'action.jinja'
     )
     settings.update({
-        'retrieval_architecture': retrieval.get('architecture'),
+        'retrieval_architecture': (
+            'single_stage_v1' if single_stage else retrieval.get('architecture')
+        ),
+        'action_architecture': (
+            'single_stage_v1' if single_stage else retrieval.get('architecture')
+        ),
         'stage1_normal_top_k': stage1.get('normal_top_k'),
         'stage1_miss_top_k': stage1.get('miss_top_k'),
-        'stage2_conditioned_top_k': args.conditioned_top_k,
         'retrieval_features': [
             'player_location_x', 'player_location_y',
             'hit_x', 'hit_y',
@@ -230,16 +309,38 @@ def _safe_settings(config, args, dataset):
             'ball_distance_x', 'ball_distance_y',
             'opponent_type',
         ],
-        'prompt_sha256': {
+        'prompt_sha256': ({
+            'system': _file_digest(system_prompt_path),
+            'action': _file_digest(os.path.join(
+                prompt_dir, single_stage_action_prompt
+            )),
+        } if single_stage else {
             'system': _file_digest(system_prompt_path),
             'stage1': _file_digest(os.path.join(prompt_dir, f'stage1_{prompt_suffix}.jinja')),
             'stage2': _file_digest(os.path.join(prompt_dir, f'stage2_{prompt_suffix}.jinja')),
-        },
-        'window_size': args.window_size if args.algorithm == 'timerag' else None,
+        }),
+        'structured_output_schema_sha256': ({
+            'action': _file_digest(os.path.join(
+                schema_dir, 'rag_single_stage_direct_schema.json'
+            )),
+        } if single_stage else {
+            'stage1': _file_digest(os.path.join(
+                schema_dir, f'rag_stage1_{grounding_mode}_schema.json'
+            )),
+            'stage2': _file_digest(os.path.join(
+                schema_dir, f'rag_stage2_{grounding_mode}_schema.json'
+            )),
+        }),
+        'window_size': (
+            args.window_size
+            if base_algorithm == 'timerag' else None
+        ),
         'database_manifest_sha256': (
             _file_digest(database_manifest) if os.path.isfile(database_manifest) else None
         ),
     })
+    if not single_stage:
+        settings['stage2_conditioned_top_k'] = args.conditioned_top_k
     return settings
 
 
@@ -252,6 +353,23 @@ def _resolve_instruction_mode(algorithm, requested_mode, default_mode):
     if algorithm in PARALLEL_LLM_ALGORITHMS:
         return requested_mode or default_mode
     return 'no_instruct'
+
+
+def _resolve_case_grounding(algorithm, requested_mode, default_mode=True):
+    if algorithm not in RAG_ALGORITHMS:
+        return False
+    if algorithm in SINGLE_STAGE_DIRECT_RAG_ALGORITHMS:
+        return False
+    return bool(default_mode) if requested_mode is None else requested_mode
+
+
+def _output_label(args):
+    label = f'rally_{args.instruction_mode}'
+    if args.instruction_mode == 'instruct' and args.instruction_variant != 'original':
+        label = f'{label}_{args.instruction_variant}'
+    if args.algorithm in RAG_ALGORITHMS and not args.case_grounding:
+        label = f'{label}_no_case_grounding'
+    return label
 
 
 def _evaluation_records(algorithm, dataset, instruction_mode='no_instruct'):
@@ -318,6 +436,13 @@ def _create_parallel_evaluator(algorithm, kwargs):
         from Scripts.single_player_eval.evaluators.naive_rag_evaluator import NaiveRAGEvaluator
 
         return NaiveRAGEvaluator(**kwargs)
+    if algorithm == 'naive_rag_single_stage':
+        from Scripts.single_player_eval.evaluators.naive_rag_evaluator import NaiveRAGEvaluator
+
+        return NaiveRAGEvaluator(
+            **kwargs,
+            action_architecture='single_stage_v1',
+        )
     if algorithm == 'twin':
         from Scripts.single_player_eval.evaluators.twin_evaluator import TwinEvaluator
 
@@ -326,16 +451,26 @@ def _create_parallel_evaluator(algorithm, kwargs):
         from Scripts.single_player_eval.evaluators.twin_single_stage_evaluator import TwinSingleStageEvaluator
 
         return TwinSingleStageEvaluator(**kwargs)
+    if algorithm == 'timerag_single_stage':
+        from Scripts.single_player_eval.evaluators.timerag_evaluator import TimeRAGEvaluator
+
+        return TimeRAGEvaluator(
+            **kwargs,
+            action_architecture='single_stage_v1',
+        )
     from Scripts.single_player_eval.evaluators.timerag_evaluator import TimeRAGEvaluator
 
     return TimeRAGEvaluator(**kwargs)
 
 
-def _init_parallel_worker(algorithm, evaluator_kwargs, output_dir, metadata):
+def _init_parallel_worker(algorithm, evaluator_kwargs, output_dir, metadata,
+                          prompt_trace_dir=None):
     global _WORKER_EVALUATOR, _WORKER_OUTPUT_DIR, _WORKER_METADATA
+    global _WORKER_PROMPT_TRACE_DIR
     _WORKER_EVALUATOR = _create_parallel_evaluator(algorithm, evaluator_kwargs)
     _WORKER_OUTPUT_DIR = output_dir
     _WORKER_METADATA = metadata
+    _WORKER_PROMPT_TRACE_DIR = prompt_trace_dir
 
 
 def _run_parallel_rally(record):
@@ -348,16 +483,28 @@ def _run_parallel_rally(record):
         np.random.seed(rally_seed)
         torch.manual_seed(rally_seed)
         trajectory = _WORKER_EVALUATOR.simulate_rally(record)
+        prompt_traces = trajectory.pop('_prompt_traces', None)
         output_path = save_trajectory(
             trajectory,
             _WORKER_OUTPUT_DIR,
             metadata=_WORKER_METADATA,
             overwrite=True,
         )
+        prompt_trace_path = None
+        if _WORKER_PROMPT_TRACE_DIR is not None:
+            prompt_trace_path = save_prompt_trace(
+                trajectory,
+                prompt_traces,
+                _WORKER_PROMPT_TRACE_DIR,
+                output_path,
+                metadata=_WORKER_METADATA,
+                overwrite=True,
+            )
         return {
             'key': key,
             'status': 'success',
             'output_path': output_path,
+            'prompt_trace_path': prompt_trace_path,
             'elapsed_seconds': round(time.time() - started_at, 3),
             'error': None,
             'traceback': None,
@@ -367,6 +514,7 @@ def _run_parallel_rally(record):
             'key': key,
             'status': 'failed',
             'output_path': None,
+            'prompt_trace_path': None,
             'elapsed_seconds': round(time.time() - started_at, 3),
             'error': str(exc),
             'traceback': traceback.format_exc(),
@@ -399,7 +547,20 @@ def _clear_failure(failure_dir, key):
         os.remove(path)
 
 
-def parse_args():
+def _completed_output_keys(rally_dir, prompt_trace_dir, config_fingerprint):
+    completed, invalid_trajectories = completed_rally_keys(
+        rally_dir, config_fingerprint
+    )
+    invalid_prompt_traces = []
+    if prompt_trace_dir is not None:
+        prompt_completed, invalid_prompt_traces = completed_prompt_trace_keys(
+            prompt_trace_dir, config_fingerprint
+        )
+        completed &= prompt_completed
+    return completed, invalid_trajectories, invalid_prompt_traces
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='Evaluate every unique physical test rally and save one JSON per rally.'
     )
@@ -407,7 +568,9 @@ def parse_args():
         '--algorithm', required=True,
         choices=[
             'bc', 'rallynet', 'shuttlenet', 'random', 'pure_llm',
-            'naive_rag', 'timerag', 'twin', 'twin_single_stage',
+            'naive_rag', 'naive_rag_single_stage',
+            'timerag', 'timerag_single_stage',
+            'twin', 'twin_single_stage',
         ],
     )
     parser.add_argument('--device', choices=['cuda', 'cpu'])
@@ -435,9 +598,28 @@ def parse_args():
     parser.add_argument('--conditioned-top-k', type=int)
     parser.add_argument('--lambda-weight', type=float)
     parser.add_argument('--window-size', type=int)
+    parser.add_argument(
+        '--case-grounding',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Require retrieved-case citations in RAG decisions (default: config, true).',
+    )
     parser.add_argument('--enable-tracing', action='store_true')
+    parser.add_argument(
+        '--save-prompt-traces', action='store_true',
+        help='Save local retrieval and LLM execution sidecars without system prompt text.',
+    )
+    parser.add_argument(
+        '--no-progress', action='store_true',
+        help='Disable the physical-rally progress bar.',
+    )
     parser.add_argument('--limit', type=int, help='Optional physical-rally smoke-test limit')
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.algorithm not in RAG_ALGORITHMS and args.case_grounding is not None:
+        parser.error('--case-grounding/--no-case-grounding is supported only for RAG algorithms')
+    if args.algorithm not in PARALLEL_LLM_ALGORITHMS and args.save_prompt_traces:
+        parser.error('--save-prompt-traces is supported only for LLM/RAG algorithms')
+    return args
 
 
 def _run_baseline(args, config, dataset):
@@ -462,6 +644,7 @@ def _run_baseline(args, config, dataset):
         'output_experiment': 'rally_no_instruct',
         'generation': generation,
         'instruction_mode': 'no_instruct',
+        'case_grounding': False,
         'evaluation_unit': 'physical_rally',
         'seed': args.seed,
         'device': args.device,
@@ -539,9 +722,7 @@ def _run_parallel_llm(args, config, dataset):
 
     settings = _safe_settings(config, args, dataset)
     config_fingerprint = _fingerprint(settings)
-    output_label = f'rally_{args.instruction_mode}'
-    if args.instruction_mode == 'instruct' and args.instruction_variant != 'original':
-        output_label = f'{output_label}_{args.instruction_variant}'
+    output_label = _output_label(args)
 
     if args.resume_run:
         run_dir = os.path.abspath(args.resume_run)
@@ -561,15 +742,26 @@ def _run_parallel_llm(args, config, dataset):
 
     rally_dir = os.path.join(run_dir, 'rallies')
     failure_dir = os.path.join(run_dir, 'failures')
+    save_prompt_traces = bool(getattr(args, 'save_prompt_traces', False))
+    prompt_trace_dir = (
+        os.path.join(run_dir, 'prompt_traces')
+        if save_prompt_traces else None
+    )
     os.makedirs(rally_dir, exist_ok=True)
     os.makedirs(failure_dir, exist_ok=True)
+    if prompt_trace_dir is not None:
+        os.makedirs(prompt_trace_dir, exist_ok=True)
     metadata = {
         **settings,
         'output_experiment': output_label,
         'generation': generation,
         'config_fingerprint': config_fingerprint,
     }
-    completed, invalid_paths = completed_rally_keys(rally_dir, config_fingerprint)
+    completed, invalid_paths, invalid_prompt_trace_paths = _completed_output_keys(
+        rally_dir, prompt_trace_dir, config_fingerprint
+    )
+    expected_keys = {rally_key(record) for record in records}
+    completed &= expected_keys
     for key in completed:
         _clear_failure(failure_dir, key)
     pending = [record for record in records if rally_key(record) not in completed]
@@ -583,6 +775,8 @@ def _run_parallel_llm(args, config, dataset):
         'failed_rallies': 0,
         'skipped_missing_profiles': skipped_missing_profiles,
         'invalid_trajectory_files': invalid_paths,
+        'invalid_prompt_trace_files': invalid_prompt_trace_paths,
+        'prompt_trace_dir': prompt_trace_dir,
     }
     save_manifest(run_dir, manifest)
 
@@ -594,17 +788,26 @@ def _run_parallel_llm(args, config, dataset):
         'all_rallies': True,
         'output_experiment': output_label,
         'instruction_mode': args.instruction_mode,
+        'save_prompt_traces': save_prompt_traces,
     }
     if args.algorithm in RAG_ALGORITHMS:
         evaluator_kwargs['experiment'] = 'rally'
+        evaluator_kwargs['case_grounding'] = args.case_grounding
         if args.algorithm in TWO_STAGE_RAG_ALGORITHMS:
             evaluator_kwargs['conditioned_top_k'] = args.conditioned_top_k
-        if args.algorithm == 'timerag':
+        if args.algorithm in {'timerag', 'timerag_single_stage'}:
             evaluator_kwargs['window_size'] = args.window_size
         elif args.algorithm in TWIN_ALGORITHMS:
             evaluator_kwargs['lambda_weight'] = args.lambda_weight
 
     results = []
+    progress = tqdm(
+        total=len(records),
+        initial=len(completed),
+        desc='Physical rallies',
+        unit='rally',
+        disable=bool(getattr(args, 'no_progress', False)),
+    )
     def record_result(result):
         results.append(result)
         if result['status'] == 'success':
@@ -617,41 +820,72 @@ def _run_parallel_llm(args, config, dataset):
             'failed_rallies': sum(item['status'] == 'failed' for item in results),
         })
         save_manifest(run_dir, manifest)
+        progress.update(1)
+        progress.set_postfix(
+            completed=len(completed),
+            failed=sum(item['status'] == 'failed' for item in results),
+        )
 
-    if args.workers == 1:
-        _init_parallel_worker(args.algorithm, evaluator_kwargs, rally_dir, metadata)
-        for record in pending:
-            record_result(_run_parallel_rally(record))
-    else:
-        context = multiprocessing.get_context(args.start_method)
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=args.workers,
-            mp_context=context,
-            initializer=_init_parallel_worker,
-            initargs=(args.algorithm, evaluator_kwargs, rally_dir, metadata),
-        ) as executor:
-            futures = {executor.submit(_run_parallel_rally, record): record for record in pending}
-            for future in concurrent.futures.as_completed(futures):
-                record = futures[future]
-                try:
-                    result = future.result()
-                except BaseException as exc:
-                    result = {
-                        'key': rally_key(record),
-                        'status': 'failed',
-                        'output_path': None,
-                        'elapsed_seconds': 0.0,
-                        'error': str(exc),
-                        'traceback': traceback.format_exc(),
-                    }
-                record_result(result)
+    try:
+        if args.workers == 1:
+            _init_parallel_worker(
+                args.algorithm,
+                evaluator_kwargs,
+                rally_dir,
+                metadata,
+                prompt_trace_dir,
+            )
+            for record in pending:
+                record_result(_run_parallel_rally(record))
+        else:
+            context = multiprocessing.get_context(args.start_method)
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=args.workers,
+                mp_context=context,
+                initializer=_init_parallel_worker,
+                initargs=(
+                    args.algorithm,
+                    evaluator_kwargs,
+                    rally_dir,
+                    metadata,
+                    prompt_trace_dir,
+                ),
+            ) as executor:
+                futures = {
+                    executor.submit(_run_parallel_rally, record): record
+                    for record in pending
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    record = futures[future]
+                    try:
+                        result = future.result()
+                    except BaseException as exc:
+                        result = {
+                            'key': rally_key(record),
+                            'status': 'failed',
+                            'output_path': None,
+                            'prompt_trace_path': None,
+                            'elapsed_seconds': 0.0,
+                            'error': str(exc),
+                            'traceback': traceback.format_exc(),
+                        }
+                    record_result(result)
+    finally:
+        progress.close()
 
     failed = [result for result in results if result['status'] == 'failed']
-    completed, final_invalid_paths = completed_rally_keys(rally_dir, config_fingerprint)
-    completed &= {rally_key(record) for record in records}
+    completed, final_invalid_paths, final_invalid_prompt_trace_paths = (
+        _completed_output_keys(rally_dir, prompt_trace_dir, config_fingerprint)
+    )
+    completed &= expected_keys
     final_status = (
         'completed'
-        if len(completed) == len(records) and not failed and not final_invalid_paths
+        if (
+            len(completed) == len(records)
+            and not failed
+            and not final_invalid_paths
+            and not final_invalid_prompt_trace_paths
+        )
         else 'completed_with_errors'
     )
     summary = {
@@ -661,9 +895,11 @@ def _run_parallel_llm(args, config, dataset):
         'failed_rallies': len(failed),
         'pending_rallies': len(records) - len(completed),
         'invalid_trajectory_files': final_invalid_paths,
+        'invalid_prompt_trace_files': final_invalid_prompt_trace_paths,
         'elapsed_seconds': round(sum(item['elapsed_seconds'] for item in results), 3),
         'run_dir': run_dir,
         'trajectory_dir': rally_dir,
+        'prompt_trace_dir': prompt_trace_dir,
     }
     save_manifest(run_dir, summary)
     summary_path = os.path.join(run_dir, 'summary.json')
@@ -679,6 +915,7 @@ def _run_parallel_llm(args, config, dataset):
 def main():
     args = parse_args()
     requested_instruction_mode = args.instruction_mode
+    requested_case_grounding = args.case_grounding
     config = load_config()
     evaluation = config.get('evaluation', {})
     retrieval = config.get('retrieval', {})
@@ -694,6 +931,14 @@ def main():
         args.instruction_variant
         or evaluation.get('instruction_variant', 'original')
     )
+    args.case_grounding = _resolve_case_grounding(
+        args.algorithm,
+        requested_case_grounding,
+        evaluation.get('case_grounding', True),
+    )
+    if args.algorithm in SINGLE_STAGE_DIRECT_RAG_ALGORITHMS:
+        if requested_case_grounding is True:
+            raise ValueError(f'{args.algorithm} does not support case grounding')
     if args.instruction_mode != 'instruct' and args.instruction_variant != 'original':
         raise ValueError('--instruction-variant requires --instruction-mode instruct')
     stage2 = retrieval.get('stage2', {})

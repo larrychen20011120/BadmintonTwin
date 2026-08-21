@@ -1,4 +1,5 @@
 from openai import OpenAI
+import hashlib
 import time
 import re
 import os
@@ -76,15 +77,44 @@ class LLM:
 
     @staticmethod
     def _deep_update(base, updates):
-        merged = copy.deepcopy(base)
+        merged = copy.deepcopy(base) if isinstance(base, dict) else {}
         if not isinstance(updates, dict):
             return merged
         for key, value in updates.items():
             if isinstance(value, dict) and isinstance(merged.get(key), dict):
-                merged[key] = {**merged[key], **value}
+                merged[key] = LLM._deep_update(merged[key], value)
             else:
-                merged[key] = value
+                merged[key] = copy.deepcopy(value)
         return merged
+
+    @staticmethod
+    def _schema_response_format(schema, schema_name=None):
+        if not isinstance(schema, dict):
+            raise TypeError("schema must be a JSON Schema object")
+
+        if schema_name is None:
+            title = schema.get("title")
+            if isinstance(title, str):
+                schema_name = re.sub(r"[^A-Za-z0-9_-]", "_", title).strip("_")[:64]
+            if not schema_name:
+                canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+                digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+                schema_name = f"structured_response_{digest}"
+        elif not isinstance(schema_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", schema_name
+        ):
+            raise ValueError(
+                "schema_name must contain 1-64 letters, digits, underscores, or hyphens"
+            )
+
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": copy.deepcopy(schema),
+                "strict": True,
+            },
+        }
 
     @classmethod
     def _resolve_env_value(cls, value):
@@ -269,7 +299,7 @@ class LLM:
         return self._deep_update(params, overrides)
 
     def get_verified_response(self, schema=None, system_prompt="", user_prompt="", max_trials=10,
-                              validator=None):
+                              validator=None, schema_name=None, generation_kwargs=None):
         
         trials = 0
         last_raw_text = ""
@@ -277,9 +307,17 @@ class LLM:
 
         while trials < max_trials:
 
+            request_generation_kwargs = self._deep_update({}, generation_kwargs)
+            if schema is not None:
+                request_generation_kwargs["response_format"] = self._schema_response_format(
+                    schema,
+                    schema_name=schema_name,
+                )
+
             llm_response_str, usage = self.get_response(
                 system_prompt=system_prompt,
-                user_prompt=user_prompt
+                user_prompt=user_prompt,
+                generation_kwargs=request_generation_kwargs,
             )
             last_raw_text = llm_response_str
             if usage:
@@ -324,11 +362,16 @@ class LLM:
 
     @staticmethod
     def _extract_json(raw_text):
-        """Parse a JSON-only LLM response with light repair for common mistakes."""
+        """Parse a JSON-only response, falling back to json-repair when installed."""
         if not raw_text or not isinstance(raw_text, str):
             return None
 
         text = raw_text.strip()
+
+        try:
+            return json.loads(text)
+        except (TypeError, ValueError):
+            pass
 
         fenced = re.fullmatch(
             r"```(?:json)?\s*(.*?)\s*```",
@@ -337,11 +380,10 @@ class LLM:
         )
         if fenced:
             text = fenced.group(1).strip()
-
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
+            try:
+                return json.loads(text)
+            except (TypeError, ValueError):
+                pass
 
         if repair_json_loads is not None:
             try:
@@ -349,16 +391,9 @@ class LLM:
             except Exception:
                 pass
 
-        repaired_text = re.sub(r"([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', text)
-        repaired_text = re.sub(r",\s*([}\]])", r"\1", repaired_text)
-        repaired_text = re.sub(r"'([^'\\]*(?:\\.[^'\\]*)*)'", r'"\1"', repaired_text)
+        return None
 
-        try:
-            return json.loads(repaired_text)
-        except Exception:
-            return None
-
-    def get_response(self, system_prompt="", user_prompt=""):
+    def get_response(self, system_prompt="", user_prompt="", generation_kwargs=None):
 
         start_time = time.time()
 
@@ -375,11 +410,11 @@ class LLM:
                 {"role": "user", "content": user_prompt}
             ]
 
-        request_kwargs = {
+        request_kwargs = self._deep_update({
             "model": self.model_name,
             "messages": messages,
-            **self.generation_params,
-        }
+        }, self.generation_params)
+        request_kwargs = self._deep_update(request_kwargs, generation_kwargs)
         # print(request_kwargs)
         response = self.client.chat.completions.create(**request_kwargs)
         response_text = response.choices[0].message.content

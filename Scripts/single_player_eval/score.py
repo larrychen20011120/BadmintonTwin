@@ -43,6 +43,9 @@ OUT_OF_BOUNDS_GROUP = 17
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MERGED_CSV = PROJECT_ROOT / 'Data' / 'intermediate_data' / 'merged.csv'
 DEFAULT_RALLY_PROFILES = PROJECT_ROOT / 'Data' / 'intermediate_data' / 'rally_profiles.json'
+CASE_GROUNDED_ALGORITHMS = frozenset({
+    'naive_rag', 'timerag', 'twin', 'twin_single_stage',
+})
 
 # Raw areas use the same canonical grouping as badminton_config.area_groups.
 AREA_TO_GROUP = {
@@ -71,6 +74,14 @@ RAW_AREA_BOUNDS = (
     (0, 204, 50, 366, 30), (0, 366, 50, 480, 29),
     (0, 0, 50, 204, 31), (50, 0, 177.5, 150, 32),
 )
+
+
+def manifest_case_grounding(manifest):
+    """Resolve the mode for new manifests and pre-flag legacy runs."""
+    return bool(manifest.get(
+        'case_grounding',
+        manifest.get('algorithm') in CASE_GROUNDED_ALGORITHMS,
+    ))
 
 
 def load_trajectories(input_path):
@@ -202,7 +213,7 @@ def dtw_distance_normalizations(predicted, ground_truth):
         return float('inf'), float('inf')
     return (
         float(distance / np.sqrt(len(warping_path))),
-        float(distance / max(len(predicted), len(ground_truth))),
+        float(distance / np.sqrt(max(len(predicted), len(ground_truth)))),
     )
 
 
@@ -863,12 +874,23 @@ def resolve_run(path):
     keys = validate_trajectories(trajectories)
     metadata_fields = (
         'algorithm', 'experiment', 'instruction_mode', 'instruction_variant',
+        'case_grounding',
         'config_fingerprint', 'split_sha256', 'profiles_sha256', 'merged_csv_sha256',
     )
     for trajectory in trajectories:
         key = physical_key(trajectory)
         for field in metadata_fields:
-            default = 'original' if field == 'instruction_variant' else None
+            if field == 'case_grounding':
+                trajectory_value = manifest_case_grounding(trajectory)
+                manifest_value = manifest_case_grounding(manifest)
+                if trajectory_value != manifest_value:
+                    raise ValueError(
+                        f'Trajectory {key} disagrees with manifest field {field!r}'
+                    )
+                continue
+            default = {
+                'instruction_variant': 'original',
+            }.get(field)
             if trajectory.get(field, default) != manifest.get(field, default):
                 raise ValueError(
                     f'Trajectory {key} disagrees with manifest field {field!r}'
@@ -916,10 +938,19 @@ def validate_runs(runs):
     reference = runs[0]
     comparable_fields = (
         'algorithm', 'experiment', 'instruction_mode', 'instruction_variant',
+        'case_grounding',
     )
     for run in runs[1:]:
         for field in comparable_fields:
-            default = 'original' if field == 'instruction_variant' else None
+            if field == 'case_grounding':
+                if manifest_case_grounding(run['manifest']) != manifest_case_grounding(
+                    reference['manifest']
+                ):
+                    raise ValueError(f'Runs disagree on manifest field {field!r}')
+                continue
+            default = {
+                'instruction_variant': 'original',
+            }.get(field)
             if run['manifest'].get(field, default) != reference['manifest'].get(field, default):
                 raise ValueError(f'Runs disagree on manifest field {field!r}')
         if run['keys'] != reference['keys']:
@@ -1973,6 +2004,7 @@ def build_result(aggregation, runs, scores, train_reference=None):
         'algorithm': runs[0]['manifest'].get('algorithm'),
         'experiment': runs[0]['manifest'].get('experiment'),
         'instruction_mode': runs[0]['manifest'].get('instruction_mode'),
+        'case_grounding': manifest_case_grounding(runs[0]['manifest']),
         'runs': [run['path'] for run in runs],
         'scores': without_internal_fields(scores),
     }
@@ -2077,6 +2109,7 @@ def main():
             'algorithm': average_result['algorithm'],
             'experiment': average_result['experiment'],
             'instruction_mode': average_result['instruction_mode'],
+            'case_grounding': average_result['case_grounding'],
             'runs': average_result['runs'],
             'results': {
                 'average_of_n': average_result,

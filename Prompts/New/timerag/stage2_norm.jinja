@@ -1,32 +1,41 @@
 # Task
 Your task is to simulate the target player's most likely landing and recovery positions for the certain shot type. 
-This is an case-driven behavior simulation and imitation task, not tactical optimization.
+This is an evidence-driven behavior simulation and imitation task, not tactical optimization.
 
-Make one joint decision from the current rally situation and historical windows. Consider the incoming shuttle, player and opponent positions, movement and reachability, prior rally actions, score pressure, and the landing and recovery behavior shown in past windows.
+Make one joint decision by comparing the current temporal window with historical windows. Consider the incoming shuttle, player and opponent positions, movement and reachability, prior actions within each window, score pressure, and the landing and recovery behavior shown in past windows.
 
-For each coordinate, first select the most likely semantic area, then determine where within that area the point is likely to lie. Do not automatically use the area center. Explain whether the point is biased left, right, front, back, or center, and which current-rally or historical window case supports that bias.
+For each coordinate, first select the most likely semantic area, then determine where within that area the point is likely to lie. Do not automatically use the area center.{% if case_grounding|default(true) %} Identify whether the point is biased left, right, front, back, or center, and which current-window or historical window evidence supports that bias.{% endif %}
 
-## Current Match Situation
+## Current Temporal Window
 {{ trajectory_text }}
 
 ## Similar Windows
 {% for case in conditioned_cases %}
-Window {{ loop.index }}:
+Window (retrieval_rank={{ loop.index }}):
 {{ case.stage2_description }}{% if not loop.last %}
 {% endif %}{% endfor %}
 
 ## Output Format
 Return only one valid JSON object. Do not include shot_type, markdown, or text outside the JSON.
+{% if case_grounding|default(true) %}
+Assess every shot-conditioned window independently in display order. Output exactly {{ conditioned_cases|length }} case_assessments with ranks 1 through {{ conditioned_cases|length }}.
+For each window, choose one impact: support means its placement is useful to imitate; conflict means an observable mismatch reduces its influence; irrelevant means it adds no useful evidence. Give one or two free-form lowercase factors. Each factor must be a 1-4 word noun phrase about only this window, such as "same landing" or "different recovery"; use adjectives, never verb clauses. No sentences, explanations, conjunctions, numbers, coordinates, labels, ranks inside factors, or references to other windows. Use every required rank exactly once. Then output placement directly.
 {
-  "rationale": "one to two sentences for case-based explanation explaining why each semantic area was selected, where each coordinate lies within that area, and why it is biased in that direction based on the current rally and historical windows.",
+  "case_assessments": [{"retrieval_rank": <integer>, "impact": "<support, conflict, or irrelevant>", "factors": ["<free noun phrase>"]}],
   "placement": {
-    "landing_area": "<exact semantic area>",
     "landing_x": <integer 0 to 355>,
     "landing_y": <integer 0 to 480>,
-    "moving_area": "<exact semantic area>",
     "moving_x": <integer 0 to 355>,
     "moving_y": <integer 0 to 480>
   }
 }
-## Constraints
-Both semantic areas must exactly match their coordinates.
+{% else %}
+{
+  "placement": {
+    "landing_x": <integer 0 to 355>,
+    "landing_y": <integer 0 to 480>,
+    "moving_x": <integer 0 to 355>,
+    "moving_y": <integer 0 to 480>
+  }
+}
+{% endif %}

@@ -1,12 +1,12 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "StyleShiftDescription",
+  "title": "StyleShiftInstruction",
   "type": "object",
   "required": [
-    "style_shift_description"
+    "instruction"
   ],
   "properties": {
-    "style_shift_description": {
+    "instruction": {
       "type": "string",
       "description": "A concise English description of how the player differed from their usual style, limited to feature-level differences, direction, and difference strength. Do not infer causes, intent, mentality, strategy, fatigue, injury, confidence, physical condition, or execution problems. Do not mention statistics, IQR, thresholds, scores, feature names, profiles, baselines, exact values, numerical descriptions, supporting signals, or match results."
     }

@@ -220,7 +220,7 @@ class BCEvaluator(BaseEvaluator):
                 'rally': rally_num,
                 'players': players,
                 'player_profiles': record.get('player_profiles', {}),
-                'instruction_mode': 'no-instruct',
+                'instruction_mode': 'no_instruct',
                 'target_player': target_player,
                 'opponent_player': opponent_player,
                 'gt_sequence': rally_gt_full_seq,

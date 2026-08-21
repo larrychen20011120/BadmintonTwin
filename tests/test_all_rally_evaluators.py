@@ -133,6 +133,7 @@ class AllRallyEvaluatorTest(unittest.TestCase):
         self.assertEqual(len(trajectories), 1)
         self.assertEqual(evaluator.model.calls, 1)
         self.assertEqual(trajectories[0]['players'], ['A', 'B'])
+        self.assertEqual(trajectories[0]['instruction_mode'], 'no_instruct')
         self.assertIsNone(trajectories[0]['target_player'])
 
     def test_shuttlenet_runs_duplicate_player_assignments_once(self):
@@ -146,6 +147,7 @@ class AllRallyEvaluatorTest(unittest.TestCase):
         self.assertEqual(len(trajectories), 1)
         self.assertEqual(evaluator.policy.calls, 1)
         self.assertEqual(trajectories[0]['players'], ['A', 'B'])
+        self.assertEqual(trajectories[0]['instruction_mode'], 'no_instruct')
 
     def test_random_runs_duplicate_player_assignments_once(self):
         evaluator = RandomEvaluator.__new__(RandomEvaluator)
@@ -161,6 +163,7 @@ class AllRallyEvaluatorTest(unittest.TestCase):
         self.assertEqual(len(trajectories), 1)
         self.assertEqual(evaluator.agent.calls, 1)
         self.assertEqual(trajectories[0]['players'], ['A', 'B'])
+        self.assertEqual(trajectories[0]['instruction_mode'], 'no_instruct')
         self.assertIsNone(trajectories[0]['target_player'])
         self.assertEqual(validate_trajectories(trajectories), {(3, 1, 4)})
 

@@ -654,6 +654,43 @@ class ScoreTest(unittest.TestCase):
 
         validate_runs(runs)
 
+    def test_missing_case_grounding_is_true_and_modes_cannot_mix(self):
+        common = {
+            'algorithm': 'naive_rag',
+            'experiment': 'rally',
+            'instruction_mode': 'instruct',
+        }
+        legacy = {'manifest': common, 'keys': set(), 'by_key': {}}
+        grounded = {
+            'manifest': {**common, 'case_grounding': True},
+            'keys': set(),
+            'by_key': {},
+        }
+        validate_runs([legacy, grounded])
+
+        ungrounded = {
+            'manifest': {**common, 'case_grounding': False},
+            'keys': set(),
+            'by_key': {},
+        }
+        with self.assertRaisesRegex(ValueError, 'case_grounding'):
+            validate_runs([legacy, ungrounded])
+
+    def test_missing_case_grounding_is_false_for_non_rag_runs(self):
+        common = {
+            'algorithm': 'pure_llm',
+            'experiment': 'rally',
+            'instruction_mode': 'no_instruct',
+        }
+        legacy = {'manifest': common, 'keys': set(), 'by_key': {}}
+        direct = {
+            'manifest': {**common, 'case_grounding': False},
+            'keys': set(),
+            'by_key': {},
+        }
+
+        validate_runs([legacy, direct])
+
     def test_score_loads_without_legacy_single_player_eval_modules(self):
         spec = importlib.util.spec_from_file_location('isolated_score', score_module.__file__)
         module = importlib.util.module_from_spec(spec)

@@ -1,28 +1,44 @@
+import copy
 import json
 import math
+import re
+from functools import lru_cache
+from pathlib import Path
 
 from dtaidistance import dtw
 
-from Utils.badminton_config import INDEX2EN_SHOT, area_groups, shot_type_to_index
+from Utils.badminton_config import INDEX2EN_SHOT, shot_type_to_index
 
 class BaseAgent:
     PROMPT_ACTION_KEYS = {
         "shot_type",
-        "landing_area",
         "landing_x",
         "landing_y",
-        "moving_area",
         "moving_x",
         "moving_y",
     }
-    PROMPT_AREA_NAMES = frozenset(area_groups) - {"Out of Bounds"}
-    RAG_STAGE1_KEYS = {"rationale", "outcome", "shot_type"}
-    RAG_STAGE2_KEYS = {"rationale", "placement"}
+    RAG_STAGE1_GROUNDED_KEYS = {"case_assessments", "outcome", "shot_type"}
+    RAG_STAGE1_DIRECT_KEYS = {"outcome", "shot_type"}
+    RAG_STAGE2_GROUNDED_KEYS = {"case_assessments", "placement"}
+    RAG_STAGE2_DIRECT_KEYS = {"placement"}
+    RAG_SINGLE_STAGE_DIRECT_KEYS = {
+        "outcome", "shot_type", "landing_x", "landing_y", "moving_x", "moving_y"
+    }
+    RAG_STAGE1_ASSESSMENT_KEYS = {
+        "source", "retrieval_rank", "impact", "factors"
+    }
+    RAG_STAGE2_ASSESSMENT_KEYS = {"retrieval_rank", "impact", "factors"}
+    RAG_IMPACTS = {"support", "conflict", "irrelevant"}
+    RAG_FACTOR_BANNED_WORDS = {
+        "all", "although", "and", "because", "but", "case", "cases",
+        "aligns", "causes", "covers", "differs", "favors", "favours",
+        "leads", "maintains", "matches", "or", "other", "others",
+        "produces", "rank", "ranks", "results", "shows", "supports",
+        "targets", "uses", "while",
+    }
     RAG_PLACEMENT_KEYS = {
-        "landing_area",
         "landing_x",
         "landing_y",
-        "moving_area",
         "moving_x",
         "moving_y",
     }
@@ -158,6 +174,22 @@ class BaseAgent:
         return f"Action: {json.dumps(action, ensure_ascii=True)}"
 
     @classmethod
+    def summarize_normalized_action(
+        cls, shot_type, landing_x=None, landing_y=None, moving_x=None, moving_y=None
+    ):
+        """Build a compact trace summary from the final normalized action."""
+        shot_type_index = shot_type_to_index(shot_type)
+        if shot_type_index == 11:
+            return "Missed return."
+        prompt_landing = cls.normalized_to_prompt_coordinate(landing_x, landing_y)
+        prompt_moving = cls.normalized_to_prompt_coordinate(moving_x, moving_y)
+        return (
+            f"Returned {INDEX2EN_SHOT[shot_type_index]}; "
+            f"{cls.prompt_area_name(*prompt_landing)} landing with "
+            f"{cls.prompt_area_name(*prompt_moving)} recovery."
+        )
+
+    @classmethod
     def parse_prompt_action(cls, response):
         """Validate an LLM action and convert its integer coordinates to normalized values."""
         if not isinstance(response, dict):
@@ -174,9 +206,8 @@ class BaseAgent:
             return None, reasoning
 
         coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
-        area_keys = ("landing_area", "moving_area")
         if shot_type == 11:
-            if any(action[key] is not None for key in coordinate_keys + area_keys):
+            if any(action[key] is not None for key in coordinate_keys):
                 return None, reasoning
             return {
                 "shot_type": shot_type,
@@ -192,16 +223,11 @@ class BaseAgent:
         if any(isinstance(value, bool) or not isinstance(value, int) for value in coordinates):
             return None, reasoning
 
-        areas = [action[key] for key in area_keys]
-        if any(not isinstance(value, str) or value not in cls.PROMPT_AREA_NAMES for value in areas):
-            return None, reasoning
-
         landing_x, landing_y, moving_x, moving_y = coordinates
         if not (0 <= landing_x <= 355 and 0 <= moving_x <= 355):
             return None, reasoning
         if not (0 <= landing_y <= 480 and 0 <= moving_y <= 480):
             return None, reasoning
-
         normalized_landing_x, normalized_landing_y = cls.prompt_to_normalized_coordinate(
             landing_x, landing_y
         )
@@ -210,10 +236,10 @@ class BaseAgent:
         )
         return {
             "shot_type": shot_type,
-            "landing_area": action["landing_area"],
+            "landing_area": cls.prompt_area_name(landing_x, landing_y),
             "landing_x": normalized_landing_x,
             "landing_y": normalized_landing_y,
-            "moving_area": action["moving_area"],
+            "moving_area": cls.prompt_area_name(moving_x, moving_y),
             "moving_x": normalized_moving_x,
             "moving_y": normalized_moving_y,
         }, reasoning
@@ -223,23 +249,48 @@ class BaseAgent:
         parsed, _ = cls.parse_prompt_action(response)
         return parsed is not None
 
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def get_rag_single_stage_response_schema():
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "Schemas"
+            / "Agent"
+            / "rag_single_stage_direct_schema.json"
+        )
+        with schema_path.open("r", encoding="utf-8") as schema_file:
+            return json.load(schema_file), "rag_single_stage_direct"
+
     @classmethod
-    def parse_rag_stage1_response(cls, response, launch=False, available_types=None):
-        """Validate the reachability/shot-type decision from RAG stage 1."""
-        if not isinstance(response, dict) or set(response) != cls.RAG_STAGE1_KEYS:
+    def parse_rag_single_stage_response(
+        cls, response, launch=False, available_types=None
+    ):
+        """Validate one direct outcome/action response and normalize coordinates."""
+        if (
+            not isinstance(response, dict)
+            or set(response) != cls.RAG_SINGLE_STAGE_DIRECT_KEYS
+        ):
             return None
-        rationale = response.get("rationale")
+
         outcome = response.get("outcome")
-        if not isinstance(rationale, str) or outcome not in {"returned", "missed"}:
-            return None
+        coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
         if outcome == "missed":
             if response.get("shot_type") is not None:
                 return None
+            if any(response.get(key) is not None for key in coordinate_keys):
+                return None
             return {
-                "rationale": rationale,
-                "outcome": outcome,
+                "outcome": "missed",
                 "shot_type": 11,
+                "landing_area": None,
+                "landing_x": None,
+                "landing_y": None,
+                "moving_area": None,
+                "moving_x": None,
+                "moving_y": None,
             }
+        if outcome != "returned":
+            return None
 
         try:
             shot_type = shot_type_to_index(response.get("shot_type"))
@@ -250,31 +301,245 @@ class BaseAgent:
             return None
         if available_types is not None and shot_type not in set(available_types):
             return None
+
+        coordinates = [response.get(key) for key in coordinate_keys]
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in coordinates
+        ):
+            return None
+        landing_x, landing_y, moving_x, moving_y = coordinates
+        if not (0 <= landing_x <= 355 and 0 <= moving_x <= 355):
+            return None
+        if not (0 <= landing_y <= 480 and 0 <= moving_y <= 480):
+            return None
+        normalized_landing = cls.prompt_to_normalized_coordinate(landing_x, landing_y)
+        normalized_moving = cls.prompt_to_normalized_coordinate(moving_x, moving_y)
         return {
-            "rationale": rationale,
+            "outcome": "returned",
+            "shot_type": shot_type,
+            "landing_area": cls.prompt_area_name(landing_x, landing_y),
+            "landing_x": normalized_landing[0],
+            "landing_y": normalized_landing[1],
+            "moving_area": cls.prompt_area_name(moving_x, moving_y),
+            "moving_x": normalized_moving[0],
+            "moving_y": normalized_moving[1],
+        }
+
+    @classmethod
+    def validate_rag_single_stage_response(
+        cls, response, launch=False, available_types=None
+    ):
+        return cls.parse_rag_single_stage_response(
+            response, launch=launch, available_types=available_types
+        ) is not None
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def get_rag_response_schema(stage, case_grounding=True):
+        """Load one fixed RAG response schema and its stable API name."""
+        if stage not in {1, 2}:
+            raise ValueError(f"Unsupported RAG stage: {stage}")
+        if not isinstance(case_grounding, bool):
+            raise TypeError("case_grounding must be a bool")
+        mode = "grounded" if case_grounding else "direct"
+        schema_name = f"rag_stage{stage}_{mode}"
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "Schemas"
+            / "Agent"
+            / f"{schema_name}_schema.json"
+        )
+        with schema_path.open("r", encoding="utf-8") as schema_file:
+            return json.load(schema_file), schema_name
+
+    @staticmethod
+    def constrain_case_assessment_count(schema, count):
+        """Lock structured decoding to the assessments displayed in one prompt."""
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("case assessment count must be a non-negative integer")
+        constrained = copy.deepcopy(schema)
+        assessments = constrained.get("properties", {}).get("case_assessments")
+        if not isinstance(assessments, dict):
+            raise ValueError("schema does not define case_assessments")
+        assessments["minItems"] = count
+        assessments["maxItems"] = count
+        return constrained
+
+    @staticmethod
+    def _parse_rag_case_assessments(
+        case_assessments, item_keys, expected_identities, sources=None
+    ):
+        if (
+            not isinstance(case_assessments, list)
+            or len(case_assessments) != len(expected_identities)
+        ):
+            return None
+        parsed = []
+        actual_identities = []
+        factor_pattern = re.compile(
+            r"^[a-z]+(?:[-'][a-z]+)*(?: [a-z]+(?:[-'][a-z]+)*){0,3}$"
+        )
+        for annotation in case_assessments:
+            if not isinstance(annotation, dict) or set(annotation) != item_keys:
+                return None
+            rank = annotation.get("retrieval_rank")
+            impact = annotation.get("impact")
+            factors = annotation.get("factors")
+            if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+                return None
+            if impact not in BaseAgent.RAG_IMPACTS:
+                return None
+            if not isinstance(factors, list) or not 1 <= len(factors) <= 2:
+                return None
+            parsed_factors = []
+            for factor in factors:
+                if not isinstance(factor, str) or "\n" in factor or "\r" in factor:
+                    return None
+                normalized = " ".join(factor.strip().lower().split())
+                if (
+                    not normalized
+                    or len(normalized) > 32
+                    or factor_pattern.fullmatch(normalized) is None
+                    or BaseAgent.RAG_FACTOR_BANNED_WORDS.intersection(
+                        normalized.split()
+                    )
+                ):
+                    return None
+                parsed_factors.append(normalized)
+            if len(set(parsed_factors)) != len(parsed_factors):
+                return None
+            parsed_item = {
+                "retrieval_rank": rank,
+                "impact": impact,
+                "factors": parsed_factors,
+            }
+            if sources is not None:
+                source = annotation.get("source")
+                if source not in sources:
+                    return None
+                parsed_item = {"source": source, **parsed_item}
+                identity = (source, rank)
+            else:
+                identity = rank
+            actual_identities.append(identity)
+            parsed.append(parsed_item)
+        if actual_identities != list(expected_identities):
+            return None
+        return parsed
+
+    @classmethod
+    def parse_rag_stage1_response(
+        cls,
+        response,
+        launch=False,
+        available_types=None,
+        case_grounding=True,
+        normal_cases=None,
+        miss_cases=None,
+    ):
+        """Validate the reachability/shot-type decision from RAG stage 1."""
+        if not isinstance(case_grounding, bool):
+            return None
+        expected_keys = (
+            cls.RAG_STAGE1_GROUNDED_KEYS
+            if case_grounding
+            else cls.RAG_STAGE1_DIRECT_KEYS
+        )
+        if not isinstance(response, dict) or set(response) != expected_keys:
+            return None
+        outcome = response.get("outcome")
+        if outcome not in {"returned", "missed"}:
+            return None
+        if outcome == "missed":
+            if response.get("shot_type") is not None:
+                return None
+            shot_type = 11
+        else:
+            try:
+                shot_type = shot_type_to_index(response.get("shot_type"))
+            except (TypeError, ValueError):
+                return None
+            legal_types = {1, 10} if launch else set(range(2, 10))
+            if shot_type not in legal_types:
+                return None
+            if available_types is not None and shot_type not in set(available_types):
+                return None
+
+        case_assessments = []
+        if case_grounding:
+            normal_cases = list(normal_cases or [])
+            miss_cases = list(miss_cases or [])
+            expected_identities = [
+                ("success", rank) for rank in range(1, len(normal_cases) + 1)
+            ] + [
+                ("miss", rank) for rank in range(1, len(miss_cases) + 1)
+            ]
+            case_assessments = cls._parse_rag_case_assessments(
+                response.get("case_assessments"),
+                cls.RAG_STAGE1_ASSESSMENT_KEYS,
+                expected_identities,
+                sources={"success", "miss"},
+            )
+            if case_assessments is None:
+                return None
+
+        return {
+            "case_assessments": case_assessments,
             "outcome": outcome,
             "shot_type": shot_type,
         }
 
     @classmethod
-    def validate_rag_stage1_response(cls, response, launch=False, available_types=None):
+    def validate_rag_stage1_response(
+        cls,
+        response,
+        launch=False,
+        available_types=None,
+        case_grounding=True,
+        normal_cases=None,
+        miss_cases=None,
+    ):
         return cls.parse_rag_stage1_response(
             response,
             launch=launch,
             available_types=available_types,
+            case_grounding=case_grounding,
+            normal_cases=normal_cases,
+            miss_cases=miss_cases,
         ) is not None
 
     @classmethod
-    def parse_rag_stage2_response(cls, response):
+    def parse_rag_stage2_response(
+        cls,
+        response,
+        case_grounding=True,
+        conditioned_cases=None,
+    ):
         """Validate placement output while keeping the stage-1 shot immutable."""
-        if not isinstance(response, dict) or set(response) != cls.RAG_STAGE2_KEYS:
+        if not isinstance(case_grounding, bool):
             return None
-        rationale = response.get("rationale")
+        expected_keys = (
+            cls.RAG_STAGE2_GROUNDED_KEYS
+            if case_grounding
+            else cls.RAG_STAGE2_DIRECT_KEYS
+        )
+        if not isinstance(response, dict) or set(response) != expected_keys:
+            return None
         placement = response.get("placement")
-        if not isinstance(rationale, str) or not isinstance(placement, dict):
+        if not isinstance(placement, dict) or set(placement) != cls.RAG_PLACEMENT_KEYS:
             return None
-        if set(placement) != cls.RAG_PLACEMENT_KEYS:
-            return None
+
+        case_assessments = []
+        if case_grounding:
+            candidate_count = len(conditioned_cases or [])
+            case_assessments = cls._parse_rag_case_assessments(
+                response.get("case_assessments"),
+                cls.RAG_STAGE2_ASSESSMENT_KEYS,
+                range(1, candidate_count + 1),
+            )
+            if case_assessments is None:
+                return None
 
         coordinate_keys = ("landing_x", "landing_y", "moving_x", "moving_y")
         coordinates = [placement[key] for key in coordinate_keys]
@@ -288,18 +553,27 @@ class BaseAgent:
         normalized_landing = cls.prompt_to_normalized_coordinate(landing_x, landing_y)
         normalized_moving = cls.prompt_to_normalized_coordinate(moving_x, moving_y)
         return {
-            "rationale": rationale,
-            "landing_area": placement["landing_area"],
+            "case_assessments": case_assessments,
+            "landing_area": cls.prompt_area_name(landing_x, landing_y),
             "landing_x": normalized_landing[0],
             "landing_y": normalized_landing[1],
-            "moving_area": placement["moving_area"],
+            "moving_area": cls.prompt_area_name(moving_x, moving_y),
             "moving_x": normalized_moving[0],
             "moving_y": normalized_moving[1],
         }
 
     @classmethod
-    def validate_rag_stage2_response(cls, response):
-        return cls.parse_rag_stage2_response(response) is not None
+    def validate_rag_stage2_response(
+        cls,
+        response,
+        case_grounding=True,
+        conditioned_cases=None,
+    ):
+        return cls.parse_rag_stage2_response(
+            response,
+            case_grounding=case_grounding,
+            conditioned_cases=conditioned_cases,
+        ) is not None
 
     @staticmethod
     def get_verified_response_or_none(llm, **kwargs):

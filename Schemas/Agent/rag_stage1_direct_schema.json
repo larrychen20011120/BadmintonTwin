@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RagStage1DirectResponse",
+  "type": "object",
+  "properties": {
+    "outcome": {"type": "string", "enum": ["returned", "missed"]},
+    "shot_type": {
+      "type": ["string", "null"],
+      "enum": ["Serve short", "Serve long", "Clear", "Push Shot", "Smash", "Smash Defence", "Drive", "Net Shot", "Lob", "Drop", null]
+    }
+  },
+  "required": ["outcome", "shot_type"],
+  "additionalProperties": false
+}

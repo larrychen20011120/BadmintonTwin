@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RagSingleStageDirectResponse",
+  "type": "object",
+  "properties": {
+    "outcome": {"type": "string", "enum": ["returned", "missed"]},
+    "shot_type": {
+      "type": ["string", "null"],
+      "enum": ["Serve short", "Serve long", "Clear", "Push Shot", "Smash", "Smash Defence", "Drive", "Net Shot", "Lob", "Drop", null]
+    },
+    "landing_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+    "landing_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480},
+    "moving_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+    "moving_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480}
+  },
+  "required": ["outcome", "shot_type", "landing_x", "landing_y", "moving_x", "moving_y"],
+  "additionalProperties": false
+}

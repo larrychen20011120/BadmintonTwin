@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RagStage2DirectResponse",
+  "type": "object",
+  "properties": {
+    "placement": {
+      "type": "object",
+      "properties": {
+        "landing_x": {"type": "integer", "minimum": 0, "maximum": 355},
+        "landing_y": {"type": "integer", "minimum": 0, "maximum": 480},
+        "moving_x": {"type": "integer", "minimum": 0, "maximum": 355},
+        "moving_y": {"type": "integer", "minimum": 0, "maximum": 480}
+      },
+      "required": ["landing_x", "landing_y", "moving_x", "moving_y"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["placement"],
+  "additionalProperties": false
+}

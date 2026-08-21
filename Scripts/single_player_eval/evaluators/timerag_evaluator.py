@@ -29,11 +29,12 @@ class TimeRAGEvaluator(BaseEvaluator):
     """TimeRAG 單一選手評估器"""
 
     def __init__(self, player_name=None, experiment='rally', device='cuda', skip_first_n=0,
-                 train_split_path=None, conditioned_top_k=None, window_size=None, enable_tracing=True,
-                 save_trajectories=False,
-                 style_shift_instruction_mode='auto', verbose_style_shift=False,
-                 output_experiment=None, all_rallies=False,
-                 instruction_mode='no_instruct'):
+                  train_split_path=None, conditioned_top_k=None, window_size=None, enable_tracing=True,
+                  save_trajectories=False,
+                  style_shift_instruction_mode='auto', verbose_style_shift=False,
+                   output_experiment=None, all_rallies=False,
+                   instruction_mode='no_instruct', case_grounding=True,
+                   action_architecture='two_stage_v1', save_prompt_traces=False):
         """
         Args:
             player_name: 選手名稱
@@ -55,6 +56,20 @@ class TimeRAGEvaluator(BaseEvaluator):
         self.all_rallies = all_rallies
         self.instruction_mode = instruction_mode
         self.prompt_variant = 'shifted' if instruction_mode == 'instruct' else 'norm'
+        if action_architecture not in {'two_stage_v1', 'single_stage_v1'}:
+            raise ValueError(f'Unsupported action architecture: {action_architecture}')
+        if action_architecture == 'single_stage_v1':
+            if case_grounding:
+                raise ValueError('Single-stage TimeRAG supports direct output only')
+        self.action_architecture = action_architecture
+        self.algorithm_name = (
+            'timerag_single_stage'
+            if action_architecture == 'single_stage_v1' else 'timerag'
+        )
+        if not isinstance(case_grounding, bool):
+            raise TypeError('case_grounding must be a bool')
+        self.case_grounding = case_grounding
+        self.save_prompt_traces = bool(save_prompt_traces)
 
         self.train_split_path = train_split_path or self.config['paths']['rally_split']
 
@@ -62,9 +77,10 @@ class TimeRAGEvaluator(BaseEvaluator):
         retrieval_config = self.config.get('retrieval', {})
         stage1_config = retrieval_config.get('stage1', {})
         stage2_config = retrieval_config.get('stage2', {})
-        self.retrieval_architecture = retrieval_config.get('architecture', 'two_stage_v1')
-        if self.retrieval_architecture != 'two_stage_v1':
+        configured_architecture = retrieval_config.get('architecture', 'two_stage_v1')
+        if configured_architecture != 'two_stage_v1':
             raise ValueError('TimeRAG requires retrieval.architecture=two_stage_v1')
+        self.retrieval_architecture = action_architecture
         self.normal_top_k = int(stage1_config.get('normal_top_k', 10))
         self.miss_top_k = int(stage1_config.get('miss_top_k', 5))
         self.conditioned_top_k = int(
@@ -94,7 +110,7 @@ class TimeRAGEvaluator(BaseEvaluator):
         self.agent = self._get_agent(self.player_name) if self.player_name is not None else None
 
         self.print_runtime_parameters(
-            "timerag",
+            self.algorithm_name,
             top_k=self.conditioned_top_k,
             normal_top_k=self.normal_top_k,
             miss_top_k=self.miss_top_k,
@@ -104,6 +120,7 @@ class TimeRAGEvaluator(BaseEvaluator):
             extra_rows=[
                 ("database_dir", self.database_dir),
                 ("prompt_variant", self.prompt_variant),
+                ("case_grounding", self.case_grounding),
             ],
         )
 
@@ -140,6 +157,9 @@ class TimeRAGEvaluator(BaseEvaluator):
             conditioned_top_k=self.conditioned_top_k,
             enable_tracing=self.enable_tracing,
             prompt_variant=self.prompt_variant,
+            case_grounding=self.case_grounding,
+            action_architecture=self.action_architecture,
+            save_prompt_traces=self.save_prompt_traces,
         )
         print(f"[TimeRAG] Agent created for {player_name}")
 
@@ -160,7 +180,7 @@ class TimeRAGEvaluator(BaseEvaluator):
         return self.agents[player_name]
 
     def get_algorithm_name(self):
-        return "timerag"
+        return self.algorithm_name
 
     def _state_to_env_format(self, state_18):
         """Convert 18-dim state to env format"""

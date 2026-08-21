@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TwinSingleStageDirectResponse",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "object",
+      "properties": {
+        "shot_type": {"type": "string", "enum": ["Serve short", "Serve long", "Clear", "Push Shot", "Smash", "Smash Defence", "Drive", "Net Shot", "Lob", "Drop", "Missed shot"]},
+        "landing_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+        "landing_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480},
+        "moving_x": {"type": ["integer", "null"], "minimum": 0, "maximum": 355},
+        "moving_y": {"type": ["integer", "null"], "minimum": 0, "maximum": 480}
+      },
+      "required": ["shot_type", "landing_x", "landing_y", "moving_x", "moving_y"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["action"],
+  "additionalProperties": false
+}

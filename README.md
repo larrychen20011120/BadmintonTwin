@@ -102,15 +102,25 @@ shot type before ranking `conditioned_top_k` cases, then generates only landing
 and recovery positions. Their point distance uses player, hit, and opponent
 coordinates plus `ball_distance_x/y`; changing this feature contract requires
 rebuilding both RAG databases.
-Twin first performs an additional aspect-generation pre-stage to construct its
-semantic embedding query, then uses the same disjoint Stage 1 and Stage 2 action
-contracts. A returned Twin decision therefore uses three LLM calls; a missed
-decision skips action Stage 2 and uses two logical generation stages. As with
-the other RAG agents, an invalid provider response may be retried within a stage.
-`twin_single_stage` reuses the same aspect query, successful/missed memory
-retrieval, and embedding cache, but makes one joint shot-type, landing, and
-recovery decision without shot-conditioned Stage 2 retrieval. It therefore uses
-two LLM calls per prediction: one aspect call and one complete-action call.
+Action prompts use the same context horizon as their retrieved evidence:
+NaiveRAG compares one current decision state with point cases, TimeRAG compares
+the current latest-`window_size` sequence with temporal windows, and Twin compares
+one current decision state with per-stroke memories. On global ball rounds 1 and
+2, Twin ranks memories with its numeric state metric only. These early decisions
+do not call the aspect LLM, encode a semantic query, score semantic similarity,
+or include semantic query/context in action prompts and traces. Starting at
+`twin.semantic_start_ball_round` (default 3), Twin performs its aspect-generation
+pre-stage, constructs a semantic embedding query from the full observed rally
+prefix, and combines state and semantic similarity. The raw prefix is not
+repeated in its action prompts. Twin then uses the same disjoint Stage 1 and
+Stage 2 action contracts. A returned semantic Twin decision therefore uses three
+LLM calls, while an early state-only returned decision uses two; a missed
+decision skips action Stage 2. As with the other RAG agents, an invalid provider
+response may be retried within a stage.
+`twin_single_stage` uses the same round-based retrieval schedule and embedding
+cache, but makes one joint shot-type, landing, and recovery decision without
+shot-conditioned Stage 2 retrieval. It uses one action call on rounds 1 and 2,
+then one aspect call plus one complete-action call from round 3 onward.
 Rally-profile instructions are controllability conditions assigned with the
 train-fitted clustering pipeline, not causal features for forecasting an unseen
 rally from its opening state.
@@ -141,9 +151,17 @@ uv run python Scripts/single_player_eval/eval_all_rallies.py \
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm pure_llm --workers 4 --instruction-mode instruct
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
-  --algorithm naive_rag --workers 4 --conditioned-top-k 10 --instruction-mode instruct
+  --algorithm naive_rag --workers 4 --conditioned-top-k 10 \
+  --instruction-mode instruct --case-grounding
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
-  --algorithm timerag --workers 4 --conditioned-top-k 10 --instruction-mode no_instruct
+  --algorithm timerag --workers 4 --conditioned-top-k 10 \
+  --instruction-mode no_instruct --no-case-grounding
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm naive_rag_single_stage --workers 4 \
+  --instruction-mode instruct
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm timerag_single_stage --workers 4 --window-size 5 \
+  --instruction-mode instruct
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm twin --workers 4 --conditioned-top-k 10 \
   --lambda-weight 0.5 --instruction-mode instruct
@@ -155,6 +173,11 @@ uv run python Scripts/single_player_eval/eval_all_rallies.py \
 uv run python Scripts/single_player_eval/eval_all_rallies.py \
   --algorithm naive_rag --workers 4 \
   --resume-run Experiments/naive_rag/trajectories/rally_instruct/run_001
+
+# Optionally save rendered prompts, retrieval evidence, outputs, usage, and latency.
+uv run python Scripts/single_player_eval/eval_all_rallies.py \
+  --algorithm naive_rag --workers 4 --instruction-mode no_instruct \
+  --save-prompt-traces
 
 # Score the latest completed trajectory run.
 uv run python Scripts/single_player_eval/score.py \
@@ -179,6 +202,41 @@ Each evaluation creates a `run_NNN/rallies/` directory and writes one JSON
 object per rally simulation. Rollouts stop naturally when possible and are
 capped at the number of valid ground-truth shots plus two. The all-rally
 evaluator writes one shared trajectory per physical rally.
+LLM/RAG evaluation displays a parent-process physical-rally progress bar by
+default; use `--no-progress` to disable it. `--save-prompt-traces` writes one
+atomic `run_NNN/prompt_traces/*.json` sidecar per rally. These sidecars contain
+retrieval queries and evidence, rendered user prompts, parsed and raw responses,
+token usage, latency, final actions, and fallback sources. They deliberately omit
+the system prompt text; its version is identified by `prompt_sha256.system` in
+the manifest. A traced resume considers a rally complete only when both its
+trajectory and prompt-trace sidecar are valid.
+RAG case grounding defaults to `evaluation.case_grounding` (`true`); disabled
+runs use a separate `_no_case_grounding` trajectory path suffix.
+`naive_rag_single_stage` and `timerag_single_stage` are direct-only RAG
+ablations. They retrieve successful and missed examples once, show their full
+historical actions, and make one LLM call that returns only `outcome`,
+`shot_type`, landing coordinates, and recovery coordinates. They never perform
+shot-conditioned retrieval or produce case assessments. Both support
+`instruct` and `no_instruct`; instructed profiles act only as weak tie-breakers
+in action generation and never alter retrieval. Direct
+`twin_single_stage` uses the same output contract while retaining Twin's aspect
+query pre-stage. Its direct mode supports both `instruct` and `no_instruct`;
+instructions enter only the complete-action prompt as weak tie-breakers and do
+not alter aspect generation or retrieval.
+Grounded prompts assess every displayed case independently before generating the
+decision. Each assessment has one `support`, `conflict`, or `irrelevant` impact
+and one or two free-form lowercase factors. Factors are hard-limited to 1-4 word
+noun phrases and cannot contain explanations, conjunctions, numbers, coordinates,
+case labels, ranks, or references to other cases. Runtime validation also requires
+exact coverage and prompt order and rejects duplicate factors.
+Grounded responses contain no note, rationale, summary, fixed factor vocabulary,
+role, or aspect label. Version-7 Twin decision traces additionally identify the
+state-only or state-semantic retrieval mode and semantic activation round;
+state-only references contain numeric distance but no semantic fields. Existing
+version-2 through version-6 trajectories remain readable.
+LLM action responses contain only the shot type and integer landing/recovery
+coordinates. Historical cases retain semantic areas as evidence, while runtime
+parsers derive canonical semantic areas from the returned coordinates.
 Random uses area-first coordinate sampling and a hard limit of
 `max(ground-truth shots + 2, 5)`. Its first five actions sample landing and
 movement areas 1-24 and cannot sample Missed; later actions may sample areas
@@ -234,6 +292,12 @@ additive `train_reference` JSON section plus
 
 Twin data preparation has two independent stages. Canonical memory contains the
 LLM annotations, states, and actions, but no model-specific embeddings.
+Offline completed-rally annotations require strict, gap-free coverage through
+the final stroke and fall back to one full-rally segment after invalid provider
+output. Online query annotation may repair only an otherwise valid response that
+omits exactly the current terminal round by extending its final segment one
+round. This online repair does not alter canonical memory or require rebuilding
+the memory database or embedding cache.
 
 Preview one rally before building the full memory database:
 

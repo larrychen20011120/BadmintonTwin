@@ -60,7 +60,6 @@ The half court is divided into 17 semantic areas.
 - y increases from the baseline toward the net.
 - Valid grid coordinates satisfy 0 <= x <= 355 and 0 <= y <= 480.
 - All non-missed landing and recovery coordinates must be integers.
-- The semantic area must match its integer coordinate.
 
 # Shot Types
 ## Serve
@@ -86,7 +85,7 @@ Make one joint decision from the current rally situation and general knowledge o
 
 First decide whether the player is likely to reach and legally return the shuttle. Positioning, movement difficulty, time pressure, balance, and contact quality may make a Missed shot more likely. A weak but legal return into the opponent's court is not automatically a Missed shot.
 
-For a legal return, first select the shot type. Then, for each coordinate, first select the most likely semantic area and determine where within that area the point is likely to lie. Do not automatically use the area center. Explain whether the point is biased left, right, front, back, or center, and which current-rally evidence supports that bias.
+For a legal return, first select the shot type. Then, for each coordinate, first select the most likely semantic area and determine where within that area the point is likely to lie. Do not automatically use the area center.
 
 ## Current Match Situation
 {% if trajectory_text %}
@@ -96,13 +95,10 @@ For a legal return, first select the shot type. Then, for each coordinate, first
 ## Output Format
 Return only one valid JSON object. Do not include markdown or any text outside the JSON.
 {
-  "rationale": "One concise behavior-based paragraph explaining reachability, shot choice, why each semantic area was selected, and where each coordinate lies within that area.",
   "action": {
     "shot_type": "<exact shot type name>",
-    "landing_area": <semantic area name string or null>,
     "landing_x": <integer 0 to 355 or null>,
     "landing_y": <integer 0 to 480 or null>,
-    "moving_area": <semantic area name string or null>,
     "moving_x": <integer 0 to 355 or null>,
     "moving_y": <integer 0 to 480 or null>
   }
@@ -112,5 +108,5 @@ Return only one valid JSON object. Do not include markdown or any text outside t
 - `shot_type` must be exactly one of: `Serve short`, `Serve long`, `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, `Drop`, `Missed shot`
 - In a serve situation, `shot_type` must be either `Serve short` or `Serve long`
 - In a non-serve situation, `shot_type` must be one of `Clear`, `Push Shot`, `Smash`, `Smash Defence`, `Drive`, `Net Shot`, `Lob`, or `Drop`
-- For `Missed shot`, set both semantic areas and all four coordinates to `null`
-- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas
+- For `Missed shot`, set all four coordinates to `null`
+- For every other shot, all coordinates must be integers in the valid grid

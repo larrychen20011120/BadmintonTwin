@@ -75,6 +75,41 @@ class PreviewTwinMemoryTest(unittest.TestCase):
         segments["my_tactical_pattern"][0]["evidence_strokes"] = [1, 3]
         self.assertFalse(TwinDatabase._validate_rally_annotation(annotation, rally))
 
+    def test_offline_annotation_does_not_repair_terminal_omission(self):
+        rally = make_rally()
+        incomplete = {
+            "aspect_segments": {
+                aspect: [{"range": [1, 2], "phase": "Incomplete phase"}]
+                for aspect in (
+                    "my_tactical_pattern",
+                    "my_tempo_movement_dynamics",
+                    "opponent_tactical_pattern",
+                    "opponent_tempo_movement_dynamics",
+                )
+            }
+        }
+
+        class IncompleteLLM:
+            validator_result = None
+
+            def get_verified_response(self, validator=None, **_):
+                self.validator_result = validator(incomplete)
+                return incomplete, json.dumps(incomplete), {}
+
+        llm = IncompleteLLM()
+        database = TwinDatabase(rally, "Player A", 1)
+        annotation = database.annotate_rally(rally, llm=llm, use_llm=True)
+
+        self.assertFalse(llm.validator_result)
+        self.assertEqual(
+            incomplete["aspect_segments"]["my_tactical_pattern"][0]["range"],
+            [1, 2],
+        )
+        self.assertEqual(
+            annotation["aspect_segments"]["my_tactical_pattern"][0],
+            {"range": [1, 3], "phase": "Full-rally fallback phase"},
+        )
+
     def test_fallback_preview_uses_target_player_strokes(self):
         rally, set_number = select_rally(make_rally(), 7, 3, 2)
         preview = build_preview(

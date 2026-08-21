@@ -95,6 +95,36 @@ def make_database(player_name='Test Player'):
 
 
 class TwinEmbeddingPipelineTest(unittest.TestCase):
+    def test_state_only_retrieval_needs_no_embedding_and_omits_semantics(self):
+        database = make_database()
+        query = {
+            'player_location_x': 0.0,
+            'player_location_y': 0.0,
+            'hit_x': 0.1,
+            'hit_y': 0.2,
+            'opponent_location_x': -0.1,
+            'opponent_location_y': -0.2,
+            'opponent_type': 2,
+        }
+
+        retrieval = database.retrieve_state_only_stage1(
+            query, normal_top_k=1, miss_top_k=1, launch=False
+        )
+
+        self.assertEqual(retrieval['normal_cases'][0]['memory_id'], '1:1:1:1')
+        self.assertEqual(retrieval['normal_cases'][0]['distance'], 0.0)
+        self.assertEqual(retrieval['normal_cases'][0]['state_similarity'], 1.0)
+        for case in retrieval['normal_cases'] + retrieval['miss_cases']:
+            self.assertEqual(case['retrieval_mode'], 'state_only')
+            self.assertNotIn('semantic_text', case)
+            self.assertNotIn('semantic_similarity', case)
+            self.assertNotIn('context_text', case)
+
+        conditioned = database.retrieve_state_only_by_shot_type(
+            query, shot_type=2, top_k=1
+        )
+        self.assertEqual(conditioned[0]['memory_id'], '1:1:1:1')
+
     def test_embedding_cli_has_no_config_or_model_override(self):
         option_strings = {
             option

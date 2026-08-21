@@ -105,8 +105,16 @@ def algorithm_runtime_rows(config, algorithm, **effective):
     ]
 
     retrieval = config.get("retrieval", {}) if isinstance(config, dict) else {}
-    if algorithm in {"naive_rag", "timerag", "twin", "twin_single_stage", "twin2"}:
-        if algorithm in {"naive_rag", "timerag", "twin", "twin_single_stage"}:
+    if algorithm in {
+        "naive_rag", "naive_rag_single_stage",
+        "timerag", "timerag_single_stage",
+        "twin", "twin_single_stage", "twin2",
+    }:
+        if algorithm in {
+            "naive_rag", "naive_rag_single_stage",
+            "timerag", "timerag_single_stage",
+            "twin", "twin_single_stage",
+        }:
             stage1 = retrieval.get("stage1", {})
             stage2 = retrieval.get("stage2", {})
             rows.append(("retrieval.architecture", effective.get(
@@ -115,6 +123,8 @@ def algorithm_runtime_rows(config, algorithm, **effective):
                     if algorithm == "twin"
                     else "twin_aspect_single_stage_v1"
                     if algorithm == "twin_single_stage"
+                    else "single_stage_v1"
+                    if algorithm in {"naive_rag_single_stage", "timerag_single_stage"}
                     else retrieval.get("architecture", "two_stage_v1")
                 )
             )))
@@ -124,14 +134,16 @@ def algorithm_runtime_rows(config, algorithm, **effective):
             rows.append(("retrieval.stage1.miss_top_k", effective.get(
                 "miss_top_k", stage1.get("miss_top_k")
             )))
-            if algorithm != "twin_single_stage":
+            if algorithm not in {
+                "naive_rag_single_stage", "timerag_single_stage", "twin_single_stage"
+            }:
                 rows.append(("retrieval.stage2.conditioned_top_k", effective.get(
                     "top_k", stage2.get("conditioned_top_k")
                 )))
         else:
             rows.append(("retrieval.mode", effective.get("retrieval_mode", retrieval.get("mode", "classic"))))
             rows.append(("retrieval.classic_top_k", effective.get("top_k", retrieval.get("classic_top_k", retrieval.get("top_k")))))
-    if algorithm == "timerag":
+    if algorithm in {"timerag", "timerag_single_stage"}:
         rows.append(("timerag.window_size", effective.get("window_size", config.get("timerag", {}).get("window_size"))))
     elif algorithm in {"twin", "twin_single_stage"}:
         twin_cfg = config.get("twin", {})

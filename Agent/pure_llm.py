@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -19,16 +20,21 @@ class PureLLMAgent(BaseAgent):
     """Zero-shot LLM agent without retrieval or player-specific examples."""
 
     def __init__(self, player_name, model_name=None,
-                 api_key=None, host=None, port=None,
-                 base_url=None, host_url=None, enable_tracing=True,
-                 prompt_variant="norm"):
+                  api_key=None, host=None, port=None,
+                  base_url=None, host_url=None, enable_tracing=True,
+                  prompt_variant="norm", save_prompt_traces=False):
         super().__init__(player_name)
 
         if prompt_variant not in {'norm', 'shifted'}:
             raise ValueError(f"Unsupported prompt_variant: {prompt_variant}")
         self.prompt_variant = prompt_variant
 
-        self.tracer = BadmintonTracer("pure_llm", player_name, enable_tracing)
+        self.tracer = BadmintonTracer(
+            "pure_llm",
+            player_name,
+            enable_tracing,
+            capture_local=save_prompt_traces,
+        )
         self.trajectory = []
         self._current_rally = None
         self.verbalizer = create_naive_rag_verbalizer()
@@ -50,6 +56,14 @@ class PureLLMAgent(BaseAgent):
         )
         with open(os.path.join(prompt_dir, template_name), "r") as f:
             self.user_template = Template(f.read())
+        schema_path = os.path.join(
+            project_path,
+            "Schemas",
+            "Agent",
+            "twin_single_stage_direct_schema.json",
+        )
+        with open(schema_path, "r", encoding="utf-8") as schema_file:
+            self.action_response_schema = json.load(schema_file)
 
     @staticmethod
     def _parse_llm_action(response):
@@ -143,6 +157,8 @@ class PureLLMAgent(BaseAgent):
         response, raw_llm_output, usage = self.llm.get_verified_response(
             user_prompt=user_prompt,
             max_trials=5,
+            schema=self.action_response_schema,
+            schema_name="pure_llm_direct_action",
             validator=BaseAgent.validate_prompt_action_response,
         )
         t1 = time.time()

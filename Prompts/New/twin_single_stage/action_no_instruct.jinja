@@ -1,4 +1,4 @@
-## Current Match Situation
+## Current Decision Context
 
 {% if trajectory_text %}
 {{ trajectory_text }}
@@ -6,20 +6,27 @@
 
 ---
 
+{% if semantic_enabled|default(true) %}
 ## Current Twin Semantic Query
 
 {{ semantic_query_text }}
 
 ---
+{% endif %}
 
 ## Retrieved Missed-Shot Twin Memories
 
-Analyze all missed-shot memories as evidence about reachability, late recovery, failed contact, and inability to produce a legal return. Do not decide from one highest-scoring memory.
+Analyze the missed-shot memories as evidence about reachability, late recovery, failed contact, and inability to produce a legal return.
 
 {% for memory in miss_memories %}
-Miss Memory {{ loop.index }} | score={{ "%.4f"|format(memory.score) }} | state={{ "%.4f"|format(memory.state_similarity) }} | semantic={{ "%.4f"|format(memory.semantic_similarity) }}
-Context:
+Memory (source=miss, retrieval_rank={{ loop.index }})
+Historical decision context:
+{{ memory.decision_description }}
+
+{% if semantic_enabled|default(true) %}
+Twin semantic context:
 {{ memory.context_text }}
+{% endif %}
 
 Reachability:
 {{ memory.reachability_text }}
@@ -36,9 +43,14 @@ Observed next action:
 Analyze all successful memories as evidence about this player's likely shot choice, placement, and recovery when an effective return is possible. Identify consistent patterns, relevant differences, conflicts, and outliers.
 
 {% for memory in normal_memories %}
-Memory {{ loop.index }} | score={{ "%.4f"|format(memory.score) }} | state={{ "%.4f"|format(memory.state_similarity) }} | semantic={{ "%.4f"|format(memory.semantic_similarity) }}
-Context:
+Memory (source=success, retrieval_rank={{ loop.index }})
+Historical decision context:
+{{ memory.decision_description }}
+
+{% if semantic_enabled|default(true) %}
+Twin semantic context:
 {{ memory.context_text }}
+{% endif %}
 
 Reachability:
 {{ memory.reachability_text }}
@@ -52,26 +64,40 @@ Observed next action:
 
 ## Decision Task
 
-This is an imitation task, not tactical optimization. Jointly analyze the complete current rally, semantic query, and every missed and successful memory to make one complete action decision.
+This is an imitation task, not tactical optimization. Jointly compare the current decision context{% if semantic_enabled|default(true) %} and semantic query{% endif %} with every missed and successful memory to make one complete action decision.
 
-First synthesize the missed-shot evidence with the current situation to decide whether the target player can produce a legal return. If not, output `Missed shot`. If a return is possible, jointly predict the likely shot type, landing position, and recovery position from the successful memories. Do not reduce this decision to a comparison of the two highest-scoring memories.
+Compare the current decision context{% if semantic_enabled|default(true) %} and semantic query{% endif %} with the concrete state, reachability,{% if semantic_enabled|default(true) %} semantic,{% endif %} and action content of the memories. Do not use retrieval rank or a generic claim of similarity as evidence.
 
 ## Output Format
 
 Return only one valid JSON object. Do not use markdown fences, XML tags, or text outside the JSON object.
 
+{% if case_grounding|default(true) %}
+Assess every memory independently in display order. Output exactly {{ (miss_memories|length) + (normal_memories|length) }} case_assessments: miss ranks 1 through {{ miss_memories|length }}, then success ranks 1 through {{ normal_memories|length }}.
+For each memory, choose one impact: support means its complete observed action is useful to imitate; conflict means an observable mismatch reduces its influence; irrelevant means it adds no useful evidence. Give one or two free-form lowercase factors. Each factor must be a 1-4 word noun phrase about only this memory, such as "same smash" or "opponent farther back"; use adjectives, never verb clauses.{% if semantic_enabled|default(true) %} Use Twin context only when explicitly stated.{% endif %} No sentences, explanations, conjunctions, numbers, coordinates, labels, ranks inside factors, or references to other memories. Use every required source/rank exactly once. Then output the action directly.
 {
-  "rationale": "a concise imitation rationale that synthesizes all missed and successful Twin memories",
+  "case_assessments": [
+    {"source": "<success or miss>", "retrieval_rank": <integer>, "impact": "<support, conflict, or irrelevant>", "factors": ["<free noun phrase>"]}
+  ],
   "action": {
     "shot_type": "<exact shot type name>",
-    "landing_area": <semantic area name string or null>,
     "landing_x": <integer 0 to 355 or null>,
     "landing_y": <integer 0 to 480 or null>,
-    "moving_area": <semantic area name string or null>,
     "moving_x": <integer 0 to 355 or null>,
     "moving_y": <integer 0 to 480 or null>
   }
 }
+{% else %}
+{
+  "action": {
+    "shot_type": "<exact shot type name>",
+    "landing_x": <integer 0 to 355 or null>,
+    "landing_y": <integer 0 to 480 or null>,
+    "moving_x": <integer 0 to 355 or null>,
+    "moving_y": <integer 0 to 480 or null>
+  }
+}
+{% endif %}
 
 ## Action Constraints
 
@@ -80,6 +106,6 @@ Return only one valid JSON object. Do not use markdown fences, XML tags, or text
 - In a non-serve situation, do not output a serve shot type.
 - Use `Missed shot` if the shuttle is unreachable or contact cannot produce a legal return into the opponent's court.
 - A weak but legal return is not automatically a `Missed shot`.
-- For `Missed shot`, set both semantic areas and all four coordinates to `null`.
-- For every other shot, all coordinates must be integers in the valid grid and match their semantic areas.
+- For `Missed shot`, set all four coordinates to `null`.
+- For every other shot, all coordinates must be integers in the valid grid.
 - Do not include extra fields.

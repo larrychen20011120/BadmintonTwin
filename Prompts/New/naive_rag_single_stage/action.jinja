@@ -1,0 +1,30 @@
+# Task
+Predict the player's complete next action directly from the current decision context and retrieved historical point cases. This is behavior imitation, not tactical optimization.
+
+## Current Decision Context
+{{ trajectory_text }}
+
+## Successful Return Cases
+{% for case in normal_cases %}
+Case {{ loop.index }}:
+{{ case.stage2_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Missed Return Cases
+{% for case in miss_cases %}
+Case {{ loop.index }}:
+{{ case.stage2_description }}{% if not loop.last %}
+{% endif %}{% endfor %}
+
+## Output
+Return only one JSON object with the final result. Do not output reasoning, analysis, case selection, case assessments, markdown, or extra fields.
+{
+  "outcome": "<returned or missed>",
+  "shot_type": "<exact legal shot type, or null when missed>",
+  "landing_x": <integer 0 to 355, or null when missed>,
+  "landing_y": <integer 0 to 480, or null when missed>,
+  "moving_x": <integer 0 to 355, or null when missed>,
+  "moving_y": <integer 0 to 480, or null when missed>
+}
+
+For a serve, use only Serve short or Serve long. For a non-serve return, use only Clear, Push Shot, Smash, Smash Defence, Drive, Net Shot, Lob, or Drop. For missed, set shot_type and all four coordinates to null.

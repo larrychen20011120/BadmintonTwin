@@ -34,17 +34,17 @@ DEFAULT_OUTPUT_DIR = "Experiments/rally_profiles/paper"
 FONT_SCALE = 2.0
 CLUSTER_COLORS = ["#2369A0", "#D64B3C", "#8A5AA8", "#159A9C", "#D99B2B"]
 HEATMAP_LABELS = {
-    "attack_shot_ratio": "Attack",
-    "defense_shot_ratio": "Defense",
-    "side_ratio": "Wide",
-    "frontcourt_ratio": "Front",
-    "backcourt_ratio": "Back",
-    "signed_side_bias": "Side bias",
-    "front_back_switch_ratio": "F/B switch",
-    "left_right_switch_ratio": "L/R switch",
-    "log_rally_length": "Length",
-    "average_movement": "Movement",
-    "landing_opponent_distance": "Opp. distance",
+    "attack_shot_ratio": "Atk.\nshots",
+    "defense_shot_ratio": "Def.\nresets",
+    "side_ratio": "Wide\ntarget",
+    "frontcourt_ratio": "Front\ncourt",
+    "backcourt_ratio": "Back\ncourt",
+    "signed_side_bias": "Side\nbias",
+    "front_back_switch_ratio": "F/B\nswitch",
+    "left_right_switch_ratio": "L/R\nswitch",
+    "log_rally_length": "Log\nlength",
+    "average_movement": "Avg.\nmove",
+    "landing_opponent_distance": "Opp.\ndist.",
 }
 
 
@@ -112,19 +112,19 @@ def _plot_pca(ax, train, profile, colors):
                 angle=ellipse["angle"],
                 facecolor=color,
                 edgecolor=color,
-                linewidth=0.8,
-                alpha=0.12,
+                linewidth=1.0,
+                alpha=0.18,
                 zorder=1,
             ))
-        ax.scatter(group[:, 0], group[:, 1], s=7, color=color, alpha=0.27, edgecolors="none")
+        ax.scatter(group[:, 0], group[:, 1], s=18, color=color, alpha=0.38, edgecolors="none")
         ax.scatter(
             centers[cluster_id, 0],
             centers[cluster_id, 1],
-            s=82,
+            s=130,
             color=color,
             marker="*",
             edgecolors="#25313B",
-            linewidths=0.55,
+            linewidths=0.8,
             zorder=4,
         )
         ax.annotate(
@@ -133,24 +133,24 @@ def _plot_pca(ax, train, profile, colors):
             xytext=(4, 4),
             textcoords="offset points",
             color=color,
-            fontsize=12 * FONT_SCALE,
+            fontsize=13 * FONT_SCALE,
             fontweight="bold",
         )
 
-    ax.set_xlabel("")
-    ax.set_ylabel("")
+    ax.margins(x=0.015, y=0.015)
+    ax.set_xticks([])
+    ax.set_yticks([])
     ax.set_title(
-        "(a) Rally clusters",
+        "(a) Rally clusters (PCA projection)",
         loc="left",
         fontsize=14 * FONT_SCALE,
         fontweight="bold",
         pad=8 * FONT_SCALE,
     )
-    ax.tick_params(labelsize=12.5 * FONT_SCALE)
-    ax.grid(color="#DDE2E6", linewidth=0.4, alpha=0.75)
+    ax.grid(False)
 
 
-def _plot_centroid_heatmap(ax, profile, colors, figure):
+def _plot_centroid_heatmap(ax, profile, colors, figure, title_x=0.0):
     centers = _profile_center_matrix(profile)
     image = ax.imshow(centers, cmap="RdBu_r", vmin=-2, vmax=2, aspect="auto")
     ax.set_yticks(
@@ -161,9 +161,12 @@ def _plot_centroid_heatmap(ax, profile, colors, figure):
     ax.set_xticks(
         range(len(CLUSTER_FEATURE_COLUMNS)),
         [HEATMAP_LABELS[feature] for feature in CLUSTER_FEATURE_COLUMNS],
-        rotation=48,
-        ha="right",
-        fontsize=11.5 * FONT_SCALE,
+        rotation=0,
+        ha="center",
+        fontsize=9 * FONT_SCALE,
+        color="#28323A",
+        fontweight="normal",
+        linespacing=1.0,
     )
     for cluster_id, tick in enumerate(ax.get_yticklabels()):
         tick.set_color(colors[cluster_id])
@@ -185,6 +188,7 @@ def _plot_centroid_heatmap(ax, profile, colors, figure):
     ax.set_title(
         "(b) Cluster centroid deviations",
         loc="left",
+        x=title_x,
         fontsize=14 * FONT_SCALE,
         fontweight="bold",
         pad=8 * FONT_SCALE,
@@ -473,8 +477,8 @@ def _render_figure(player_name, profile, prepared, output_path):
     card_height = 2.1 + box_height
     pca_height = {3: 2.1, 4: 2.2, 5: 2.3}[selected_k]
     heatmap_height = 1.9
-    pca_label_gap = 0.5 * FONT_SCALE
-    heatmap_label_gap = 1.75 * FONT_SCALE
+    pca_label_gap = 0.3 * FONT_SCALE
+    heatmap_label_gap = 1.2 * FONT_SCALE
     figure_height = (
         pca_height
         + pca_label_gap
@@ -501,9 +505,19 @@ def _render_figure(player_name, profile, prepared, output_path):
         hspace=0.04,
     )
     pca_ax = fig.add_subplot(outer[0])
-    heatmap_ax = fig.add_subplot(outer[2])
+    heatmap_gutter = 0.06
+    heatmap_grid = outer[2].subgridspec(
+        1, 2, width_ratios=[heatmap_gutter, 1 - heatmap_gutter], wspace=0
+    )
+    heatmap_ax = fig.add_subplot(heatmap_grid[0, 1])
     _plot_pca(pca_ax, train, profile, colors)
-    _plot_centroid_heatmap(heatmap_ax, profile, colors, fig)
+    _plot_centroid_heatmap(
+        heatmap_ax,
+        profile,
+        colors,
+        fig,
+        title_x=-heatmap_gutter / (1 - heatmap_gutter),
+    )
 
     pca_spacer_ax = fig.add_subplot(outer[1])
     pca_spacer_ax.axis("off")
@@ -511,7 +525,7 @@ def _render_figure(player_name, profile, prepared, output_path):
     spacer_ax.axis("off")
     spacer_ax.text(
         0,
-        0.25,
+        0.55,
         "(c) Tactical landing patterns and instructions",
         fontsize=14 * FONT_SCALE,
         fontweight="bold",
@@ -580,21 +594,29 @@ def _render_side_by_side_figure(player_name, profile, prepared, output_path):
     })
 
     sorted_clusters = sorted(profile["clusters"], key=lambda item: int(item["cluster_id"]))
+    split_cluster_grid = selected_k == 4
     figure_width = 28.0
     outer_wspace = 0.13
-    card_wspace = 0.08
-    left_width_ratio = 1.3
-    right_width_ratio = 1.15
-    court_width_ratio = 0.85
-    instruction_width_ratio = 2.05
+    card_wspace = 0.06 if split_cluster_grid else 0.08
+    cluster_grid_wspace = 0.07 if split_cluster_grid else 0.10
+    cluster_grid_hspace = 0.10 if split_cluster_grid else 0.35
+    left_width_ratio = 1.2 if split_cluster_grid else 1.3
+    right_width_ratio = 1.8 if split_cluster_grid else 1.15
+    court_width_ratio = 0.75 if split_cluster_grid else 0.85
+    instruction_width_ratio = 2.25 if split_cluster_grid else 2.05
     usable_width = figure_width * (0.985 - 0.03)
     outer_ratio_sum = left_width_ratio + right_width_ratio
     outer_unit_width = usable_width / (
         outer_ratio_sum + outer_wspace * outer_ratio_sum / 2
     )
     right_panel_width = outer_unit_width * right_width_ratio
+    cluster_columns = 2 if split_cluster_grid else 1
+    cluster_rows = 2 if split_cluster_grid else selected_k
+    cluster_card_width = right_panel_width / (
+        cluster_columns + cluster_grid_wspace * (cluster_columns - 1)
+    )
     card_ratio_sum = court_width_ratio + instruction_width_ratio
-    card_unit_width = right_panel_width / (
+    card_unit_width = cluster_card_width / (
         card_ratio_sum + card_wspace * card_ratio_sum / 2
     )
     instruction_width = card_unit_width * instruction_width_ratio
@@ -603,7 +625,10 @@ def _render_side_by_side_figure(player_name, profile, prepared, output_path):
         for cluster in sorted_clusters
     )
     row_height = max(2.8, instruction_height + 0.5)
-    figure_height = max(10.5, (1.0 + selected_k * row_height + 0.6) / 0.92)
+    if split_cluster_grid:
+        figure_height = max(8.8, (0.7 + cluster_rows * row_height + 0.4) / 0.92)
+    else:
+        figure_height = max(10.5, (1.0 + cluster_rows * row_height + 0.6) / 0.92)
 
     fig = plt.figure(figsize=(figure_width, figure_height), facecolor="white")
     outer = fig.add_gridspec(
@@ -617,27 +642,45 @@ def _render_side_by_side_figure(player_name, profile, prepared, output_path):
         wspace=outer_wspace,
     )
 
+    left_height_ratios = (
+        [2.65, 0.42, 1.85, 0.28]
+        if split_cluster_grid else
+        [3.0, 0.8, 2.4, 1.8]
+    )
     left = outer[0, 0].subgridspec(
         4,
         1,
-        height_ratios=[3.0, 0.8, 2.4, 1.8],
+        height_ratios=left_height_ratios,
         hspace=0.04,
     )
     pca_ax = fig.add_subplot(left[0, 0])
-    heatmap_ax = fig.add_subplot(left[2, 0])
+    heatmap_gutter = 0.065
+    heatmap_grid = left[2, 0].subgridspec(
+        1, 2, width_ratios=[heatmap_gutter, 1 - heatmap_gutter], wspace=0
+    )
+    heatmap_ax = fig.add_subplot(heatmap_grid[0, 1])
     _plot_pca(pca_ax, train, profile, colors)
-    _plot_centroid_heatmap(heatmap_ax, profile, colors, fig)
+    _plot_centroid_heatmap(
+        heatmap_ax,
+        profile,
+        colors,
+        fig,
+        title_x=-heatmap_gutter / (1 - heatmap_gutter),
+    )
     for row in (1, 3):
         spacer_ax = fig.add_subplot(left[row, 0])
         spacer_ax.axis("off")
 
+    right_row_count = cluster_rows + 1
+    right_height_ratios = [0.12] + [row_height] * cluster_rows
     right = outer[0, 1].subgridspec(
-        selected_k + 1,
-        1,
-        height_ratios=[0.2] + [row_height] * selected_k,
-        hspace=0.35,
+        right_row_count,
+        cluster_columns,
+        height_ratios=right_height_ratios,
+        hspace=cluster_grid_hspace,
+        wspace=cluster_grid_wspace,
     )
-    heading_ax = fig.add_subplot(right[0, 0])
+    heading_ax = fig.add_subplot(right[0, :])
     heading_ax.axis("off")
     heading_ax.text(
         0,
@@ -649,9 +692,15 @@ def _render_side_by_side_figure(player_name, profile, prepared, output_path):
         va="bottom",
         linespacing=1.05,
     )
-    for row, cluster in enumerate(sorted_clusters, start=1):
+    for index, cluster in enumerate(sorted_clusters):
+        if split_cluster_grid:
+            row = index % cluster_rows + 1
+            column = index // cluster_rows
+        else:
+            row = index + 1
+            column = 0
         cluster_id = int(cluster["cluster_id"])
-        card = right[row, 0].subgridspec(
+        card = right[row, column].subgridspec(
             1,
             2,
             width_ratios=[court_width_ratio, instruction_width_ratio],

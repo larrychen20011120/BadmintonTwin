@@ -1,39 +1,29 @@
 # Task
 Your task is to simulate the return outcome and shot type.
-This is a case-driven behavior simulation and imitation task, not tactical optimization.
+This is an evidence-driven behavior simulation and imitation task, not tactical optimization.
 
-Decide whether the player returns the shuttle legally or misses. For a legal return, predict only the shot type. Make one joint decision from the current rally situation and the historical window cases. Consider the incoming shot, player and opponent positions, movement and reachability, prior rally actions, score pressure, and the behavior shown in past window cases. Predict what this player is likely to do, not what would be the best tactic.
+Decide whether the player returns the shuttle legally or misses. For a legal return, predict only the shot type. Compare the current temporal window with the historical window cases. Consider the incoming shot, player and opponent positions, movement and reachability, prior actions within each window, score pressure, and the behavior shown in past window cases. Predict what this player is likely to do, not what would be the best tactic.
 
-## Current Match Situation
+## Current Temporal Window
 {{ trajectory_text }}
 
 ## Tactical Imitation Instruction
 {{ rally_profile_instruction }}
 
 ## Successful Return Window Cases
-Window cases in this section are ordered from most similar to least similar.
 {% for case in normal_cases %}
-Window Case {{ loop.index }}:
+Window Case (source=success, retrieval_rank={{ loop.index }}):
 {{ case.stage1_description }}{% if not loop.last %}
 {% endif %}{% endfor %}
 
 ## Missed Return Window Cases
-Window cases in this section are ordered from most similar to least similar.
 {% for case in miss_cases %}
-Window Case {{ loop.index }}:
+Window Case (source=miss, retrieval_rank={{ loop.index }}):
 {{ case.stage1_description }}{% if not loop.last %}
 {% endif %}{% endfor %}
 
-## Case Priority and Instruction Usage
-The retrieved window cases are the primary basis of the prediction. Give greater weight to earlier window cases, then compare their situations with the current rally before making the decision.
-
-First prioritize window cases that best match the incoming shot, player and opponent positions, movement and reachability, prior rally actions, and score pressure. Determine case compatibility before considering the tactical imitation instruction.
-
-Treat the tactical imitation instruction as weak auxiliary information. Use it only to rerank otherwise similarly relevant window cases. Keep the prediction case-driven: the instruction must not make a less compatible window case more important than a clearly more compatible window case.
-
-Do not use the instruction to determine whether the player returns or misses. Do not select a shot type solely because it is named or implied by the instruction. The selected shot type must be supported by the nearest compatible window cases.
-
-If the instruction conflicts with the nearest compatible window cases, ignore the instruction and follow the window cases.
+## Evidence and Instruction Usage
+Judge from observable window evidence; retrieval order is not evidence. Use the instruction only to break a tie, never to override reachability, legality, or stronger windows.
 
 ## Legal Shot Types
 For a serve, choose only Serve short or Serve long.
@@ -41,15 +31,23 @@ For a non-serve return, choose only Clear, Push Shot, Smash, Smash Defence, Driv
 
 ## Output Format
 Return only one valid JSON object. Do not include markdown or any text outside the JSON.
+{% if case_grounding|default(true) %}
+Assess every window independently in display order. Output exactly {{ (normal_cases|length) + (miss_cases|length) }} case_assessments: success ranks 1 through {{ normal_cases|length }}, then miss ranks 1 through {{ miss_cases|length }}.
+For each window, choose one impact: support means its observed result is useful to imitate; conflict means an observable mismatch reduces its influence; irrelevant means it adds no useful evidence. Give one or two free-form lowercase factors. Each factor must be a 1-4 word noun phrase about only this window, such as "same sequence" or "slower movement tempo"; use adjectives, never verb clauses. Instruction alignment may be a factor only when observable evidence supports it. No sentences, explanations, conjunctions, numbers, coordinates, labels, ranks inside factors, or references to other windows. Use every required source/rank exactly once. Then output the decision directly.
+{
+  "case_assessments": [{"source": "<success or miss>", "retrieval_rank": <integer>, "impact": "<support, conflict, or irrelevant>", "factors": ["<free noun phrase>"]}],
+  "outcome": "<returned or missed>",
+  "shot_type": "<one exact allowed shot type, or null when missed>"
+}
+{% else %}
 For a legal returned shot:
 {
-  "rationale": "one to two sentences for case-based explanation",
   "outcome": "returned",
   "shot_type": "<one exact allowed shot type>"
 }
 For a missed shot or serve fault:
 {
-  "rationale": "one to two sentences for case-based explanation",
   "outcome": "missed",
   "shot_type": null
 }
+{% endif %}
